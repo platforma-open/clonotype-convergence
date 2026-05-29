@@ -1,11 +1,189 @@
-// Clonotype convergence — main workflow template (scaffold).
-// Phase 3 fills in the per-sample-chain pipeline.
+// Clonotype convergence — main workflow template.
+//
+// Resolves the picked aa CDR3 PColumn (args.inputRef) plus its nt CDR3
+// and abundance siblings, combines them into one multi-sample TSV via
+// pframes.tsvFileBuilder, then runs two pure templates: Stage 1
+// (compute-neighbours, no threshold) and Stage 2 (apply-threshold).
+// Stage 1's threshold-free cache key survives threshold tweaks (R56).
+//
+// Phase 3 MVP: heavy chain only, single Stage 1 invocation processes
+// all samples (Python groups by sampleId column). pframes.processColumn
+// per-sample fan-out (R34) is a deferred follow-up; this version trades
+// per-sample caching for a smaller blast radius on first build.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
+assets := import("@platforma-sdk/workflow-tengo:assets")
+render := import("@platforma-sdk/workflow-tengo:render")
+pframes := import("@platforma-sdk/workflow-tengo:pframes")
+xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
+pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
+ll := import("@platforma-sdk/workflow-tengo:ll")
+maps := import("@platforma-sdk/workflow-tengo:maps")
+json := import("json")
+
+computeNeighboursTpl := assets.importTemplate(":compute-neighbours")
+applyThresholdTpl := assets.importTemplate(":apply-threshold")
+
+wf.prepare(func(args) {
+	bb := wf.createPBundleBuilder()
+	bb.ignoreMissingDomains()
+	bb.addAnchor("main", args.inputRef)
+
+	// nt CDR3 — sibling sharing the same axes; same VDJ feature, nucleotide alphabet.
+	bb.addSingle({
+		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		name: "pl7.app/vdj/sequence",
+		domain: {
+			"pl7.app/vdj/feature": "CDR3",
+			"pl7.app/alphabet": "nucleotide"
+		}
+	}, "ntCDR3")
+
+	// Primary abundance — sibling sharing the same axes, isPrimary annotation.
+	bb.addSingle({
+		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		annotations: {
+			"pl7.app/isAbundance": "true",
+			"pl7.app/abundance/isPrimary": "true"
+		}
+	}, "abundance")
+
+	return { columns: bb.build() }
+})
 
 wf.body(func(args) {
+	blockId := wf.blockId().getDataAsJson()
+	columns := args.columns
+
+	aaSpec := columns.getSpec(args.inputRef)
+	aaColumn := columns.getColumn(args.inputRef)
+	ntColumn := columns.getColumn("ntCDR3")
+	abundanceColumn := columns.getColumn("abundance")
+
+	// Chain pass-through from MiXCR's spec (R28 — verbatim, no IGHeavy/IGLight
+	// translation). The chain may live on the column spec's domain or on the
+	// clonotype-key axis domain; check both.
+	chain := aaSpec.domain["pl7.app/vdj/chain"]
+	if is_undefined(chain) {
+		chain = aaSpec.axesSpec[1].domain["pl7.app/vdj/chain"]
+	}
+	ll.assert(!is_undefined(chain), "could not determine chain from input aa CDR3 spec")
+
+	// Combine aa + nt + abundance into one multi-sample TSV.
+	tsvBuilder := pframes.tsvFileBuilder()
+	tsvBuilder.cpu(2)
+	tsvBuilder.mem("4GiB")
+	tsvBuilder.setAxisHeader(aaSpec.axesSpec[0].name, "sampleId")
+	tsvBuilder.setAxisHeader(aaSpec.axesSpec[1].name, "clonotypeKey")
+	tsvBuilder.add(aaColumn, { header: "aaSeqCDR3" })
+	tsvBuilder.add(ntColumn, { header: "nSeqCDR3" })
+	tsvBuilder.add(abundanceColumn, { header: "abundance" })
+	inputTsv := tsvBuilder.build()
+
+	// Stage 1 — threshold-INDEPENDENT, expensive (R56).
+	stage1 := render.create(computeNeighboursTpl, {
+		inputTsv: inputTsv,
+		nMin: args.nMin,
+		chain: chain
+	})
+
+	// Stage 2 — threshold-dependent, cheap (R56).
+	stage2 := render.create(applyThresholdTpl, {
+		inputTsv: stage1.output("outputTsv"),
+		threshold: args.threshold,
+		chain: chain
+	})
+
+	// Import the Stage 2 TSV back into PColumns on the input axes (R31).
+	// Column domain double-tags block-instance + chain per R30. Domains and
+	// trace get injected uniformly below.
+	importSpec := {
+		axes: [
+			{ column: "sampleId", spec: aaSpec.axesSpec[0] },
+			{ column: "clonotypeKey", spec: aaSpec.axesSpec[1] }
+		],
+		columns: [
+			{
+				column: "neighbours",
+				spec: {
+					name: "pl7.app/vdj/convergence/neighbours",
+					valueType: "Int",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chain
+					},
+					annotations: {
+						"pl7.app/label": "Convergent neighbours (Hamming-1)",
+						"pl7.app/table/visibility": "optional"
+					}
+				}
+			},
+			{
+				column: "Nb_freq",
+				spec: {
+					name: "pl7.app/vdj/convergence/nbFreq",
+					valueType: "Double",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chain
+					},
+					annotations: {
+						"pl7.app/label": "Convergent neighbour frequency",
+						"pl7.app/table/visibility": "optional",
+						// R48 — last-run threshold dashed line on the histogram.
+						"pl7.app/graph/thresholds": string(json.encode([{ value: args.threshold, label: "Threshold" }]))
+					}
+				}
+			},
+			{
+				column: "fastStar",
+				spec: {
+					name: "pl7.app/vdj/convergence/fastStar",
+					valueType: "Int",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chain
+					},
+					annotations: {
+						"pl7.app/label": "Convergent hit (fast-STAR)",
+						"pl7.app/table/visibility": "default"
+					}
+				}
+			}
+		],
+		storageFormat: "Parquet",
+		partitionKeyLength: 0
+	}
+
+	importedFrames := xsv.importFile(stage2.output("outputTsv"), "tsv", importSpec, {
+		splitDataAndSpec: true,
+		mem: "4GiB",
+		cpu: 2
+	})
+
+	// Trace + chain identity flow through pSpec.makeTrace + trace.inject (R29).
+	trace := pSpec.makeTrace(aaSpec, {
+		type: "milaboratories.clonotype-convergence",
+		id: blockId,
+		importance: 50,
+		label: "Clonotype convergence (fast-STAR)"
+	})
+
+	pfBuilder := pframes.pFrameBuilder()
+	for k in maps.getKeys(importedFrames) {
+		v := importedFrames[k]
+		pfBuilder.add(k, trace.inject(v.spec), v.data)
+	}
+	outputPf := pfBuilder.build()
+
 	return {
-		outputs: {},
-		exports: {}
+		outputs: {
+			convergencePf: pframes.exportFrame(outputPf),
+			stage1Logs: stage1.output("logs"),
+			stage2Logs: stage2.output("logs")
+		},
+		exports: {
+			convergence: outputPf
+		}
 	}
 })
