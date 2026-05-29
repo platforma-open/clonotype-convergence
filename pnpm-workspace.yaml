@@ -23,6 +23,8 @@ catalog:
   "@milaboratories/graph-maker": 1.4.4
   "@milaboratories/helpers": 1.14.2
 
+  "canonicalize": 2.1.0
+
   "vue": 3.5.24
 
   "turbo": 2.8.11

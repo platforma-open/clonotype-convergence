@@ -14,6 +14,7 @@
     "@platforma-open/milaboratories.clonotype-convergence.model": "workspace:*",
     "@platforma-sdk/model": "catalog:",
     "@platforma-sdk/ui-vue": "catalog:",
+    "canonicalize": "catalog:",
     "vue": "catalog:"
   },
   "devDependencies": {
