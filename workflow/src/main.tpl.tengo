@@ -1,15 +1,21 @@
 // Clonotype convergence — main workflow template.
 //
-// Resolves the picked aa CDR3 PColumn (args.inputRef) plus its nt CDR3
-// and abundance siblings, combines them into one multi-sample TSV via
+// Resolves three sibling PColumns on the (sampleId, clonotypeKey) axes
+// of args.inputRef — aa CDR3, nt CDR3, abundance — for the chain named
+// by args.chain. Combines them into one multi-sample TSV via
 // pframes.tsvFileBuilder, then runs two pure templates: Stage 1
-// (compute-neighbours, no threshold) and Stage 2 (apply-threshold).
-// Stage 1's threshold-free cache key survives threshold tweaks (R56).
+// (compute-neighbours, threshold-INDEPENDENT, R56) and Stage 2
+// (apply-threshold, threshold-DEPENDENT). Imports Stage 2's TSV back
+// into three PColumns with chain-tagged column domains (R30) and
+// pSpec.makeTrace provenance (R29).
 //
-// Phase 3 MVP: heavy chain only, single Stage 1 invocation processes
-// all samples (Python groups by sampleId column). pframes.processColumn
-// per-sample fan-out (R34) is a deferred follow-up; this version trades
-// per-sample caching for a smaller blast radius on first build.
+// Phase 3 → 4: chain comes from args.chain (set by the model). Sibling
+// queries are chain-scoped via the domain selector so a multi-chain
+// dataset (IGH + IGK) doesn't return both chains' columns.
+//
+// Per-sample fan-out via pframes.processColumn (R34) is still deferred;
+// Python groups by sampleId column on the multi-sample TSV. See the
+// commit body of 59657d6 for the trade-off note.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
@@ -17,7 +23,6 @@ render := import("@platforma-sdk/workflow-tengo:render")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
-ll := import("@platforma-sdk/workflow-tengo:ll")
 maps := import("@platforma-sdk/workflow-tengo:maps")
 json := import("json")
 
@@ -26,22 +31,40 @@ applyThresholdTpl := assets.importTemplate(":apply-threshold")
 
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
+	// ignoreMissingDomains makes the chain domain selector lenient when
+	// MiXCR puts chain on the clonotype-key axis instead of the column
+	// domain itself.
 	bb.ignoreMissingDomains()
 	bb.addAnchor("main", args.inputRef)
 
-	// nt CDR3 — sibling sharing the same axes; same VDJ feature, nucleotide alphabet.
+	// aa CDR3 (the STAR input) — chain-scoped sibling.
 	bb.addSingle({
 		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
 		name: "pl7.app/vdj/sequence",
 		domain: {
 			"pl7.app/vdj/feature": "CDR3",
-			"pl7.app/alphabet": "nucleotide"
+			"pl7.app/alphabet": "aminoacid",
+			"pl7.app/vdj/chain": args.chain
+		}
+	}, "aaCDR3")
+
+	// nt CDR3 (multiplicity weighting input).
+	bb.addSingle({
+		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		name: "pl7.app/vdj/sequence",
+		domain: {
+			"pl7.app/vdj/feature": "CDR3",
+			"pl7.app/alphabet": "nucleotide",
+			"pl7.app/vdj/chain": args.chain
 		}
 	}, "ntCDR3")
 
-	// Primary abundance — sibling sharing the same axes, isPrimary annotation.
+	// Primary abundance for the chain.
 	bb.addSingle({
 		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		domain: {
+			"pl7.app/vdj/chain": args.chain
+		},
 		annotations: {
 			"pl7.app/isAbundance": "true",
 			"pl7.app/abundance/isPrimary": "true"
@@ -54,20 +77,12 @@ wf.prepare(func(args) {
 wf.body(func(args) {
 	blockId := wf.blockId().getDataAsJson()
 	columns := args.columns
+	chain := args.chain
 
-	aaSpec := columns.getSpec(args.inputRef)
-	aaColumn := columns.getColumn(args.inputRef)
+	aaSpec := columns.getSpec("aaCDR3")
+	aaColumn := columns.getColumn("aaCDR3")
 	ntColumn := columns.getColumn("ntCDR3")
 	abundanceColumn := columns.getColumn("abundance")
-
-	// Chain pass-through from MiXCR's spec (R28 — verbatim, no IGHeavy/IGLight
-	// translation). The chain may live on the column spec's domain or on the
-	// clonotype-key axis domain; check both.
-	chain := aaSpec.domain["pl7.app/vdj/chain"]
-	if is_undefined(chain) {
-		chain = aaSpec.axesSpec[1].domain["pl7.app/vdj/chain"]
-	}
-	ll.assert(!is_undefined(chain), "could not determine chain from input aa CDR3 spec")
 
 	// Combine aa + nt + abundance into one multi-sample TSV.
 	tsvBuilder := pframes.tsvFileBuilder()
@@ -95,8 +110,7 @@ wf.body(func(args) {
 	})
 
 	// Import the Stage 2 TSV back into PColumns on the input axes (R31).
-	// Column domain double-tags block-instance + chain per R30. Domains and
-	// trace get injected uniformly below.
+	// Column domain double-tags block-instance + chain per R30.
 	importSpec := {
 		axes: [
 			{ column: "sampleId", spec: aaSpec.axesSpec[0] },
