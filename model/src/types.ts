@@ -42,7 +42,9 @@ export type BlockData = {
   // UI-only state (never projects to args). Phase 5 wires these.
   settingsOpen?: boolean;
   logsOpen?: boolean;
-  mainTableState?: PlDataTableStateV2;
+  /** Required (initialised by dataModel.init); PlAgDataTableV2's v-model
+   *  expects a defined value. */
+  mainTableState: PlDataTableStateV2;
 
   // Phase 7 placeholders (light-chain picker + LC threshold).
   lightChainPick?: "IGK" | "IGL";

@@ -22,7 +22,8 @@
   },
   "dependencies": {
     "@milaboratories/helpers": "catalog:",
-    "@platforma-sdk/model": "catalog:"
+    "@platforma-sdk/model": "catalog:",
+    "canonicalize": "catalog:"
   },
   "devDependencies": {
     "@milaboratories/ts-builder": "catalog:",

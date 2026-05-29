@@ -1,5 +1,6 @@
 import type { InferOutputsType, PColumnSpec, PlRef, RenderCtxBase } from "@platforma-sdk/model";
 import { BlockModelV3, createPlDataTableV3 } from "@platforma-sdk/model";
+import canonicalize from "canonicalize";
 import { blockDataModel } from "./dataModel";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 
@@ -131,11 +132,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
   )
 
   // Live facts about the currently picked ref — feeds the UI's
-  // `PlAlert` mirror (R9) and the dropdown handler that snapshots into
-  // `data.inputDerivedFacts` (R8).
+  // `PlAlert` mirror (R9). Re-derives each render so a stale snapshot
+  // surfaces a fresh mismatch banner without waiting for the user to
+  // re-touch the dropdown.
   .output("upstreamFacts", (ctx) => {
     if (!ctx.data.inputRef) return undefined;
     return discoverUpstreamFacts(ctx, ctx.data.inputRef);
+  })
+
+  // Parallel map keyed by canonical(PlRef) → UpstreamFacts for every
+  // candidate dropdown option. The UI dropdown's user-gesture handler
+  // reads this to write `data.inputRef` and `data.inputDerivedFacts`
+  // in the same tick — the snapshot pattern from model.md, no
+  // watcher-driven hairpin (R8).
+  .output("factsByRef", (ctx) => {
+    const options = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
+    const result: Record<string, UpstreamFacts> = {};
+    for (const opt of options) {
+      const facts = discoverUpstreamFacts(ctx, opt.ref);
+      if (facts) {
+        const key = canonicalize(opt.ref as unknown as Record<string, unknown>);
+        if (key !== undefined) result[key] = facts;
+      }
+    }
+    return result;
   })
 
   // Single log handle from Stage 1 (the bulk of per-sample info — drops,
