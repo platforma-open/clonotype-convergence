@@ -1,27 +1,30 @@
 """Stage 1 — multiplicity-weighted Hamming-1 aa CDR3 neighbour count.
 
-Wraps statbiophys/STAR's Get_df (vendored to ./get_df.py). For each
-clonotype row, emits the multiplicity-weighted neighbour count and the
-normalised neighbour frequency. Threshold is intentionally NOT consumed
-here so this stage's pure-template cache survives threshold tweaks (R56).
+Wraps statbiophys/STAR's Get_df (vendored to ./get_df.py). Threshold is
+intentionally NOT consumed here so this stage's pure-template cache
+survives threshold tweaks (R56).
 
 CLI:
     compute_neighbours.py
         --input <tsv>
         --output <tsv>
         --nMin <int>
-        --sample-id <str>
         --chain <str>
+        [--sample-column <name>]   # defaults to sampleId; pass empty to disable
 
-Input TSV must contain `aaSeqCDR3` and `nSeqCDR3` columns. Additional
-columns (e.g. clonotype-key axes, abundance) are passed through unchanged.
+Input TSV must contain `aaSeqCDR3` and `nSeqCDR3` columns. If
+`--sample-column` (default `sampleId`) is present, rows are grouped by
+that column and Get_df runs independently per group. Otherwise the
+whole TSV is treated as one sample.
+
+Other columns (clonotype-key axis, abundance, etc.) pass through.
 
 Output TSV is the input TSV with three columns appended:
     multiplicity  — nt-CDR3 count per aa CDR3 (informational)
     neighbours    — multiplicity-weighted Hamming-1 neighbour count
     Nb_freq       — neighbours / N_nt (continuous density)
 
-Structured stdout per R44 — one event per line, prefixed
+Per-group structured stdout per R44 — one event per line, prefixed
 ``[sample <id>, chain <chain>]``.
 """
 
@@ -45,8 +48,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--nMin", required=True, type=int)
-    parser.add_argument("--sample-id", required=True, dest="sample_id")
     parser.add_argument("--chain", required=True)
+    parser.add_argument(
+        "--sample-column",
+        default="sampleId",
+        dest="sample_column",
+        help="Column to group rows by (pass empty string to disable grouping).",
+    )
     return parser.parse_args()
 
 
@@ -54,23 +62,20 @@ def log(prefix: str, msg: str) -> None:
     print(f"{prefix} {msg}", flush=True)
 
 
-def main() -> int:
-    args = parse_args()
-    prefix = f"[sample {args.sample_id}, chain {args.chain}]"
-    t0 = time.monotonic()
-
-    df = pd.read_csv(args.input, sep="\t")
-    log(prefix, f"input rows: {len(df)}")
-
-    required = {"aaSeqCDR3", "nSeqCDR3"}
-    missing = required - set(df.columns)
-    if missing:
-        log(prefix, f"error: input TSV missing required columns: {sorted(missing)}")
-        return 2
+def process_group(
+    group_df: pd.DataFrame,
+    sample_id: str,
+    chain: str,
+    n_min: int,
+):
+    """Run Get_df on one sample's rows. Returns annotated dataframe, or
+    None if the group fails the nMin floor."""
+    prefix = f"[sample {sample_id}, chain {chain}]"
+    log(prefix, f"input rows: {len(group_df)}")
 
     # Drop rows with null / empty / NaN in either CDR3 column (R13).
-    before = len(df)
-    df = df[df["aaSeqCDR3"].notna() & df["nSeqCDR3"].notna()]
+    before = len(group_df)
+    df = group_df[group_df["aaSeqCDR3"].notna() & group_df["nSeqCDR3"].notna()]
     df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
     dropped = before - len(df)
     if dropped > 0:
@@ -81,16 +86,14 @@ def main() -> int:
     log(prefix, f"unique nt CDR3: {n_nt}")
     log(prefix, f"unique aa CDR3: {n_aa}")
 
-    # Sample-size floor (R11, R12).
-    if n_nt < args.nMin:
+    if n_nt < n_min:
         log(
             prefix,
-            f"error: unique nt CDR3 count {n_nt} below nMin {args.nMin}; "
-            "sample skipped (N_nt below the floor where neighbour density is meaningful)",
+            f"error: unique nt CDR3 count {n_nt} below nMin {n_min}; "
+            "group skipped (N_nt below the floor where neighbour density is meaningful)",
         )
-        return 3
+        return None
 
-    # Reliability warning (R11). Hardcoded 10 000 per spec.
     if n_nt < SAMPLE_SIZE_WARN:
         log(
             prefix,
@@ -98,13 +101,9 @@ def main() -> int:
             "signal may be unreliable (paper-reported lower bound for stable STAR estimates)",
         )
 
-    # Get_df expects a DataFrame with at least aaSeqCDR3 and nSeqCDR3.
-    # Pass a clean view restricted to those columns to avoid surprising it.
     star_input = df[["aaSeqCDR3", "nSeqCDR3"]].reset_index(drop=True)
-    per_aa = Get_df(star_input).make()  # one row per unique aa CDR3
+    per_aa = Get_df(star_input).make()
 
-    # Join the per-aa stats back onto the original per-row table by aaSeqCDR3
-    # so every input clonotype row carries the value for its aa CDR3.
     stats = per_aa.rename(
         columns={
             "Neighbours": "neighbours",
@@ -113,13 +112,64 @@ def main() -> int:
         }
     )[["aaSeqCDR3", "multiplicity", "neighbours", "Nb_freq"]]
     out = df.merge(stats, on="aaSeqCDR3", how="left")
+    log(prefix, f"output rows: {len(out)}")
+    return out
 
+
+def main() -> int:
+    args = parse_args()
+    t0 = time.monotonic()
+
+    df = pd.read_csv(args.input, sep="\t")
+
+    required = {"aaSeqCDR3", "nSeqCDR3"}
+    missing = required - set(df.columns)
+    if missing:
+        print(f"error: input TSV missing required columns: {sorted(missing)}", flush=True)
+        return 2
+
+    sample_col = args.sample_column.strip() if args.sample_column else ""
+    grouping = bool(sample_col) and sample_col in df.columns
+
+    outputs = []
+    skipped = []
+
+    if grouping:
+        sample_ids = sorted(df[sample_col].astype(str).unique().tolist())
+        for sample_id in sample_ids:
+            group = df[df[sample_col].astype(str) == sample_id]
+            result = process_group(group, sample_id, args.chain, args.nMin)
+            if result is None:
+                skipped.append(sample_id)
+                continue
+            outputs.append(result)
+    else:
+        result = process_group(df, "all", args.chain, args.nMin)
+        if result is None:
+            return 3
+        outputs.append(result)
+
+    if not outputs:
+        print(
+            f"[chain {args.chain}] error: all groups below nMin; "
+            f"skipped sample ids: {skipped}",
+            flush=True,
+        )
+        return 3
+
+    if skipped:
+        print(
+            f"[chain {args.chain}] skipped groups (below nMin): {skipped}",
+            flush=True,
+        )
+
+    out = pd.concat(outputs, ignore_index=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, sep="\t", index=False)
 
     elapsed = time.monotonic() - t0
-    log(prefix, f"elapsed: {elapsed:.2f}s")
-    log(prefix, "compute-neighbours done")
+    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s", flush=True)
+    print(f"[chain {args.chain}] compute-neighbours done", flush=True)
     return 0
 
 
