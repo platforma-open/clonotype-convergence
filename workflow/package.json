@@ -1,0 +1,21 @@
+{
+  "name": "@platforma-open/milaboratories.clonotype-convergence.workflow",
+  "version": "1.0.0",
+  "description": "Block Workflow",
+  "type": "module",
+  "scripts": {
+    "build": "shx rm -rf dist && pl-tengo check && pl-tengo build",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@platforma-open/milaboratories.clonotype-convergence.software": "workspace:*",
+    "@platforma-sdk/workflow-tengo": "catalog:"
+  },
+  "devDependencies": {
+    "@platforma-sdk/tengo-builder": "catalog:",
+    "@platforma-sdk/test": "catalog:"
+  },
+  "peerDependencies": {
+    "vitest": "*"
+  }
+}
