@@ -1,0 +1,11 @@
+// Clonotype convergence — main workflow template (scaffold).
+// Phase 3 fills in the per-sample-chain pipeline.
+
+wf := import("@platforma-sdk/workflow-tengo:workflow")
+
+wf.body(func(args) {
+	return {
+		outputs: {},
+		exports: {}
+	}
+})
