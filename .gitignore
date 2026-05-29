@@ -12,3 +12,5 @@ software/**/*.tgz
 .vscode/sftp.json
 test-dry-run.json
 /.idea
+__pycache__/
+*.pyc
