@@ -235,10 +235,31 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
-          // Hide everything by default; convergence outputs flip back
-          // to "default" via their own annotation. Phase 5 may refine.
+          // Hide upstream MiXCR + sibling-block enrichments from the
+          // table (and from the column-visibility panel — see SDK quirk
+          // note below). Keep:
+          //  - axis-label columns (sample / clonotype keys), so the
+          //    user sees what each row IS
+          //  - convergence outputs, which carry their own visibility
+          //    annotations per pcolumn-schema.md
+          //
+          // SDK quirk: `visibility: "hidden"` here removes columns from
+          // the column-visibility panel entirely (R52's "discoverable
+          // but hidden by default" isn't reachable via this API). When
+          // the SDK adds an "in-panel-but-unchecked" override value,
+          // switch to that for the proper R52 experience.
           {
-            match: (spec: PColumnSpec) => !spec.name.startsWith("pl7.app/vdj/convergence/"),
+            match: (spec: PColumnSpec) => {
+              // Keep axis-derived label columns visible.
+              if (spec.name === "pl7.app/label") return false;
+              if (spec.name === "pl7.app/sampleId") return false;
+              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
+              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
+              // Keep convergence outputs (rely on their own annotations).
+              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
+              // Hide everything else.
+              return true;
+            },
             visibility: "hidden",
           },
         ],
