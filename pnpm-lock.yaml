@@ -109,6 +109,9 @@ importers:
 
   model:
     dependencies:
+      '@milaboratories/graph-maker':
+        specifier: 'catalog:'
+        version: 1.4.4(@milaboratories/pl-model-common@1.42.0)(@platforma-sdk/model@1.77.4)(@platforma-sdk/ui-vue@1.77.4(@bytecodealliance/preview2-shim@0.17.9)(@vue/compiler-dom@3.5.35)(@vue/server-renderer@3.5.24(vue@3.5.24(typescript@6.0.3)))(typescript@6.0.3))(d3-dispatch@3.0.1)(d3-path@3.1.0)(d3-scale-chromatic@3.1.0)(typescript@6.0.3)
       '@milaboratories/helpers':
         specifier: 'catalog:'
         version: 1.14.2
@@ -7560,7 +7563,7 @@ snapshots:
       oxlint: 1.63.0
       oxlint-plugin-eslint: 1.63.0
       rolldown: 1.0.3
-      rolldown-plugin-dts: 0.23.2(rolldown@1.0.3)(typescript@5.9.3)(vue-tsc@3.3.2(typescript@5.9.3))
+      rolldown-plugin-dts: 0.23.2(rolldown@1.0.3)(typescript@5.9.3)(vue-tsc@3.3.2(typescript@6.0.3))
       rollup-plugin-copy: 3.5.0
       rollup-plugin-sourcemaps2: 0.5.7(@types/node@25.9.1)(rollup@4.60.4)
       typescript: 5.9.3
@@ -12909,7 +12912,7 @@ snapshots:
 
   reusify@1.1.0: {}
 
-  rolldown-plugin-dts@0.23.2(rolldown@1.0.3)(typescript@5.9.3)(vue-tsc@3.3.2(typescript@5.9.3)):
+  rolldown-plugin-dts@0.23.2(rolldown@1.0.3)(typescript@5.9.3)(vue-tsc@3.3.2(typescript@6.0.3)):
     dependencies:
       '@babel/generator': 8.0.0-rc.3
       '@babel/helper-validator-identifier': 8.0.0-rc.3
