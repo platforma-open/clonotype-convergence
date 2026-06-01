@@ -21,6 +21,7 @@
     "test": "vitest --run --passWithNoTests"
   },
   "dependencies": {
+    "@milaboratories/graph-maker": "catalog:",
     "@milaboratories/helpers": "catalog:",
     "@platforma-sdk/model": "catalog:",
     "canonicalize": "catalog:"

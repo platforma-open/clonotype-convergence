@@ -1,3 +1,4 @@
+import type { GraphMakerState } from "@milaboratories/graph-maker";
 import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 
 /**
@@ -45,6 +46,10 @@ export type BlockData = {
   /** Required (initialised by dataModel.init); PlAgDataTableV2's v-model
    *  expects a defined value. */
   mainTableState: PlDataTableStateV2;
+
+  /** Heavy-chain histogram graph state (Phase 6). Required field —
+   *  initialised by dataModel.init for GraphMaker v-model typing. */
+  graphStateHistogramHeavy: GraphMakerState;
 
   // Phase 7 placeholders (light-chain picker + LC threshold).
   lightChainPick?: "IGK" | "IGL";

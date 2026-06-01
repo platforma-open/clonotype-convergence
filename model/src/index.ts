@@ -1,5 +1,11 @@
-import type { InferOutputsType, PColumnSpec, PlRef, RenderCtxBase } from "@platforma-sdk/model";
-import { BlockModelV3, createPlDataTableV3 } from "@platforma-sdk/model";
+import type {
+  InferOutputsType,
+  PColumnSpec,
+  PFrameHandle,
+  PlRef,
+  RenderCtxBase,
+} from "@platforma-sdk/model";
+import { BlockModelV3, createPFrameForGraphs, createPlDataTableV3 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import { blockDataModel } from "./dataModel";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
@@ -202,6 +208,27 @@ export const platforma = BlockModelV3.create(blockDataModel)
   .retentiveOutput("runLogs", (ctx) => ctx.outputs?.resolve("stage1Logs")?.getLogHandle())
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
+
+  // Histogram p-frame for the heavy-chain page (Phase 6). Wraps the
+  // workflow's convergencePf via createPFrameForGraphs so GraphMaker
+  // can consume it. retentive prevents flicker on threshold tweaks.
+  // R50 — retentiveOutput on histogram p-frames.
+  .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
+    const pCols = ctx.outputs?.resolve("convergencePf")?.getPColumns();
+    if (pCols === undefined) return undefined;
+    return createPFrameForGraphs(ctx, pCols);
+  })
+
+  // Column specs for GraphMaker's PredefinedGraphOption defaults.
+  // The heavy-chain histogram page picks the nbFreq column by name.
+  .output("histogramPfPcols", (ctx) => {
+    const pCols = ctx.outputs?.resolve("convergencePf")?.getPColumns();
+    if (pCols === undefined || pCols.length === 0) return undefined;
+    return pCols.map((c) => ({
+      columnId: c.id,
+      spec: c.spec,
+    }));
+  })
 
   // Main page table (R52). Anchored discovery from `data.inputRef`;
   // non-convergence columns hidden by default — convergence outputs
