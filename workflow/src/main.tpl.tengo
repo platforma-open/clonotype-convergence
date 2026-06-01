@@ -37,29 +37,35 @@ wf.prepare(func(args) {
 	bb.ignoreMissingDomains()
 	bb.addAnchor("main", args.inputRef)
 
-	// aa CDR3 (the STAR input) — chain-scoped sibling.
+	// MiXCR partitions per-clonotype data (CDR3, V/J, etc.) on a
+	// single-axis frame [clonotypeKey] and per-(sample, clonotype) data
+	// (abundance) on a two-axis frame. tsvFileBuilder joins across
+	// frames on the shared clonotypeKey axis automatically.
+
+	// aa CDR3 — per-clonotype, single-axis sibling.
+	// Chain isn't in the column domain on MiXCR's CDR3 sequence columns —
+	// it lives on the clonotype-key axis domain. The anchored axes:1
+	// match already restricts us to the anchor's chain, so we don't
+	// constrain chain in the column domain selector here.
 	bb.addSingle({
-		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		axes: [{ anchor: "main", idx: 1 }],
 		name: "pl7.app/vdj/sequence",
 		domain: {
 			"pl7.app/vdj/feature": "CDR3",
-			"pl7.app/alphabet": "aminoacid",
-			"pl7.app/vdj/chain": args.chain
+			"pl7.app/alphabet": "aminoacid"
 		}
 	}, "aaCDR3")
 
-	// nt CDR3 (multiplicity weighting input).
 	bb.addSingle({
-		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
+		axes: [{ anchor: "main", idx: 1 }],
 		name: "pl7.app/vdj/sequence",
 		domain: {
 			"pl7.app/vdj/feature": "CDR3",
-			"pl7.app/alphabet": "nucleotide",
-			"pl7.app/vdj/chain": args.chain
+			"pl7.app/alphabet": "nucleotide"
 		}
 	}, "ntCDR3")
 
-	// Primary abundance for the chain.
+	// Primary abundance for the chain — per-(sample, clonotype), two-axis sibling.
 	bb.addSingle({
 		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
 		domain: {
@@ -79,20 +85,19 @@ wf.body(func(args) {
 	columns := args.columns
 	chain := args.chain
 
-	aaSpec := columns.getSpec("aaCDR3")
-	aaColumn := columns.getColumn("aaCDR3")
-	ntColumn := columns.getColumn("ntCDR3")
-	abundanceColumn := columns.getColumn("abundance")
+	// Anchor IS the primary abundance column (see prepare comment).
+	// columns.getColumn returns a {spec, data} object that tsvFileBuilder
+	// accepts directly (cf. clonotype-clustering's seqTableBuilder usage).
+	anchorSpec := columns.getSpec(args.inputRef)
 
-	// Combine aa + nt + abundance into one multi-sample TSV.
 	tsvBuilder := pframes.tsvFileBuilder()
 	tsvBuilder.cpu(2)
 	tsvBuilder.mem("4GiB")
-	tsvBuilder.setAxisHeader(aaSpec.axesSpec[0].name, "sampleId")
-	tsvBuilder.setAxisHeader(aaSpec.axesSpec[1].name, "clonotypeKey")
-	tsvBuilder.add(aaColumn, { header: "aaSeqCDR3" })
-	tsvBuilder.add(ntColumn, { header: "nSeqCDR3" })
-	tsvBuilder.add(abundanceColumn, { header: "abundance" })
+	tsvBuilder.setAxisHeader(anchorSpec.axesSpec[0].name, "sampleId")
+	tsvBuilder.setAxisHeader(anchorSpec.axesSpec[1].name, "clonotypeKey")
+	tsvBuilder.add(columns.getColumn("aaCDR3"), { header: "aaSeqCDR3" })
+	tsvBuilder.add(columns.getColumn("ntCDR3"), { header: "nSeqCDR3" })
+	tsvBuilder.add(columns.getColumn(args.inputRef), { header: "abundance" })
 	inputTsv := tsvBuilder.build()
 
 	// Stage 1 — threshold-INDEPENDENT, expensive (R56).
@@ -113,8 +118,8 @@ wf.body(func(args) {
 	// Column domain double-tags block-instance + chain per R30.
 	importSpec := {
 		axes: [
-			{ column: "sampleId", spec: aaSpec.axesSpec[0] },
-			{ column: "clonotypeKey", spec: aaSpec.axesSpec[1] }
+			{ column: "sampleId", spec: anchorSpec.axesSpec[0] },
+			{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }
 		],
 		columns: [
 			{
@@ -176,7 +181,7 @@ wf.body(func(args) {
 	})
 
 	// Trace + chain identity flow through pSpec.makeTrace + trace.inject (R29).
-	trace := pSpec.makeTrace(aaSpec, {
+	trace := pSpec.makeTrace(anchorSpec, {
 		type: "milaboratories.clonotype-convergence",
 		id: blockId,
 		importance: 50,

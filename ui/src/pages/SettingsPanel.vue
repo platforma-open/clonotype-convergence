@@ -29,23 +29,34 @@ function onPickInput(ref: PlRef | undefined) {
 // surfaces when the snapshot in `data.inputDerivedFacts` no longer
 // matches the upstream pool (e.g. user picked an input, then the
 // upstream block re-ran with different chains).
+// Mirror exactly the args lambda's chain naming (IGHeavy domain value,
+// not the IGH per-row code from `topChains`). Each MiXCR anchor is
+// chain-specific; we only accept the dataset's IGHeavy anchor for now.
+// Light-chain handling is Phase 7.
 const alertMessage = computed<string | undefined>(() => {
   const live = app.model.outputs.upstreamFacts;
   if (live === undefined) return undefined;
   if (app.model.data.inputRef === undefined) return undefined;
 
-  const tcr = live.chains.filter((c) => c.startsWith("TR"));
+  const tcr = live.chains.filter((c) => c.startsWith("TCR"));
   if (tcr.length > 0) {
-    return `Selected dataset contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`;
+    return `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`;
   }
-  if (!live.chains.includes("IGH")) {
-    return "Selected dataset has no heavy-chain (IGH) input — re-select an input.";
+  const chain = live.chains[0];
+  if (live.chains.length === 0) {
+    return "Selected input has no detectable chain — re-select an input.";
+  }
+  if (live.chains.length > 1) {
+    return `Selected input spans multiple chains (${live.chains.join(", ")}).`;
+  }
+  if (chain !== "IGHeavy") {
+    return `Selected input chain is "${chain}", not IGHeavy. Pick the IG Heavy anchor — light chain support is Phase 7.`;
   }
   if (!live.hasAaCDR3 || !live.hasNtCDR3) {
-    return "Selected dataset is missing required CDR3 columns — re-select an input.";
+    return "Selected input is missing required CDR3 columns — re-select an input.";
   }
   if (!live.hasAbundance) {
-    return "Selected dataset has no abundance column — re-select an input.";
+    return "Selected input has no abundance column — re-select an input.";
   }
   return undefined;
 });
