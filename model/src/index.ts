@@ -188,28 +188,18 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return result;
   })
 
-  // Single log handle from Stage 1 (the bulk of per-sample info — drops,
-  // unique counts, warnings). Stage 2 logs are exposed separately for
-  // Phase 5 to decide on combining vs. picking. R45.
-  .output("runLogs", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage1Logs",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getLogHandle(),
-  )
-
-  .output("stage2Logs", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage2Logs",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getLogHandle(),
-  )
+  // Single log handle from Stage 1 — the bulk of per-sample info (drops,
+  // unique counts, warnings). R45.
+  //
+  // Stage 2's stdout (threshold + hit count + elapsed) isn't surfaced;
+  // the same facts are visible in the table directly. If a multi-step
+  // log view is needed later, switch to peptide-extraction's
+  // pcolumn.resourceMapBuilder pattern (one log per step keyed by name).
+  //
+  // retentiveOutput keeps the last stable handle visible during
+  // re-derivations so PlLogView doesn't blink between empty and
+  // populated.
+  .retentiveOutput("runLogs", (ctx) => ctx.outputs?.resolve("stage1Logs")?.getLogHandle())
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
 
