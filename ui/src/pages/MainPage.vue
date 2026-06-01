@@ -46,16 +46,16 @@ const tableSettings = usePlDataTableSettingsV2({
 <template>
   <PlBlockPage title="Clonotype Convergence">
     <template #append>
-      <PlBtnGhost @click.stop="() => (ui.activePanel = 'settings')">
-        Settings
-        <template #append>
-          <PlMaskIcon24 name="settings" />
-        </template>
-      </PlBtnGhost>
       <PlBtnGhost @click.stop="() => (ui.activePanel = 'logs')">
         Logs
         <template #append>
           <PlMaskIcon24 name="file-logs" />
+        </template>
+      </PlBtnGhost>
+      <PlBtnGhost @click.stop="() => (ui.activePanel = 'settings')">
+        Settings
+        <template #append>
+          <PlMaskIcon24 name="settings" />
         </template>
       </PlBtnGhost>
     </template>
@@ -64,6 +64,7 @@ const tableSettings = usePlDataTableSettingsV2({
       v-model="app.model.data.mainTableState"
       :settings="tableSettings"
       show-columns-panel
+      show-export-button
       :loading-text="app.model.outputs.isRunning ? 'Running' : undefined"
       not-ready-text="Select an input dataset and press Run to see clonotypes."
     />

@@ -56,11 +56,18 @@ def main() -> int:
     df["fastStar"] = (df["Nb_freq"] > args.threshold).astype(int)
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
+    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
+
     if sample_col and sample_col in df.columns:
         for sample_id, group in df.groupby(df[sample_col].astype(str), sort=True):
             hits = int(group["fastStar"].sum())
+            display = (
+                str(group[label_col].iloc[0])
+                if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
+                else sample_id
+            )
             print(
-                f"[sample {sample_id}, chain {args.chain}] "
+                f"[sample {display}, chain {args.chain}] "
                 f"threshold: {args.threshold}, hit count: {hits} / {len(group)}",
                 flush=True,
             )

@@ -65,6 +65,16 @@ wf.prepare(func(args) {
 		}
 	}, "ntCDR3")
 
+	// Sample label — single-axis sibling on sampleId only.
+	// Used in Python log prefixes so messages match the names the user
+	// sees in the table. Optional: addMulti so a project without
+	// sample labels (e.g., upstream blocks that don't emit them) still
+	// runs — Python falls back to sampleId.
+	bb.addMulti({
+		axes: [{ anchor: "main", idx: 0 }],
+		name: "pl7.app/label"
+	}, "sampleLabel")
+
 	// Primary abundance for the chain — per-(sample, clonotype), two-axis sibling.
 	bb.addSingle({
 		axes: [{ anchor: "main", idx: 0 }, { anchor: "main", idx: 1 }],
@@ -98,6 +108,13 @@ wf.body(func(args) {
 	tsvBuilder.add(columns.getColumn("aaCDR3"), { header: "aaSeqCDR3" })
 	tsvBuilder.add(columns.getColumn("ntCDR3"), { header: "nSeqCDR3" })
 	tsvBuilder.add(columns.getColumn(args.inputRef), { header: "abundance" })
+	// Sample label — pick the first matching label column (typically
+	// just one in workspace practice). Optional: if no label column is
+	// present, the Python script falls back to sampleId for log prefixes.
+	labelCols := columns.getColumns("sampleLabel")
+	if len(labelCols) > 0 {
+		tsvBuilder.add(labelCols[0], { header: "sampleLabel" })
+	}
 	inputTsv := tsvBuilder.build()
 
 	// Stage 1 — threshold-INDEPENDENT, expensive (R56).

@@ -6,6 +6,6 @@ const app = useApp();
 </script>
 
 <template>
-  <PlLogView v-if="app.model.outputs.runLogs" :handle="app.model.outputs.runLogs" />
+  <PlLogView v-if="app.model.outputs.runLogs" :log-handle="app.model.outputs.runLogs" />
   <p v-else>Run the block to see logs.</p>
 </template>

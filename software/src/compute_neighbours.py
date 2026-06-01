@@ -130,6 +130,9 @@ def main() -> int:
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     grouping = bool(sample_col) and sample_col in df.columns
+    # Prefer the human-readable sample label for log prefixes when the
+    # workflow attached one; fall back to the raw sampleId otherwise.
+    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
     outputs = []
     skipped = []
@@ -138,9 +141,14 @@ def main() -> int:
         sample_ids = sorted(df[sample_col].astype(str).unique().tolist())
         for sample_id in sample_ids:
             group = df[df[sample_col].astype(str) == sample_id]
-            result = process_group(group, sample_id, args.chain, args.nMin)
+            display = (
+                str(group[label_col].iloc[0])
+                if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
+                else sample_id
+            )
+            result = process_group(group, display, args.chain, args.nMin)
             if result is None:
-                skipped.append(sample_id)
+                skipped.append(display)
                 continue
             outputs.append(result)
     else:
