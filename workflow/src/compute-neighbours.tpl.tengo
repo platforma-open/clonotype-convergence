@@ -28,6 +28,7 @@ self.body(func(inputs) {
 		arg("--chain").arg(chain).
 		addFile("input.tsv", inputTsv).
 		saveFile("output.tsv").
+		saveStdoutStream().
 		run()
 
 	return {

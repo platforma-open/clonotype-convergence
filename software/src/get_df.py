@@ -19,8 +19,12 @@
 import os
 import numpy as np
 import pandas as pd
-from numba import jit
 import atriegc
+
+# Note: upstream STAR imports `from numba import jit` here, but never
+# actually applies @jit anywhere in this file. We drop the import to
+# avoid bundling numba in the runenv unnecessarily — the algorithm
+# runs at the same speed without it.
 
 
 class Get_df:
