@@ -153,17 +153,27 @@ def main() -> int:
             outputs.append(result)
     else:
         result = process_group(df, "all", args.chain, args.nMin)
-        if result is None:
-            return 3
-        outputs.append(result)
+        if result is not None:
+            outputs.append(result)
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
 
     if not outputs:
+        # All groups below nMin — emit an empty (header-only) TSV and
+        # exit 0 so the downstream pipeline (Stage 2 + xsv.importFile)
+        # produces empty PColumns rather than the whole workflow
+        # aborting. The UI surfaces "no data" naturally via the empty
+        # histogram pframe / table rows.
         print(
-            f"[chain {args.chain}] error: all groups below nMin; "
-            f"skipped sample ids: {skipped}",
+            f"[chain {args.chain}] warning: all groups below nMin "
+            f"(skipped: {skipped}); emitting empty output",
             flush=True,
         )
-        return 3
+        empty = pd.DataFrame(
+            columns=list(df.columns) + ["multiplicity", "neighbours", "Nb_freq"]
+        )
+        empty.to_csv(args.output, sep="\t", index=False)
+        return 0
 
     if skipped:
         print(
@@ -172,7 +182,6 @@ def main() -> int:
         )
 
     out = pd.concat(outputs, ignore_index=True)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, sep="\t", index=False)
 
     elapsed = time.monotonic() - t0
