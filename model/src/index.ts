@@ -182,12 +182,28 @@ export const platforma = BlockModelV3.create(blockDataModel)
       };
     }
 
+    // Cluster filter (R58). Toggle off by default; when on, clusterMin
+    // is required (no silent fallback per R53). Field is initialised in
+    // dataModel.init so a fresh block always has a value, but we still
+    // guard against the user clearing it through the field.
+    const applyClusterFilter = data.applyClusterFilter ?? false;
+    const clusterProjected: { clusterMin: number } | {} = applyClusterFilter
+      ? (() => {
+          if (data.clusterMin === undefined) {
+            throw new Error("Minimum cluster size is required");
+          }
+          return { clusterMin: data.clusterMin };
+        })()
+      : {};
+
     return {
       inputRef: data.inputRef,
       inputDerivedFacts: facts,
       chain,
       threshold: data.threshold,
       nMin: data.nMin,
+      applyClusterFilter,
+      ...clusterProjected,
       ...lcProjected,
     };
   })
@@ -324,7 +340,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // Reflects the last-run threshold (same as the histogram's dashed
   // line).
   .output("heavyHitStats", (ctx) =>
-    ctx.outputs?.resolve("heavyHitStats")?.getDataAsJson<{ above: number; total: number }>(),
+    ctx.outputs
+      ?.resolve("heavyHitStats")
+      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
   // Light-chain histogram outputs (Phase 7). Mirror the heavy-chain
@@ -367,7 +385,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
-      ?.getDataAsJson<{ above: number; total: number }>(),
+      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
   // Main page table (R52). Anchored discovery from `data.inputRef`;

@@ -4,10 +4,20 @@
 // a light chain via the model's snapshot (args.lightChainRef +
 // args.lightChainName), a parallel LC pipeline runs against that anchor
 // and emits a second set of convergence PColumns chain-tagged with the
-// LC chain domain value. Both pipelines reuse the same two pure
-// templates (compute-neighbours + apply-threshold) — Stage 1's
-// content-addressed cache means each chain's expensive work is
-// recovered on its own.
+// LC chain domain value.
+//
+// Per-chain pipeline (R34, R56, R60):
+//   Stage 1 (:compute-neighbours, pure, always) — expensive STAR run;
+//           cache survives threshold tweaks.
+//   Stage 2 (:apply-threshold,    pure, always) — strict-> threshold,
+//           cheap; cache invalidated only by threshold.
+//   Stage 3 (:cluster-filter,     pure, conditional on
+//           args.applyClusterFilter, v1.x per R58) — paper's binder
+//           filter (DBSCAN + Levenshtein-1, cluster-min); demotes
+//           sequences not in a surviving cluster from fastStar=1 to
+//           fastStar=0. Cache keyed on (stage2Output, clusterMin).
+// The final p-frame imports Stage 3's output when the toggle is on,
+// Stage 2's output when it's off.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
@@ -20,6 +30,7 @@ json := import("json")
 
 computeNeighboursTpl := assets.importTemplate(":compute-neighbours")
 applyThresholdTpl := assets.importTemplate(":apply-threshold")
+clusterFilterTpl := assets.importTemplate(":cluster-filter")
 
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
@@ -121,64 +132,103 @@ wf.body(func(args) {
 			chain: chainName
 		})
 
+		// Stage 3 (R58, R60) — paper's binder cluster filter. When
+		// args.applyClusterFilter is on, render the template and use
+		// its output downstream; when off, skip it entirely.
+		// `finalTsv` is what gets pumped into the p-frame builder.
+		// `finalStatsJson` feeds the hit-count badge — Stage 3 emits
+		// its own stats.json so the badge reflects post-cluster hits.
+		finalTsv := stage2.output("outputTsv")
+		finalStatsJson := stage2.output("statsJson")
+		if args.applyClusterFilter {
+			stage3 := render.create(clusterFilterTpl, {
+				inputTsv: stage2.output("outputTsv"),
+				clusterMin: args.clusterMin,
+				chain: chainName
+			})
+			finalTsv = stage3.output("outputTsv")
+			finalStatsJson = stage3.output("statsJson")
+		}
+
+		columnSpecs := [
+			{
+				column: "neighbours",
+				spec: {
+					name: "pl7.app/vdj/convergence/neighbours",
+					valueType: "Int",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chainName
+					},
+					annotations: {
+						"pl7.app/label": "Convergent neighbours (Hamming-1)",
+						"pl7.app/table/visibility": "default"
+					}
+				}
+			},
+			{
+				column: "Nb_freq",
+				spec: {
+					name: "pl7.app/vdj/convergence/nbFreq",
+					valueType: "Double",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chainName
+					},
+					annotations: {
+						"pl7.app/label": "Convergent neighbour frequency",
+						"pl7.app/table/visibility": "default",
+						"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }]))
+					}
+				}
+			},
+			{
+				column: "fastStar",
+				spec: {
+					name: "pl7.app/vdj/convergence/fastStar",
+					valueType: "Int",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chainName
+					},
+					annotations: {
+						"pl7.app/label": "Convergent hit (fast-STAR)",
+						"pl7.app/table/visibility": "default"
+					}
+				}
+			}
+		]
+		// clusterSize column is emitted by Stage 3 only — include in the
+		// import schema only when the cluster filter is on. xsv.importFile
+		// would error on a declared-but-missing column otherwise.
+		if args.applyClusterFilter {
+			columnSpecs = append(columnSpecs, {
+				column: "clusterSize",
+				spec: {
+					name: "pl7.app/vdj/convergence/clusterSize",
+					valueType: "Int",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chainName
+					},
+					annotations: {
+						"pl7.app/label": "Convergent cluster size",
+						"pl7.app/table/visibility": "default"
+					}
+				}
+			})
+		}
 		importSpec := {
 			axes: [
 				{ column: "sampleId", spec: anchorSpec.axesSpec[0] },
 				{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }
 			],
-			columns: [
-				{
-					column: "neighbours",
-					spec: {
-						name: "pl7.app/vdj/convergence/neighbours",
-						valueType: "Int",
-						domain: {
-							"pl7.app/block": blockId,
-							"pl7.app/vdj/chain": chainName
-						},
-						annotations: {
-							"pl7.app/label": "Convergent neighbours (Hamming-1)",
-							"pl7.app/table/visibility": "optional"
-						}
-					}
-				},
-				{
-					column: "Nb_freq",
-					spec: {
-						name: "pl7.app/vdj/convergence/nbFreq",
-						valueType: "Double",
-						domain: {
-							"pl7.app/block": blockId,
-							"pl7.app/vdj/chain": chainName
-						},
-						annotations: {
-							"pl7.app/label": "Convergent neighbour frequency",
-							"pl7.app/table/visibility": "optional",
-							"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }]))
-						}
-					}
-				},
-				{
-					column: "fastStar",
-					spec: {
-						name: "pl7.app/vdj/convergence/fastStar",
-						valueType: "Int",
-						domain: {
-							"pl7.app/block": blockId,
-							"pl7.app/vdj/chain": chainName
-						},
-						annotations: {
-							"pl7.app/label": "Convergent hit (fast-STAR)",
-							"pl7.app/table/visibility": "default"
-						}
-					}
-				}
-			],
+			columns: columnSpecs,
 			storageFormat: "Parquet",
 			partitionKeyLength: 0
 		}
 
-		importedFrames := xsv.importFile(stage2.output("outputTsv"), "tsv", importSpec, {
+		importedFrames := xsv.importFile(finalTsv, "tsv", importSpec, {
 			splitDataAndSpec: true,
 			mem: "4GiB",
 			cpu: 2
@@ -199,7 +249,7 @@ wf.body(func(args) {
 		return {
 			pf: pfBuilder.build(),
 			stage1Logs: stage1.output("logs"),
-			statsJson: stage2.output("statsJson")
+			statsJson: finalStatsJson
 		}
 	}
 

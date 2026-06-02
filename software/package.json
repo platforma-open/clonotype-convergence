@@ -45,6 +45,15 @@
             "{pkg}/apply_threshold.py"
           ]
         }
+      },
+      "cluster-filter": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "{pkg}/cluster_filter.py"
+          ]
+        }
       }
     }
   }

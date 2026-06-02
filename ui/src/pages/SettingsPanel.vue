@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { plRefsEqual, type PlRef } from "@platforma-sdk/model";
-import { PlAccordionSection, PlAlert, PlDropdownRef, PlNumberField } from "@platforma-sdk/ui-vue";
+import {
+  PlAccordionSection,
+  PlAlert,
+  PlCheckbox,
+  PlDropdownRef,
+  PlNumberField,
+  PlTooltip,
+} from "@platforma-sdk/ui-vue";
 import canonicalize from "canonicalize";
 import { computed } from "vue";
 import { useApp } from "../app";
@@ -143,12 +150,13 @@ const alertMessage = computed<string | undefined>(() => {
   </PlDropdownRef>
 
   <PlNumberField
-    v-if="app.model.data.lightChainPick !== undefined"
+    v-if="hasLightChainOptions"
     :model-value="app.model.data.thresholdL"
     label="Light-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
+    :disabled="app.model.data.lightChainPick === undefined"
     @update:model-value="(v) => (app.model.data.thresholdL = v)"
   >
     <template #tooltip>
@@ -159,6 +167,39 @@ const alertMessage = computed<string | undefined>(() => {
   </PlNumberField>
 
   <PlAccordionSection label="Advanced settings">
+    <!-- Cluster filter (R58, Phase 7.5). Off by default; matches v1
+         threshold-only semantics. When on, fastStar additionally
+         requires the clone's CDR3 to lie in a Hamming/Levenshtein-1
+         cluster of size >= clusterMin (paper's binder definition). -->
+    <PlCheckbox
+      :model-value="app.model.data.applyClusterFilter ?? false"
+      @update:model-value="(v) => (app.model.data.applyClusterFilter = v)"
+    >
+      Apply cluster filter
+      <PlTooltip class="info" position="top">
+        <template #tooltip>
+          Further restrict hits to clonotypes that lie in a Hamming/Levenshtein-1 cluster of size at
+          least the threshold below. Mitigates noise from sequencing errors and matches Abbate et
+          al. 2024's headline "binder" definition. Default off — keeps the threshold-only semantics.
+        </template>
+      </PlTooltip>
+    </PlCheckbox>
+
+    <PlNumberField
+      :model-value="app.model.data.clusterMin"
+      label="Minimum cluster size"
+      :min="1"
+      :step="1"
+      :disabled="!app.model.data.applyClusterFilter"
+      required
+      @update:model-value="(v) => (app.model.data.clusterMin = v)"
+    >
+      <template #tooltip>
+        Minimum number of similar clonotypes (Hamming/Levenshtein-1 cluster) required for a hit to
+        survive the binder filter. Paper default is 10.
+      </template>
+    </PlNumberField>
+
     <PlNumberField
       :model-value="app.model.data.nMin"
       label="Minimum unique CDR3 per sample"
