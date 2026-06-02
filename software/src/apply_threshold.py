@@ -10,17 +10,21 @@ CLI:
         --threshold <float>
         --chain <str>
         [--sample-column <name>]   # defaults to sampleId
+        [--stats-json <path>]      # write {above, total} for the badge (R49)
 
 Adds one column to the input TSV:
     fastStar  — Int 0/1 hit flag, strict inequality nb_freq > threshold (R32).
                 Nb_freq == threshold is NOT a hit.
 
 Per-group hit counts logged when sample column is present (R44).
+When `--stats-json` is given, writes a small JSON sidecar with the
+cross-sample hit-count and total, consumed by the UI badge (R49).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -39,6 +43,7 @@ def parse_args() -> argparse.Namespace:
         default="sampleId",
         dest="sample_column",
     )
+    parser.add_argument("--stats-json", type=Path, dest="stats_json")
     return parser.parse_args()
 
 
@@ -81,6 +86,14 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.output, sep="\t", index=False)
+
+    if args.stats_json is not None:
+        stats = {
+            "above": int(df["fastStar"].sum()),
+            "total": int(len(df)),
+        }
+        args.stats_json.parent.mkdir(parents=True, exist_ok=True)
+        args.stats_json.write_text(json.dumps(stats))
 
     elapsed = time.monotonic() - t0
     print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s", flush=True)
