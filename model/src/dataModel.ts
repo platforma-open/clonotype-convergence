@@ -15,6 +15,10 @@ export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(
   threshold: 0.000961,
   thresholdL: 0.000961,
   nMin: 100,
+  // Cluster filter (R58, Phase 7.5) — off by default to preserve v1
+  // semantics. Paper default 10 for cluster_min when the toggle is on.
+  applyClusterFilter: false,
+  clusterMin: 10,
   // Heavy-chain histogram graph state (Phase 6). Initial settings:
   // bins template, log Y axis (long-tail signal — most clones have
   // small Nb_freq, a few have very large).

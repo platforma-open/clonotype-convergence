@@ -29,6 +29,16 @@ export type BlockArgs = {
   /** Sample-size floor (R12). Default 100. */
   nMin: number;
 
+  // Optional cluster filter (R58, Phase 7.5).
+  /** When true, run Stage 3 (binder cluster filter) after Stage 2 and
+   *  demote sequences not in a surviving cluster from fastStar=1 to 0.
+   *  Off by default — matches v1 threshold-only semantics (R32). */
+  applyClusterFilter: boolean;
+  /** DBSCAN min_samples for the binder cluster filter. Projected only
+   *  when applyClusterFilter is true (otherwise the field is omitted
+   *  from args; Stage 3 doesn't run so the value doesn't matter). */
+  clusterMin?: number;
+
   // Light chain — present when the user picked one via the settings
   // picker AND it was discoverable in the upstream pool (Phase 7, R18).
   /** PlRef of the LC anchor from the same clonotyping run. */
@@ -48,6 +58,11 @@ export type BlockData = {
   chain?: string;
   threshold?: number;
   nMin?: number;
+
+  // Cluster filter (R58, Phase 7.5). Toggle + cluster-min. Both
+  // project to args when the toggle is on.
+  applyClusterFilter?: boolean;
+  clusterMin?: number;
 
   // UI-only state (never projects to args).
   settingsOpen?: boolean;

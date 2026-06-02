@@ -50,10 +50,20 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       :p-frame="app.model.outputs.histogramPf"
       :default-options="defaultOptions"
     >
-      <template v-if="hitStats && hitStats.above > 0" #titleLineSlot>
+      <template
+        v-if="hitStats && (hitStats.above > 0 || (hitStats.beforeCluster ?? 0) > 0)"
+        #titleLineSlot
+      >
         <span :class="$style.hitStats">
-          {{ hitStats.above.toLocaleString() }} of {{ hitStats.total.toLocaleString() }}
-          above threshold (all samples)
+          <template v-if="hitStats.beforeCluster !== undefined">
+            {{ hitStats.beforeCluster.toLocaleString() }} above threshold ·
+            {{ hitStats.above.toLocaleString() }} passed cluster filter (of
+            {{ hitStats.total.toLocaleString() }}, all samples)
+          </template>
+          <template v-else>
+            {{ hitStats.above.toLocaleString() }} of {{ hitStats.total.toLocaleString() }}
+            above threshold (all samples)
+          </template>
         </span>
       </template>
     </GraphMaker>

@@ -99,7 +99,7 @@ const customBlockLabel = computed({
     />
   </PlBlockPage>
 
-  <PlSlideModal v-model="settingsOpen" :shadow="true" width="40%">
+  <PlSlideModal v-model="settingsOpen" :shadow="true">
     <template #title>Settings</template>
     <SettingsPanel />
   </PlSlideModal>
