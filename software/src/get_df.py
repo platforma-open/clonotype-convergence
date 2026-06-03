@@ -25,6 +25,17 @@ import atriegc
 # actually applies @jit anywhere in this file. We drop the import to
 # avoid bundling numba in the runenv unnecessarily — the algorithm
 # runs at the same speed without it.
+#
+# PATCH (2026-06-02, MILAB-6354): upstream `neighbours()` had two
+# compounding performance bugs that made it ~hours-slow on real-world
+# inputs (~100K unique CDR3s):
+#   1. `self.multiplicity()` was called inside the inner per-neighbour
+#      loop — recomputed the entire dict O(N×K) times instead of once.
+#   2. `df_nb.loc[k1, col] = value` per row triggers pandas dtype
+#      checks + (in 2.x) copy-on-write per assignment — N×slow vs.
+#      one bulk column build.
+# Both fixes are algebraic; same result, dramatically faster (verified
+# on SRR8377674 / 83K CDR3s: ~30+ min → seconds).
 
 
 class Get_df:
@@ -54,29 +65,39 @@ class Get_df:
 
 
     def neighbours(self):
-        distance =1
+        distance = 1
         tr = atriegc.TrieAA()
-        df_nb=pd.DataFrame(self.data["aaSeqCDR3"])
-        df_nb.drop_duplicates("aaSeqCDR3",inplace=True)
-        df_nb.reset_index(drop=True,inplace=True)
-        df_nb=df_nb.assign(nb_neighbours_real=0)
-        df_nb=df_nb.assign(nb_freq=0)
-        n_df=len(df_nb)
+        df_nb = pd.DataFrame(self.data["aaSeqCDR3"])
+        df_nb.drop_duplicates("aaSeqCDR3", inplace=True)
+        df_nb.reset_index(drop=True, inplace=True)
+        n_df = len(df_nb)
+
+        # Hoist multiplicity() out of the loop (PATCH point 1) —
+        # it's invariant; upstream recomputed it N×K times.
+        dic, n_un = self.multiplicity()
+
         for k1 in range(n_df):
             tr.insert(df_nb["aaSeqCDR3"][k1])
+
+        # Collect per-row results in plain lists, build columns once
+        # (PATCH point 2) — upstream used df_nb.loc[k1, col]=value per
+        # row, which is ~100-1000× slower than bulk column assignment
+        # in pandas 2.x.
+        nb_neighbours_real = [0] * n_df
+        nb_freq = [0.0] * n_df
         for k1 in range(n_df):
-            a=(tr.neighbours(df_nb["aaSeqCDR3"][k1], distance))
-            c=0
-            for k in range(len(a)):
-                d=a[k]
-                dic,n_un=self.multiplicity()
-                b=int(dic[d])
-                c+=b
-            df_nb.loc[k1,"nb_neighbours_real"]=c-1
-            df_nb.loc[k1,"nb_freq"]=(c-1)/n_un
-        temp=df_nb.set_index("aaSeqCDR3").to_dict()["nb_neighbours_real"]
-        temp1=df_nb.set_index("aaSeqCDR3").to_dict()["nb_freq"]
-        return temp,temp1
+            a = tr.neighbours(df_nb["aaSeqCDR3"][k1], distance)
+            c = 0
+            for d in a:
+                c += int(dic[d])
+            nb_neighbours_real[k1] = c - 1
+            nb_freq[k1] = (c - 1) / n_un
+        df_nb["nb_neighbours_real"] = nb_neighbours_real
+        df_nb["nb_freq"] = nb_freq
+
+        temp = df_nb.set_index("aaSeqCDR3").to_dict()["nb_neighbours_real"]
+        temp1 = df_nb.set_index("aaSeqCDR3").to_dict()["nb_freq"]
+        return temp, temp1
 
     def make(self):
         df_read=pd.DataFrame(self.data["aaSeqCDR3"])
