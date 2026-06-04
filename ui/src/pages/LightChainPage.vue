@@ -24,7 +24,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       selectedSource: nbFreq.spec,
     },
     {
-      inputName: "tabBy",
+      inputName: "facetBy",
       selectedSource: nbFreq.spec.axesSpec[0],
     },
   ];

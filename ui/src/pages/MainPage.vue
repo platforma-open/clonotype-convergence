@@ -120,7 +120,6 @@ const customBlockLabel = computed({
       :settings="tableSettings"
       show-columns-panel
       show-export-button
-      :loading-text="app.model.outputs.isRunning ? 'Running' : undefined"
       not-ready-text="Select an input dataset and press Run to see clonotypes."
     />
   </PlBlockPage>

@@ -9,8 +9,8 @@ import { useApp } from "../app";
 const app = useApp();
 
 // Pre-fill GraphMaker with the heavy-chain nbFreq column as `value`
-// and the sampleId axis (axesSpec[0]) as `tabBy` so the user gets a
-// per-sample histogram switcher out of the box (R46). The threshold
+// and the sampleId axis (axesSpec[0]) as `facetBy` so the user gets
+// a per-sample histogram facet out of the box (R46). The threshold
 // dashed line is auto-rendered by GraphMaker from the
 // `pl7.app/graph/thresholds` annotation that workflow already emits
 // on this column (R48).
@@ -33,7 +33,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       selectedSource: nbFreq.spec,
     },
     {
-      inputName: "tabBy",
+      inputName: "facetBy",
       selectedSource: nbFreq.spec.axesSpec[0],
     },
   ];
