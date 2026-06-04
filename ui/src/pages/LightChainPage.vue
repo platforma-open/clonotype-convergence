@@ -1,0 +1,44 @@
+<script setup lang="ts">
+import type { PredefinedGraphOption } from "@milaboratories/graph-maker";
+import { GraphMaker } from "@milaboratories/graph-maker";
+import type { PColumnIdAndSpec } from "@platforma-sdk/model";
+import { PlBlockPage } from "@platforma-sdk/ui-vue";
+import { computed } from "vue";
+import { useApp } from "../app";
+
+const app = useApp();
+
+// R67 — restrict GraphMaker's value picker to nbFreq only.
+const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
+
+const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
+  const pcols = app.model.outputs.lightHistogramPfPcols;
+  if (!pcols) return undefined;
+  const nbFreq = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/nbFreq",
+  );
+  if (!nbFreq) return undefined;
+  return [
+    {
+      inputName: "value",
+      selectedSource: nbFreq.spec,
+    },
+    {
+      inputName: "facetBy",
+      selectedSource: nbFreq.spec.axesSpec[0],
+    },
+  ];
+});
+</script>
+
+<template>
+  <PlBlockPage no-body-gutters>
+    <GraphMaker
+      v-model="app.model.data.graphStateHistogramLight"
+      chartType="histogram"
+      :p-frame="app.model.outputs.lightHistogramPf"
+      :default-options="defaultOptions"
+      :data-column-predicate="nbFreqOnly"
+    />
+  </PlBlockPage>
+</template>

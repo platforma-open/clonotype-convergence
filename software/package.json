@@ -1,0 +1,63 @@
+{
+  "name": "@platforma-open/milaboratories.clonotype-convergence.software",
+  "version": "1.0.0",
+  "description": "Block Software",
+  "type": "module",
+  "scripts": {
+    "do-pack": "shx rm -f *.tgz && pl-pkg build && pnpm pack && shx mv platforma-open*.tgz package.tgz",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "build": "pl-pkg build",
+    "prepublishOnly": "pl-pkg prepublish"
+  },
+  "devDependencies": {
+    "@platforma-open/milaboratories.runenv-python-3": "catalog:",
+    "@platforma-sdk/package-builder": "catalog:"
+  },
+  "block-software": {
+    "artifacts": {
+      "py-archive": {
+        "type": "python",
+        "registry": "platforma-open",
+        "environment": "@platforma-open/milaboratories.runenv-python-3:3.12.10",
+        "dependencies": {
+          "toolset": "pip",
+          "requirements": "requirements.txt"
+        },
+        "root": "./src"
+      }
+    },
+    "entrypoints": {
+      "compute-neighbours": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/compute_neighbours.py"
+          ]
+        }
+      },
+      "apply-threshold": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/apply_threshold.py"
+          ]
+        }
+      },
+      "cluster-filter": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/cluster_filter.py"
+          ]
+        }
+      }
+    }
+  }
+}
