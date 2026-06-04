@@ -343,8 +343,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // one sample at a time. SDK pins to a single sample — there is no
   // "all samples" entry. Cross-sample comparison is left to downstream
   // blocks operating on the long-format PColumns.
+  //
+  // Gated on outputs readiness: when sheets is defined, the table
+  // settings skip their pending branch and the running-state overlay
+  // never appears. Returning undefined during a run keeps the table
+  // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
   .output("mainTableSheets", (ctx) => {
     if (!ctx.data.mainRef) return undefined;
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
     const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
