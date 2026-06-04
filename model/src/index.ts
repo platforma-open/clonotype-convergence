@@ -337,6 +337,21 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return discoverUpstreamFacts(ctx, ctx.data.mainRef);
   })
 
+  // Source identifier for the main table's per-source state cache.
+  // Derived from `activeArgs` (= the args that produced the CURRENT
+  // outputs), so it only changes after a Run completes — picking a
+  // new dataset before pressing Run doesn't flip the sourceId and the
+  // table stays put. After Run, the new sourceId triggers a fresh
+  // hidden-columns / sort state (so stale column IDs from the old
+  // dataset don't haunt the new one).
+  .output("mainTableSourceId", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    if (!args) return undefined;
+    const ref = args.chainH ?? args.chainL;
+    if (!ref) return undefined;
+    return canonicalize(ref as unknown as Record<string, unknown>);
+  })
+
   // R52 — sample picker above the mainTable. Extracts unique sampleId
   // partition keys from the picked anchor (which IS sample-partitioned
   // by MiXCR) and wraps them as a PlDataTableSheet so the table shows

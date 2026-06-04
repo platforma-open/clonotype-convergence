@@ -69,7 +69,13 @@ watch(
 // PlAgDataTableV2 settings — bound to the model's mainTable output (R52).
 // `sheets` adds the sample picker above the table (one sample at a
 // time; SDK pins to a single value).
+// `sourceId` is keyed on `mainTableSourceId` — a model output that
+// derives from `activeArgs`, NOT from the live edit state. That way
+// the per-source state cache (hidden columns, sort, filters) only
+// flips when a Run actually commits new args; picking a new dataset
+// before pressing Run doesn't reload the table or wipe its state.
 const tableSettings = usePlDataTableSettingsV2({
+  sourceId: () => app.model.outputs.mainTableSourceId,
   model: () => app.model.outputs.mainTable,
   sheets: () => app.model.outputs.mainTableSheets,
 });
