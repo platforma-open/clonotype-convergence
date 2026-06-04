@@ -14,10 +14,11 @@ const app = useApp();
 // dashed line is auto-rendered by GraphMaker from the
 // `pl7.app/graph/thresholds` annotation that workflow already emits
 // on this column (R48).
-// R49 — live hit-count badge. Reflects the LAST-RUN threshold (same
-// as the histogram's dashed line); derived from the workflow's
-// fastStar column.
-const hitStats = computed(() => app.model.outputs.heavyHitStats);
+
+// R67 — restrict GraphMaker's value picker to nbFreq only.
+// Default predicate would surface fastStar/neighbours/upstream cols
+// which aren't meaningful as the chart's continuous value.
+const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
 
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
   const pcols = app.model.outputs.histogramPfPcols;
@@ -49,32 +50,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       chartType="histogram"
       :p-frame="app.model.outputs.histogramPf"
       :default-options="defaultOptions"
-    >
-      <template
-        v-if="hitStats && (hitStats.above > 0 || (hitStats.beforeCluster ?? 0) > 0)"
-        #titleLineSlot
-      >
-        <span :class="$style.hitStats">
-          <template v-if="hitStats.beforeCluster !== undefined">
-            {{ hitStats.beforeCluster.toLocaleString() }} above threshold ·
-            {{ hitStats.above.toLocaleString() }} passed cluster filter (of
-            {{ hitStats.total.toLocaleString() }}, all samples)
-          </template>
-          <template v-else>
-            {{ hitStats.above.toLocaleString() }} of {{ hitStats.total.toLocaleString() }}
-            above threshold (all samples)
-          </template>
-        </span>
-      </template>
-    </GraphMaker>
+      :data-column-predicate="nbFreqOnly"
+    />
   </PlBlockPage>
 </template>
-
-<style module>
-.hitStats {
-  display: flex;
-  align-items: center;
-  opacity: 0.7;
-  font-size: 0.9em;
-}
-</style>

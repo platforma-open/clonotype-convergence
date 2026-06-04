@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def log(prefix: str, msg: str) -> None:
-    print(f"{prefix} {msg}", flush=True)
+    print(f"{prefix} {msg}")
 
 
 def process_group(
@@ -125,8 +125,27 @@ def main() -> int:
     required = {"aaSeqCDR3", "nSeqCDR3"}
     missing = required - set(df.columns)
     if missing:
-        print(f"error: input TSV missing required columns: {sorted(missing)}", flush=True)
+        print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
+
+    # Pre-grouping drop of rows with null/empty CDR3 fields. The
+    # workflow's TSV builder outer-joins by axis name, which can drag
+    # in spurious rows from project-wide siblings (e.g. the sampleLabel
+    # column carrying labels for samples that belong to a different
+    # MiXCR run with no clonotype-axis match). Those rows arrive with
+    # populated sampleId + sampleLabel but NULL CDR3s — they're not
+    # real per-sample groups for THIS anchor. Drop them before the
+    # per-sample iteration so they don't appear as fake "sample with
+    # 1 row" entries in the structured log (R13).
+    pre_drop_total = len(df)
+    df = df[df["aaSeqCDR3"].notna() & df["nSeqCDR3"].notna()]
+    df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
+    pre_dropped = pre_drop_total - len(df)
+    if pre_dropped > 0:
+        print(
+            f"[chain {args.chain}] dropped {pre_dropped} rows with null/empty "
+            "aaSeqCDR3 or nSeqCDR3 before per-sample grouping"
+        )
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     grouping = bool(sample_col) and sample_col in df.columns
@@ -166,8 +185,7 @@ def main() -> int:
         # histogram pframe / table rows.
         print(
             f"[chain {args.chain}] warning: all groups below nMin "
-            f"(skipped: {skipped}); emitting empty output",
-            flush=True,
+            f"(skipped: {skipped}); emitting empty output"
         )
         empty = pd.DataFrame(
             columns=list(df.columns) + ["multiplicity", "neighbours", "Nb_freq"]
@@ -177,16 +195,15 @@ def main() -> int:
 
     if skipped:
         print(
-            f"[chain {args.chain}] skipped groups (below nMin): {skipped}",
-            flush=True,
+            f"[chain {args.chain}] skipped groups (below nMin): {skipped}"
         )
 
     out = pd.concat(outputs, ignore_index=True)
     out.to_csv(args.output, sep="\t", index=False)
 
     elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s", flush=True)
-    print(f"[chain {args.chain}] compute-neighbours done", flush=True)
+    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    print(f"[chain {args.chain}] compute-neighbours done")
     return 0
 
 

@@ -14,7 +14,8 @@ export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
 
 // Datasets the dropdown offers — anchors on the clonotype-keyed axes
-// (R10). Single-cell variant uses scClonotypeKey instead of clonotypeKey.
+// (R10). Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
+// pl7.app/vdj/scClonotypeKey.
 const inputAnchorSpecs = [
   {
     axes: [{ name: "pl7.app/sampleId" }, { name: "pl7.app/vdj/clonotypeKey" }],
@@ -26,58 +27,81 @@ const inputAnchorSpecs = [
   },
 ];
 
-// Short human-readable subtitle showing the picked chain(s) and their
-// thresholds — shown in the project block list (via `.subtitle()`) AND
-// over the table in PlBlockPage (via the page's `subtitleText` output).
-// Returns undefined until enough is picked to be meaningful so callers
-// can fall back to a placeholder; `.subtitle()` coerces to "" because
-// the SDK type insists on a non-undefined string.
-function formatSubtitle(data: BlockData): string | undefined {
-  const heavyChain = data.inputDerivedFacts?.chains[0];
-  if (heavyChain === undefined || data.threshold === undefined) return undefined;
-  const friendly = (chain: string) => {
-    if (chain === "IGHeavy") return "Heavy";
-    if (chain === "IGLight") return "Light";
-    return chain;
-  };
-  const heavyPart = `${friendly(heavyChain)} ${data.threshold}`;
-  if (data.lightChainPick !== undefined && data.thresholdL !== undefined) {
-    return `${heavyPart} / ${friendly(data.lightChainPick)} ${data.thresholdL}`;
-  }
-  return heavyPart;
+const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
+
+// MiXCR chain DOMAIN values (R28). Heavy = "IGHeavy"; light family
+// includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
+// surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
+// TCRGamma/TCRDelta — filtered out at R10.
+const HEAVY_CHAIN = "IGHeavy";
+const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
+
+// SC anchors put receptor (not chain) in the axis domain. "IG" = BCR;
+// TCRAB / TCRGD = TCR families. Chain identity in SC lives on the
+// COLUMN domain via `scClonotypeChain` ("A" = heavy, "B" = light) plus
+// `scClonotypeChain/index` (primary / secondary allele).
+const SC_BCR_RECEPTOR = "IG";
+const SC_CHAIN_FROM_LETTER: Record<string, string> = { A: HEAVY_CHAIN, B: "IGLight" };
+const SC_LETTER_FROM_CHAIN: Record<string, string> = {
+  IGHeavy: "A",
+  IGLight: "B",
+  IGKappa: "B",
+  IGLambda: "B",
+};
+
+function isHeavy(chain: string | undefined): boolean {
+  return chain === HEAVY_CHAIN;
+}
+function isLight(chain: string | undefined): boolean {
+  return !!chain && LIGHT_CHAINS.has(chain);
 }
 
-// MiXCR's chain DOMAIN values (used in `domain["pl7.app/vdj/chain"]` on
-// column/axis specs — what we filter against): IGHeavy, IGLight,
-// TCRAlpha, TCRBeta, TCRGamma, TCRDelta. From `chainInfos` keys in
-// mixcr-clonotyping/workflow/src/process.tpl.tengo.
-//
-// MiXCR also exposes a `topChains` per-clonotype VALUE column whose
-// values are "IGH"/"IGK"/"IGL"/"TRA"/... — those are the codes from the
-// `pl7.app/discreteValues` annotation, used for filtering ROWS, not for
-// tagging which chain a column belongs to. Spec R28 was based on the
-// second namespace and is wrong for our domain queries.
+// Friendly chain name for user-facing strings (R64 — no raw IGHeavy /
+// IGLight in copy). Subtitle (R55), section labels, etc.
+function friendlyChain(chain: string): string {
+  if (chain === "IGHeavy") return "Heavy";
+  if (chain === "IGLight") return "Light";
+  if (chain === "IGKappa") return "Light (κ)";
+  if (chain === "IGLambda") return "Light (λ)";
+  return chain;
+}
+
+// R55 subtitle — derived from the populated chain slots in `data`.
+// Empty when not enough is picked to be meaningful (the page header
+// renders the placeholder, project list falls back to "").
+function formatSubtitle(data: BlockData): string | undefined {
+  const parts: string[] = [];
+  const chains = data.mainRefFacts?.chains ?? [];
+  const heavy = chains.find(isHeavy);
+  const light = chains.find(isLight);
+  if (heavy && data.thresholdH !== undefined) {
+    parts.push(`${friendlyChain(heavy)} ${data.thresholdH}`);
+  }
+  if (light && data.thresholdL !== undefined) {
+    parts.push(`${friendlyChain(light)} ${data.thresholdL}`);
+  }
+  return parts.length === 0 ? undefined : parts.join(" / ");
+}
 
 /**
  * Walk the siblings of `ref` on its shared axes and aggregate facts:
- * which chains appear and whether the required CDR3 + abundance siblings
- * are present anywhere among them. Used both by the live `upstreamFacts`
- * output (UI mirror, R9) and by the UI's snapshot writer (R8) — same
- * shape, evaluated on every render against the current pool.
+ * which chains appear, whether the required CDR3 + abundance siblings
+ * are present, and the axis name (drives R61 mode detection).
  */
 function discoverUpstreamFacts<A, U>(
   ctx: RenderCtxBase<A, U>,
   ref: PlRef,
 ): UpstreamFacts | undefined {
-  // Bail when the ref no longer resolves in the pool — the picked
-  // input may have been removed, moved below this block, or invalidated
-  // by an upstream rerun. The dropdown's own "value not in options"
-  // hint covers the UX side; we just avoid querying a stale ref.
-  if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
-  // MiXCR partitions its outputs across two axis frames:
-  //  - per-(sample, clonotype): abundance columns (axes = [sampleId, clonotypeKey])
-  //  - per-clonotype:          CDR3 sequence + V/J + per-clonotype fields (axes = [clonotypeKey])
-  // The anchored selector matches axes exactly, so we need both queries.
+  const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
+  if (!refSpec) return undefined;
+  // Axis name of the second axis = clonotype-key axis. Drives R61
+  // mode detection and the BULK-vs-SC handling below.
+  const axisName = refSpec.axesSpec[1]?.name ?? "";
+  const isSC = axisName === SC_AXIS;
+
+  // MiXCR partitions outputs across two axis frames: per-(sample,
+  // clonotype) and per-clonotype. The anchored selector matches axes
+  // exactly, so we need both queries.
   const perSampleClonotype =
     ctx.resultPool.getAnchoredPColumns({ main: ref }, [
       {
@@ -92,189 +116,224 @@ function discoverUpstreamFacts<A, U>(
     [];
 
   const chains = new Set<string>();
-  let hasAaCDR3 = false;
-  let hasNtCDR3 = false;
-  let hasAbundance = false;
+  // Track presence flags PER CHAIN — necessary in SC mode where the
+  // SAME anchor carries siblings for both heavy and light chains and
+  // we need to know whether each chain has its full CDR3 + abundance
+  // sibling set. In bulk mode there's only one chain so this
+  // collapses to the old behaviour.
+  const hasAaCDR3: Record<string, boolean> = {};
+  const hasNtCDR3: Record<string, boolean> = {};
+  const hasAbundance: Record<string, boolean> = {};
 
   for (const col of [...perSampleClonotype, ...perClonotype]) {
     const spec = col.spec;
-    // Chain lives on column domain (abundance/CDR3 sequence on MiXCR's
-    // per-sample table) OR on the clonotype-key axis domain. Try both
-    // axes — for the per-clonotype frame the axis is at index 0.
-    const chain =
-      spec.domain?.["pl7.app/vdj/chain"] ??
-      spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"] ??
-      spec.axesSpec[0]?.domain?.["pl7.app/vdj/chain"];
+
+    // Chain identity differs between bulk and SC outputs from MiXCR:
+    //   - Bulk: chain in axis domain or column domain via `pl7.app/vdj/chain`.
+    //   - SC: chain in column domain via `pl7.app/vdj/scClonotypeChain`
+    //         (letter "A"/"B"; map to IGHeavy/IGLight). Skip secondary
+    //         alleles — only the primary allele counts as a valid input
+    //         (matches sequence-properties' deviation A).
+    let chain: string | undefined;
+    if (isSC) {
+      const idx = spec.domain?.["pl7.app/vdj/scClonotypeChain/index"];
+      if (idx !== undefined && idx !== "primary") continue;
+      const letter = spec.domain?.["pl7.app/vdj/scClonotypeChain"];
+      if (letter) chain = SC_CHAIN_FROM_LETTER[letter];
+    } else {
+      chain =
+        spec.domain?.["pl7.app/vdj/chain"] ??
+        spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"] ??
+        spec.axesSpec[0]?.domain?.["pl7.app/vdj/chain"];
+    }
     if (chain) chains.add(chain);
 
+    // Track per-chain sibling presence. `chain ?? ""` buckets
+    // chain-agnostic siblings under "" — useful for bulk where the
+    // chain is implicit on the anchor itself.
+    const key = chain ?? "";
     if (spec.name === "pl7.app/vdj/sequence" && spec.domain?.["pl7.app/vdj/feature"] === "CDR3") {
       const alphabet = spec.domain["pl7.app/alphabet"];
-      if (alphabet === "aminoacid") hasAaCDR3 = true;
-      if (alphabet === "nucleotide") hasNtCDR3 = true;
+      if (alphabet === "aminoacid") hasAaCDR3[key] = true;
+      if (alphabet === "nucleotide") hasNtCDR3[key] = true;
     }
     if (spec.annotations?.["pl7.app/isAbundance"] === "true") {
-      hasAbundance = true;
+      hasAbundance[key] = true;
     }
   }
 
+  // Bulk mode: presence flags hang under the lone detected chain (or
+  // "" for chain-agnostic). Reduce to scalars by ORing across keys.
+  const anyTrue = (m: Record<string, boolean>) => Object.values(m).some(Boolean);
+
   return {
     chains: Array.from(chains).sort(),
-    hasAaCDR3,
-    hasNtCDR3,
-    hasAbundance,
+    hasAaCDR3: anyTrue(hasAaCDR3),
+    hasNtCDR3: anyTrue(hasNtCDR3),
+    hasAbundance: anyTrue(hasAbundance),
+    axisName,
   };
 }
 
+// R66 — chainL is only populated when the user makes it explicit:
+//  - bulk-light MAIN pick (only chain → chainL ← main), or
+//  - any other main + secondary lightRef set (chainL ← lightRef).
+// SC main never auto-populates chainL even though both chains hang
+// off the same anchor — the user opts in via the LC picker.
+
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
-    if (!data.inputRef) throw new Error("Input dataset is required");
-    if (!data.inputDerivedFacts) {
-      throw new Error("Input snapshot missing — re-select the input dataset");
+    if (!data.mainRef || !data.mainRefFacts) {
+      throw new Error("Select a dataset");
     }
-    const facts = data.inputDerivedFacts;
+    const mainFacts = data.mainRefFacts;
+    const mainIsSC = mainFacts.axisName === SC_AXIS;
 
-    // The dropdown is filtered to IGHeavy anchors, so the picked ref is
-    // the dataset's heavy-chain entry. The checks below are a safety net
-    // for stale snapshots (upstream changed after the user picked).
-    if (facts.chains.length === 0) {
-      throw new Error("Selected input has no detectable chain — re-select an input");
-    }
-    if (facts.chains.length > 1) {
+    // ---- R5 staleness checks on the main pick ---------------------
+    const tcr = mainFacts.chains.filter((c) => c.startsWith("TCR"));
+    if (tcr.length > 0) {
       throw new Error(
-        `Selected input spans multiple chains (${facts.chains.join(", ")}); ` +
-          "expected a single chain per anchor",
+        `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`,
+      );
+    }
+    if (!mainFacts.hasAaCDR3) throw new Error("Selected input is missing the aa CDR3 column.");
+    if (!mainFacts.hasNtCDR3) throw new Error("Selected input is missing the nt CDR3 column.");
+    if (!mainFacts.hasAbundance) throw new Error("Selected input is missing an abundance column.");
+
+    // ---- Heavy slot (always from main when main has heavy) --------
+    let chainH: PlRef | undefined;
+    let chainHName: string | undefined;
+    const mainHeavy = mainFacts.chains.find(isHeavy);
+    if (mainHeavy) {
+      chainH = data.mainRef;
+      chainHName = mainHeavy;
+    }
+
+    // ---- Light slot (explicit per R66) ----------------------------
+    // Two sources, mutually exclusive:
+    //  1. main is bulk-light  → chainL ← main pick;
+    //  2. secondary lightRef set → chainL ← lightRef (bulk-heavy main
+    //     + bulk-light secondary, OR SC main + SC secondary opt-in).
+    let chainL: PlRef | undefined;
+    let chainLName: string | undefined;
+    let chainLFacts: UpstreamFacts | undefined;
+    const mainLight = mainFacts.chains.find(isLight);
+    if (mainLight && !mainHeavy) {
+      chainL = data.mainRef;
+      chainLName = mainLight;
+      chainLFacts = mainFacts;
+    } else if (data.lightRef && data.lightRefFacts) {
+      const lightName = data.lightRefFacts.chains.find(isLight);
+      if (lightName) {
+        chainL = data.lightRef;
+        chainLName = lightName;
+        chainLFacts = data.lightRefFacts;
+      }
+    }
+    if (chainL && chainLFacts) {
+      if (!chainLFacts.hasAaCDR3)
+        throw new Error("Light-chain input is missing the aa CDR3 column.");
+      if (!chainLFacts.hasNtCDR3)
+        throw new Error("Light-chain input is missing the nt CDR3 column.");
+      if (!chainLFacts.hasAbundance) throw new Error("Light-chain input has no abundance column.");
+    }
+
+    if (!chainH && !chainL) {
+      throw new Error(
+        `Selected dataset chains are ${mainFacts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
       );
     }
 
-    const chain = facts.chains[0];
-    if (chain !== "IGHeavy") {
-      throw new Error(
-        `Selected input chain is "${chain}", not IGHeavy. ` +
-          "Pick the IG Heavy anchor — light-chain processing lands in Phase 7.",
-      );
-    }
-
-    if (!facts.hasAaCDR3) throw new Error("Selected input has no aa CDR3 column");
-    if (!facts.hasNtCDR3) throw new Error("Selected input has no nt CDR3 column");
-    if (!facts.hasAbundance) throw new Error("Selected input has no abundance column");
-
-    // Light chain — projected only when both the picker is set AND the
-    // matching anchor was snapshotted alongside it (the picker handler
-    // writes both in one gesture; if either is missing we skip LC).
-    if (data.threshold === undefined) {
+    // ---- Thresholds (R16 / R17 / R19) -----------------------------
+    if (chainH && data.thresholdH === undefined) {
       throw new Error("Heavy-chain threshold is required");
     }
+    if (chainL && data.thresholdL === undefined) {
+      throw new Error("Light-chain threshold is required");
+    }
+
+    // ---- nMin (R12) -----------------------------------------------
     if (data.nMin === undefined) {
       throw new Error("Minimum unique CDR3 per sample is required");
     }
 
-    const lcPick = data.lightChainPick;
-    const lcRef = data.lightChainRef;
-    let lcProjected: { lightChainRef: PlRef; lightChainName: string; thresholdL: number } | {} = {};
-    if (lcPick !== undefined && lcRef !== undefined) {
-      if (data.thresholdL === undefined) {
-        throw new Error("Light-chain threshold is required");
+    // ---- Cluster filter (R58) -------------------------------------
+    const applyClusterFilter = data.applyClusterFilter ?? false;
+    let clusterMin: number | undefined;
+    if (applyClusterFilter) {
+      if (data.clusterMin === undefined) {
+        throw new Error("Minimum cluster size is required");
       }
-      lcProjected = {
-        lightChainRef: lcRef,
-        lightChainName: lcPick,
-        thresholdL: data.thresholdL,
-      };
+      clusterMin = data.clusterMin;
     }
 
-    // Cluster filter (R58). Toggle off by default; when on, clusterMin
-    // is required (no silent fallback per R53). Field is initialised in
-    // dataModel.init so a fresh block always has a value, but we still
-    // guard against the user clearing it through the field.
-    const applyClusterFilter = data.applyClusterFilter ?? false;
-    const clusterProjected: { clusterMin: number } | {} = applyClusterFilter
-      ? (() => {
-          if (data.clusterMin === undefined) {
-            throw new Error("Minimum cluster size is required");
-          }
-          return { clusterMin: data.clusterMin };
-        })()
-      : {};
+    // SC mode → workflow needs the scClonotypeChain LETTER ("A"/"B")
+    // to filter sibling columns to the right chain. Determined per
+    // slot: the H slot's SC mode follows the main pick; the L slot's
+    // SC mode follows the LC source's mode (which may be the same SC
+    // anchor as main, or — hypothetically — a separate SC anchor).
+    const lightIsSC = chainLFacts?.axisName === SC_AXIS;
 
-    return {
-      inputRef: data.inputRef,
-      inputDerivedFacts: facts,
-      chain,
-      threshold: data.threshold,
+    const args: BlockArgs = {
       nMin: data.nMin,
       applyClusterFilter,
-      ...clusterProjected,
-      ...lcProjected,
     };
+    if (chainH) {
+      args.chainH = chainH;
+      args.chainHName = chainHName;
+      args.thresholdH = data.thresholdH;
+      if (mainIsSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
+    }
+    if (chainL) {
+      args.chainL = chainL;
+      args.chainLName = chainLName;
+      args.thresholdL = data.thresholdL;
+      if (lightIsSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[chainLName!];
+    }
+    if (clusterMin !== undefined) {
+      args.clusterMin = clusterMin;
+    }
+    return args;
   })
 
-  // Dropdown candidates: one option per BCR mixcr-clonotyping run, via
-  // its IGHeavy anchor (always present in a BCR run, so it's a sound
-  // run identifier). The user picks a "dataset" — what they get is the
-  // heavy-chain entry for that dataset's clonotyping run.
-  //
-  // Phase 7 will discover IGLight siblings on the same clonotypingRunId
-  // (different axes, different chain domain) when a light-chain picker
-  // is added — multi-chain processing from one user pick.
-  //
-  // TCR and any non-IGHeavy chain are hidden here; args lambda is the
-  // final gate. Multi-run label disambiguation is deferred — auto-labels
-  // suffice for single-dataset projects.
+  // R10 — dropdown offers any BCR-compatible anchor. Two shapes:
+  //   - Bulk anchors (clonotypeKey axis): chain identity lives on the
+  //     axis domain. Accept IGHeavy / IGLight / IGKappa / IGLambda;
+  //     reject TCR* and anything else.
+  //   - SC anchors (scClonotypeKey axis): chain lives on column
+  //     domain (scClonotypeChain), so the axis has `receptor` instead.
+  //     Accept receptor == "IG" (BCR — both chains hang off the same
+  //     anchor); reject receptor == "TCRAB" / "TCRGD".
+  // Mode (bulk vs SC) is detected post-selection by inspecting the
+  // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
     return broad.filter((opt) => {
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
       if (!spec) return false;
+      const axisName = spec.axesSpec[1]?.name;
+      if (axisName === SC_AXIS) {
+        const receptor = spec.axesSpec[1]?.domain?.["pl7.app/vdj/receptor"];
+        return receptor === SC_BCR_RECEPTOR;
+      }
+      // Bulk path: chain in axis or column domain.
       const chain =
         spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
-      return chain === "IGHeavy";
+      if (!chain) return false;
+      if (chain.startsWith("TCR")) return false;
+      return isHeavy(chain) || isLight(chain);
     });
   })
 
-  // Live facts about the currently picked ref — feeds the UI's
-  // `PlAlert` mirror (R9). Re-derives each render so a stale snapshot
-  // surfaces a fresh mismatch banner without waiting for the user to
-  // re-touch the dropdown.
-  .output("upstreamFacts", (ctx) => {
-    if (!ctx.data.inputRef) return undefined;
-    return discoverUpstreamFacts(ctx, ctx.data.inputRef);
+  // Live facts for the main pick — UI's PlAlert mirror (R9).
+  .output("mainRefFacts", (ctx) => {
+    if (!ctx.data.mainRef) return undefined;
+    return discoverUpstreamFacts(ctx, ctx.data.mainRef);
   })
 
-  // Light-chain options — anchors from the same clonotyping run as the
-  // picked heavy anchor, with a non-IGHeavy BCR chain (typically
-  // "IGLight" when MiXCR groups κ+λ together). Surfaced as a
-  // { chain → PlRef } map so the picker's snapshot writer can store
-  // both `data.lightChainPick` and `data.lightChainRef` in one gesture.
-  // R18.
-  .output("lightChainOptions", (ctx) => {
-    if (!ctx.data.inputRef) return undefined;
-    const heavySpec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
-    if (!heavySpec) return undefined;
-    const runId = heavySpec.axesSpec[1]?.domain?.["pl7.app/vdj/clonotypingRunId"];
-    if (!runId) return undefined;
-    const broad = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
-    // Carry the auto-derived label alongside the ref + chain string so
-    // the UI dropdown can reuse the same labels users see in the input
-    // dataset picker (e.g. "IG Light") rather than re-inventing them.
-    const result: { ref: PlRef; label: string; chain: string }[] = [];
-    for (const opt of broad) {
-      const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
-      if (!spec) continue;
-      const optRunId = spec.axesSpec[1]?.domain?.["pl7.app/vdj/clonotypingRunId"];
-      const optChain = spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
-      if (optRunId !== runId) continue;
-      if (!optChain || optChain === "IGHeavy") continue;
-      if (optChain.startsWith("TCR")) continue;
-      result.push({ ref: opt.ref, label: opt.label, chain: optChain });
-    }
-    return result;
-  })
-
-  // Parallel map keyed by canonical(PlRef) → UpstreamFacts for every
-  // candidate dropdown option. The UI dropdown's user-gesture handler
-  // reads this to write `data.inputRef` and `data.inputDerivedFacts`
-  // in the same tick — the snapshot pattern from model.md, no
-  // watcher-driven hairpin (R8).
+  // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
+  // UI snapshot writer reads this to write ref + facts in one tick
+  // (R8, R24).
   .output("factsByRef", (ctx) => {
     const options = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
     const result: Record<string, UpstreamFacts> = {};
@@ -288,66 +347,71 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return result;
   })
 
-  // Single log handle from Stage 1 — the bulk of per-sample info (drops,
-  // unique counts, warnings). R45.
-  //
-  // Stage 2's stdout (threshold + hit count + elapsed) isn't surfaced;
-  // the same facts are visible in the table directly. If a multi-step
-  // log view is needed later, switch to peptide-extraction's
-  // pcolumn.resourceMapBuilder pattern (one log per step keyed by name).
-  //
-  // retentiveOutput keeps the last stable handle visible during
-  // re-derivations so PlLogView doesn't blink between empty and
-  // populated.
-  .retentiveOutput("runLogs", (ctx) => ctx.outputs?.resolve("stage1Logs")?.getLogHandle())
+  // Per-chain log handles from Stage 1 (R45). Retentive on log handles
+  // is safe (log handles tolerate retention; PFrame handles don't, R50).
+  // SC paired mode emits both — UI surfaces them as two stacked panels
+  // so the heavy/light per-sample prefixes (R44) stay readable.
+  .retentiveOutput("runLogsHeavy", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "stage1LogsHeavy",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getLogHandle(),
+  )
+  .retentiveOutput("runLogsLight", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "stage1LogsLight",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getLogHandle(),
+  )
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
 
-  // Page-header subtitle: same derivation as `.subtitle()` for the
-  // project block list, but exposed as an output so pages can bind it
-  // via `<PlBlockPage :subtitle="...">`. Returns undefined when not yet
-  // computable so the page can omit the line entirely.
+  // R55 — page-header subtitle. Returns undefined when nothing
+  // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
-  // Histogram p-frame for the heavy-chain page (Phase 6). Wraps the
-  // workflow's convergencePf via createPFrameForGraphs so GraphMaker
-  // can consume it. PFrame handles must use outputWithStatus, NOT
-  // retentiveOutput — retentive is incompatible with PFrameHandle.
-  // R50 — outputWithStatus on histogram p-frames.
+  // Heavy-chain p-frame for the heavy histogram. Conditional on the
+  // heavy pipeline running (workflow's `convergencePf` output is only
+  // emitted when args.chainH is set).
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
-    const pCols = ctx.outputs?.resolve("convergencePf")?.getPColumns();
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "convergencePf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
     if (pCols === undefined) return undefined;
     return createPFrameForGraphs(ctx, pCols);
   })
-
-  // Column specs for GraphMaker's PredefinedGraphOption defaults.
-  // The heavy-chain histogram page picks the nbFreq column by name.
   .output("histogramPfPcols", (ctx) => {
-    const pCols = ctx.outputs?.resolve("convergencePf")?.getPColumns();
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "convergencePf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
     if (pCols === undefined || pCols.length === 0) return undefined;
-    return pCols.map((c) => ({
-      columnId: c.id,
-      spec: c.spec,
-    }));
+    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
-
-  // Hit-count stats for the heavy-chain histogram badge (R49). The
-  // workflow's Stage 2 (apply_threshold.py) writes a small JSON
-  // sidecar with {above, total}; we read it as a JSON resource here.
-  // PColumn row data imported via xsv.importFile lives as a binary
-  // backend resource and is not reachable from the model layer, so
-  // counting can't happen here — it has to be computed workflow-side.
-  // Reflects the last-run threshold (same as the histogram's dashed
-  // line).
   .output("heavyHitStats", (ctx) =>
     ctx.outputs
-      ?.resolve("heavyHitStats")
+      ?.resolve({
+        field: "heavyHitStats",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Light-chain histogram outputs (Phase 7). Mirror the heavy-chain
-  // pair — `lightConvergencePf` is emitted by the workflow only when
-  // args.lightChainRef was set.
+  // Light-chain p-frame for the light histogram. Emitted when args.chainL is set.
   .outputWithStatus("lightHistogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -359,7 +423,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (pCols === undefined) return undefined;
     return createPFrameForGraphs(ctx, pCols);
   })
-
   .output("lightHistogramPfPcols", (ctx) => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -369,15 +432,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
       })
       ?.getPColumns();
     if (pCols === undefined || pCols.length === 0) return undefined;
-    return pCols.map((c) => ({
-      columnId: c.id,
-      spec: c.spec,
-    }));
+    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
-
-  // Mirror of heavyHitStats for the LC histogram page. Returns
-  // undefined when LC isn't enabled (`lightHitStats` workflow output
-  // is conditionally emitted only when args.lightChainRef is set).
   .output("lightHitStats", (ctx) =>
     ctx.outputs
       ?.resolve({
@@ -388,95 +444,37 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Main page table (R52). Anchored discovery from `data.inputRef`;
-  // non-convergence columns hidden by default — convergence outputs
-  // already carry "default"/"optional" in their pcolumn annotations
-  // (R52, pcolumn-schema.md).
-  //
-  // `withStatus` lets PlAgDataTableV2 render its own loading/error UI
-  // by consuming the OutputWithStatus<T> wrapper directly. The "absent
-  // cells" flicker mid-run is a known quirk — `retentive: true` would
-  // normally suppress it, but enabling retentive on this output causes
-  // the table to get stuck in "no previous stable value" perpetually;
-  // root cause TBD (likely a SDK interaction with anchored discovery).
-  // Phase 6 / a SDK update can revisit.
-  // Light-chain table — mirrors mainTable but anchored on the LC ref.
-  // Heavy and LC convergence columns live on DIFFERENT clonotypeKey
-  // axes (different chain domain on the axis), so they can't share one
-  // anchored table — each chain gets its own. Visible only on the
-  // Light chain page.
-  .outputWithStatus("lightMainTable", (ctx) => {
-    const lightRef = (ctx.activeArgs as BlockArgs | undefined)?.lightChainRef;
-    if (!lightRef) return undefined;
-    // Same full-readiness gate as mainTable — avoid mid-run partial
-    // rows with "absent" cells.
+  // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
+  // heavy when chainH is populated (any mode that processes heavy);
+  // light when only chainL is populated (bulk-light mode). For
+  // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
+  // lives on its own page (lightMainTable). Readiness gate avoids
+  // showing partial PFrames mid-run.
+  .outputWithStatus("mainTable", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    if (!args) return undefined;
     if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    // Guard against the upstream becoming unreachable (e.g. the user
-    // moved this block above its source in the project order).
-    // createPlDataTableV3 would otherwise throw an unresolvable-anchor
-    // error; returning undefined keeps the not-ready overlay instead.
-    if (!ctx.resultPool.getPColumnSpecByRef(lightRef)) return undefined;
-    // Anchor on our own LC fastStar column — see mainTable for why.
-    const lightPcols = ctx.outputs
+
+    // Pick which chain's p-frame anchors the main table. Heavy when
+    // populated; else light.
+    const isHeavyAnchored = args.chainH !== undefined;
+    const pframeField = isHeavyAnchored ? "convergencePf" : "lightConvergencePf";
+    const ref = isHeavyAnchored ? args.chainH! : args.chainL;
+    if (!ref) return undefined;
+    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
+
+    const pCols = ctx.outputs
       ?.resolve({
-        field: "lightConvergencePf",
+        field: pframeField,
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const lightFastStarSpec = lightPcols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!lightFastStarSpec) return undefined;
-    return createPlDataTableV3(ctx, {
-      columns: {
-        anchors: { main: lightFastStarSpec },
-        selector: { mode: "enrichment" },
-      },
-      tableState: ctx.data.lightMainTableState,
-      displayOptions: {
-        visibility: [
-          // Same discoverable-but-hidden policy as mainTable.
-          {
-            match: (spec: PColumnSpec) => {
-              if (spec.name === "pl7.app/label") return false;
-              if (spec.name === "pl7.app/sampleId") return false;
-              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
-              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
-              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
-              return true;
-            },
-            visibility: "optional",
-          },
-        ],
-      },
-    });
-  })
-
-  .outputWithStatus("mainTable", (ctx) => {
-    if (!ctx.data.inputRef) return undefined;
-    // Gate on full workflow readiness so the table doesn't show
-    // mid-pipeline partial PFrames where some sample rows have
-    // convergence values and others render as "absent" cells. With
-    // the gate, the table stays in its `loading-text="Running"` state
-    // until the whole run is done; trade-off is no incremental view.
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    // Guard against the upstream becoming unreachable (block moved
-    // above its source) — createPlDataTableV3 would throw an
-    // unresolvable-anchor error.
-    if (!ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef)) return undefined;
-    // Anchor on our own fastStar column (not the upstream inputRef) so
-    // table rows = the clonotype set Stage 1 produced. Rows dropped
-    // upstream (null CDR3, sub-nMin samples) don't appear at all
-    // rather than rendering as empty cells. Upstream columns the user
-    // opts in via the column picker are joined onto our axis space —
-    // same axis shape ([sampleId, clonotypeKey], chain=IGHeavy), just
-    // a subset of keys.
-    const heavyPcols = ctx.outputs?.resolve("convergencePf")?.getPColumns();
-    const fastStarSpec = heavyPcols?.find(
+    const fastStarSpec = pCols?.find(
       (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
     )?.spec;
     if (!fastStarSpec) return undefined;
+
     return createPlDataTableV3(ctx, {
       columns: {
         anchors: { main: fastStarSpec },
@@ -485,12 +483,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
-          // Discoverable-but-hidden experience (R52): upstream MiXCR
-          // and sibling-block columns sit in the column-visibility
-          // panel unchecked. The user can opt them in via the panel.
-          // Pattern mirrored from titeseq-analysis. Visible by default
-          // (not matched here): axis-label columns (sample / clonotype
-          // keys), and the block's own convergence outputs.
           {
             match: (spec: PColumnSpec) => {
               if (spec.name === "pl7.app/label") return false;
@@ -507,52 +499,45 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
+  // R51 — sections adapt to input mode. In SC paired (heavy + LC),
+  // heavy and LC share the scClonotypeKey axis so both chains' columns
+  // surface in the SAME main table via enrichment — no separate LC
+  // table page. Modes:
+  //   bulk single-chain → main table + one histogram page
+  //   SC heavy-only → main table + one histogram page
+  //   SC heavy + light → main table (heavy + light columns) +
+  //                      heavy histogram + light histogram
   .sections((ctx) => {
-    const showHeavy = ctx.data.inputRef !== undefined && ctx.activeArgs !== undefined;
-    // Light-chain sections appear once a run with LC enabled has
-    // completed. activeArgs.lightChainRef being present is the cleanest
-    // gate — `data` may have the picker set ahead of the next run.
-    const showLight =
-      showHeavy &&
-      ctx.activeArgs !== undefined &&
-      (ctx.activeArgs as BlockArgs).lightChainRef !== undefined;
-    return [
-      // Heavy: table on the entry route, histogram on its own page.
-      { type: "link" as const, href: "/" as const, label: "Heavy clonotype table" },
-      ...(showHeavy
-        ? [
-            {
-              type: "link" as const,
-              href: "/convergence/heavy" as const,
-              label: "Heavy frequency distribution",
-            },
-          ]
-        : []),
-      // Light: same shape, conditional.
-      ...(showLight
-        ? [
-            {
-              type: "link" as const,
-              href: "/convergence/light/table" as const,
-              label: "Light clonotype table",
-            },
-            {
-              type: "link" as const,
-              href: "/convergence/light" as const,
-              label: "Light frequency distribution",
-            },
-          ]
-        : []),
-    ];
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    const ready = ctx.data.mainRef !== undefined && args !== undefined;
+    const hasHeavy = ready && args?.chainH !== undefined;
+    const hasLight = ready && args?.chainL !== undefined;
+    const dualChain = hasHeavy && hasLight;
+
+    const sections: {
+      type: "link";
+      href: "/" | "/convergence/heavy" | "/convergence/light";
+      label: string;
+    }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
+
+    if (hasHeavy) {
+      sections.push({
+        type: "link" as const,
+        href: "/convergence/heavy" as const,
+        label: dualChain ? "Neighbour frequency (heavy)" : "Neighbour frequency",
+      });
+    }
+    if (hasLight) {
+      sections.push({
+        type: "link" as const,
+        href: "/convergence/light" as const,
+        label: dualChain ? "Neighbour frequency (light)" : "Neighbour frequency",
+      });
+    }
+    return sections;
   })
 
   .title(() => "Clonotype Convergence")
-
-  // Subtitle shows the selected chains and their thresholds so the
-  // project view distinguishes parallel runs of this block (different
-  // datasets, different LC picks, different cutoffs) at a glance.
-  // Built from `data` so it stays live as the user edits settings —
-  // doesn't wait for the next run.
   .subtitle((ctx) => ctx.data.customBlockLabel || formatSubtitle(ctx.data) || "")
 
   .done();

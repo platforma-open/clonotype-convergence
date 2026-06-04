@@ -3,6 +3,7 @@ import {
   PlAgDataTableV2,
   PlBlockPage,
   PlBtnGhost,
+  PlDialogModal,
   PlMaskIcon24,
   PlSlideModal,
   usePlDataTableSettingsV2,
@@ -11,16 +12,18 @@ import { computed, reactive, watch } from "vue";
 import { useApp } from "../app";
 import LogsPanel from "./LogsPanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
+import StatsPanel from "./StatsPanel.vue";
 
 const app = useApp();
+
+type Panel = "settings" | "logs" | "stats" | null;
 
 // Modal open state — kept in a local reactive (not in BlockData) so a
 // hairpin-free auto-close on Run state change is possible without
 // writing to server-stored data (hairpin.md). Auto-open on first
-// project add (no inputRef yet) is initialised here, per R53.
+// project add (no mainRef yet) is initialised here, per R53.
 const ui = reactive({
-  activePanel:
-    app.model.data.inputRef === undefined ? "settings" : (null as "settings" | "logs" | null),
+  activePanel: (app.model.data.mainRef === undefined ? "settings" : null) as Panel,
 });
 
 const settingsOpen = computed({
@@ -36,6 +39,20 @@ const logsOpen = computed({
     ui.activePanel = v ? "logs" : null;
   },
 });
+
+const statsOpen = computed({
+  get: () => ui.activePanel === "stats",
+  set: (v: boolean) => {
+    ui.activePanel = v ? "stats" : null;
+  },
+});
+
+// R68 — show the Stats button only when at least one chain produced
+// stats. Mirrors the badge's previous visibility gate (R49) but
+// promoted from histogram-page corner to main-page header.
+const hasAnyStats = computed(
+  () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
+);
 
 // Auto-close the Settings modal when a run starts — mirrors the
 // clonotype-space / immune-assay-data pattern. Logs stay open since
@@ -75,6 +92,12 @@ const customBlockLabel = computed({
     title="Clonotype Convergence"
   >
     <template #append>
+      <PlBtnGhost v-if="hasAnyStats" @click.stop="() => (ui.activePanel = 'stats')">
+        Stats
+        <template #append>
+          <PlMaskIcon24 name="statistics" />
+        </template>
+      </PlBtnGhost>
       <PlBtnGhost @click.stop="() => (ui.activePanel = 'logs')">
         Logs
         <template #append>
@@ -108,4 +131,26 @@ const customBlockLabel = computed({
     <template #title>Run logs</template>
     <LogsPanel />
   </PlSlideModal>
+
+  <PlDialogModal v-model="statsOpen" :width="`448px`" :close-on-outside-click="true">
+    <template #title>
+      <div>
+        <div>Hit statistics</div>
+        <div :class="$style.statsSubtitle">
+          Aggregated across all samples for the configured threshold(s).
+        </div>
+      </div>
+    </template>
+    <StatsPanel />
+  </PlDialogModal>
 </template>
+
+<style module>
+.statsSubtitle {
+  color: var(--txt-02, #6b7280);
+  font-size: 14px;
+  margin-top: 4px;
+  line-height: 1.2;
+  font-weight: normal;
+}
+</style>

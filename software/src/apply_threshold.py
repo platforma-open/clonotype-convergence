@@ -10,15 +10,17 @@ CLI:
         --threshold <float>
         --chain <str>
         [--sample-column <name>]   # defaults to sampleId
-        [--stats-json <path>]      # write {above, total} for the badge (R49)
+        [--stats-json <path>]      # write {above, total} for the stats modal (R65)
 
 Adds one column to the input TSV:
-    fastStar  — Int 0/1 hit flag, strict inequality nb_freq > threshold (R32).
-                Nb_freq == threshold is NOT a hit.
+    fastStar  — String "Hit" / "Not hit" (R32, R62). Strict inequality
+                Nb_freq > threshold. Nb_freq == threshold is NOT a hit.
+                String values pair with the column's pl7.app/discreteValues
+                annotation in the workflow spec so the table renders chips.
 
 Per-group hit counts logged when sample column is present (R44).
 When `--stats-json` is given, writes a small JSON sidecar with the
-cross-sample hit-count and total, consumed by the UI badge (R49).
+cross-sample hit-count and total, consumed by the stats modal (R65).
 """
 
 from __future__ import annotations
@@ -30,6 +32,10 @@ import time
 from pathlib import Path
 
 import pandas as pd
+
+
+HIT = "Hit"
+NOT_HIT = "Not hit"
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,18 +60,18 @@ def main() -> int:
     df = pd.read_csv(args.input, sep="\t")
 
     if "Nb_freq" not in df.columns:
-        print("error: input TSV missing required column Nb_freq", flush=True)
+        print("error: input TSV missing required column Nb_freq")
         return 2
 
-    # Strict inequality per R32. NaN > x is False, so NaN rows get fastStar=0.
-    df["fastStar"] = (df["Nb_freq"] > args.threshold).astype(int)
+    # Strict inequality per R32. NaN > x is False, so NaN rows get "Not hit".
+    df["fastStar"] = (df["Nb_freq"] > args.threshold).map({True: HIT, False: NOT_HIT})
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
     if sample_col and sample_col in df.columns:
         for sample_id, group in df.groupby(df[sample_col].astype(str), sort=True):
-            hits = int(group["fastStar"].sum())
+            hits = int((group["fastStar"] == HIT).sum())
             display = (
                 str(group[label_col].iloc[0])
                 if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
@@ -73,15 +79,13 @@ def main() -> int:
             )
             print(
                 f"[sample {display}, chain {args.chain}] "
-                f"threshold: {args.threshold}, hit count: {hits} / {len(group)}",
-                flush=True,
+                f"threshold: {args.threshold}, hit count: {hits} / {len(group)}"
             )
     else:
-        hits = int(df["fastStar"].sum())
+        hits = int((df["fastStar"] == HIT).sum())
         print(
             f"[chain {args.chain}] threshold: {args.threshold}, "
-            f"hit count: {hits} / {len(df)}",
-            flush=True,
+            f"hit count: {hits} / {len(df)}"
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -89,15 +93,15 @@ def main() -> int:
 
     if args.stats_json is not None:
         stats = {
-            "above": int(df["fastStar"].sum()),
+            "above": int((df["fastStar"] == HIT).sum()),
             "total": int(len(df)),
         }
         args.stats_json.parent.mkdir(parents=True, exist_ok=True)
         args.stats_json.write_text(json.dumps(stats))
 
     elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s", flush=True)
-    print(f"[chain {args.chain}] apply-threshold done", flush=True)
+    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    print(f"[chain {args.chain}] apply-threshold done")
     return 0
 
 

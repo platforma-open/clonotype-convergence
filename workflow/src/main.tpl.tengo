@@ -1,10 +1,11 @@
 // Clonotype convergence — main workflow template.
 //
-// Always processes the heavy chain (args.inputRef). When the user picks
-// a light chain via the model's snapshot (args.lightChainRef +
-// args.lightChainName), a parallel LC pipeline runs against that anchor
-// and emits a second set of convergence PColumns chain-tagged with the
-// LC chain domain value.
+// Processes whichever chain(s) the user populated via the model's
+// pickers (R6 / R15):
+//   - args.chainH set → run heavy pipeline, emit IGHeavy PColumns
+//   - args.chainL set → run light pipeline, emit light PColumns
+//                       (chain domain from args.chainLName)
+// At least one must be populated (gated by the args lambda — R6).
 //
 // Per-chain pipeline (R34, R56, R60):
 //   Stage 1 (:compute-neighbours, pure, always) — expensive STAR run;
@@ -12,12 +13,13 @@
 //   Stage 2 (:apply-threshold,    pure, always) — strict-> threshold,
 //           cheap; cache invalidated only by threshold.
 //   Stage 3 (:cluster-filter,     pure, conditional on
-//           args.applyClusterFilter, v1.x per R58) — paper's binder
-//           filter (DBSCAN + Levenshtein-1, cluster-min); demotes
-//           sequences not in a surviving cluster from fastStar=1 to
-//           fastStar=0. Cache keyed on (stage2Output, clusterMin).
-// The final p-frame imports Stage 3's output when the toggle is on,
-// Stage 2's output when it's off.
+//           args.applyClusterFilter per R58) — paper's binder
+//           filter (DBSCAN + Levenshtein-1, cluster-min). Emits the
+//           additional fastStarClusterFiltered + clusterSize columns
+//           (R25 / R62); fastStar is NOT modified.
+// The final p-frame imports Stage 3's TSV when the toggle is on
+// (which carries fastStar + the extra columns), Stage 2's TSV when it
+// is off.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
@@ -38,53 +40,64 @@ wf.prepare(func(args) {
 	// clonotype-key axis domain instead of the column domain.
 	bb.ignoreMissingDomains()
 
-	// Heavy chain anchor + siblings.
-	bb.addAnchor("main", args.inputRef)
-	bb.addSingle({
-		axes: [{ anchor: "main", idx: 1 }],
-		name: "pl7.app/vdj/sequence",
-		domain: {
+	// cdr3DomainFor — sibling selector for the CDR3 sequence columns.
+	// Bulk: domain is just (feature, alphabet); the anchor's axis-domain
+	// chain disambiguates implicitly.
+	// SC: domain ALSO carries scClonotypeChain (letter "A"/"B") so the
+	// heavy and light siblings — which share the SC axis — don't
+	// conflate when both populate the same args bundle.
+	cdr3DomainFor := func(alphabet, scLetter) {
+		d := {
 			"pl7.app/vdj/feature": "CDR3",
-			"pl7.app/alphabet": "aminoacid"
+			"pl7.app/alphabet": alphabet
 		}
-	}, "aaCDR3")
-	bb.addSingle({
-		axes: [{ anchor: "main", idx: 1 }],
-		name: "pl7.app/vdj/sequence",
-		domain: {
-			"pl7.app/vdj/feature": "CDR3",
-			"pl7.app/alphabet": "nucleotide"
+		if !is_undefined(scLetter) {
+			d["pl7.app/vdj/scClonotypeChain"] = scLetter
+			d["pl7.app/vdj/scClonotypeChain/index"] = "primary"
 		}
-	}, "ntCDR3")
-	// Sample label — single-axis sibling on sampleId only. Shared
-	// between heavy and light pipelines (same samples).
-	bb.addMulti({
-		axes: [{ anchor: "main", idx: 0 }],
-		name: "pl7.app/label"
-	}, "sampleLabel")
+		return d
+	}
 
-	// Light chain anchor + siblings — conditional on the user picking
-	// an LC option in the settings. The LC anchor lives on different
-	// axes (different clonotypeKey-IGLight axis) so it's a separate
-	// bundle anchor.
-	if !is_undefined(args.lightChainRef) {
-		bb.addAnchor("light", args.lightChainRef)
+	// Anchor + CDR3 siblings per populated chain. In SC paired mode
+	// chainH and chainL hold the SAME ref but the scClonotypeChain
+	// letter on the domain filter keeps each chain's siblings distinct.
+	if !is_undefined(args.chainH) {
+		bb.addAnchor("heavy", args.chainH)
+		bb.addSingle({
+			axes: [{ anchor: "heavy", idx: 1 }],
+			name: "pl7.app/vdj/sequence",
+			domain: cdr3DomainFor("aminoacid", args.chainHScLetter)
+		}, "heavyAaCDR3")
+		bb.addSingle({
+			axes: [{ anchor: "heavy", idx: 1 }],
+			name: "pl7.app/vdj/sequence",
+			domain: cdr3DomainFor("nucleotide", args.chainHScLetter)
+		}, "heavyNtCDR3")
+		bb.addMulti({
+			axes: [{ anchor: "heavy", idx: 0 }],
+			name: "pl7.app/label"
+		}, "heavySampleLabel")
+	}
+
+	if !is_undefined(args.chainL) {
+		// In SC mode chainL === chainH (same anchor); re-binding under a
+		// distinct alias is a no-op for the underlying ref but lets us
+		// label-tag the heavy / light siblings separately.
+		bb.addAnchor("light", args.chainL)
 		bb.addSingle({
 			axes: [{ anchor: "light", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
-			domain: {
-				"pl7.app/vdj/feature": "CDR3",
-				"pl7.app/alphabet": "aminoacid"
-			}
+			domain: cdr3DomainFor("aminoacid", args.chainLScLetter)
 		}, "lightAaCDR3")
 		bb.addSingle({
 			axes: [{ anchor: "light", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
-			domain: {
-				"pl7.app/vdj/feature": "CDR3",
-				"pl7.app/alphabet": "nucleotide"
-			}
+			domain: cdr3DomainFor("nucleotide", args.chainLScLetter)
 		}, "lightNtCDR3")
+		bb.addMulti({
+			axes: [{ anchor: "light", idx: 0 }],
+			name: "pl7.app/label"
+		}, "lightSampleLabel")
 	}
 
 	return { columns: bb.build() }
@@ -94,18 +107,36 @@ wf.body(func(args) {
 	blockId := wf.blockId().getDataAsJson()
 	columns := args.columns
 
-	// Sample-label column is optional (older datasets may not have one).
-	// Bind once and reuse across both pipelines.
-	labelCols := columns.getColumns("sampleLabel")
-	hasSampleLabel := len(labelCols) > 0
+	// Friendly chain qualifier appended to user-facing column labels
+	// ONLY in dual-chain mode (SC paired — both chainH and chainL set).
+	// Single-chain runs (bulk heavy, bulk light, SC heavy-only) skip
+	// the suffix because there's no peer to disambiguate against.
+	friendlyChain := func(chainName) {
+		if chainName == "IGHeavy" { return "Heavy" }
+		if chainName == "IGLight" { return "Light" }
+		if chainName == "IGKappa" { return "Light (κ)" }
+		if chainName == "IGLambda" { return "Light (λ)" }
+		return chainName
+	}
+	dualChain := !is_undefined(args.chainH) && !is_undefined(args.chainL)
 
 	// runChainPipeline — closure that builds a TSV from (aa, nt, abundance,
-	// optional sampleLabel), runs Stage 1 then Stage 2, and imports the
-	// final TSV back into a pframe of three convergence PColumns
-	// (neighbours, Nb_freq, fastStar) chain-tagged with `chainName`.
-	// Returns the built pframe.
-	runChainPipeline := func(anchorRef, aaKey, ntKey, chainName, threshold) {
+	// optional sampleLabel), runs Stage 1 then Stage 2, optionally Stage 3,
+	// and imports the final TSV back into a pframe of convergence
+	// PColumns chain-tagged with `chainName`. Returns the built pframe.
+	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, chainName, threshold) {
+		// withChain appends the chain qualifier as " / Heavy" /
+		// " / Light" in dual-chain mode; returns the base label
+		// untouched in single-chain mode. Uniform shape across all
+		// columns regardless of whether the base label has parens.
+		chainLabel := friendlyChain(chainName)
+		withChain := func(base) {
+			if !dualChain { return base }
+			return base + " / " + chainLabel
+		}
 		anchorSpec := columns.getSpec(anchorRef)
+		labelCols := columns.getColumns(labelKey)
+		hasSampleLabel := len(labelCols) > 0
 
 		tsvBuilder := pframes.tsvFileBuilder()
 		tsvBuilder.cpu(2)
@@ -161,8 +192,9 @@ wf.body(func(args) {
 						"pl7.app/vdj/chain": chainName
 					},
 					annotations: {
-						"pl7.app/label": "Convergent neighbours (Hamming-1)",
-						"pl7.app/table/visibility": "default"
+						"pl7.app/label": withChain("Convergent neighbours"),
+						"pl7.app/table/visibility": "default",
+						"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted). The numerator of Convergent neighbour frequency."
 					}
 				}
 			},
@@ -176,8 +208,14 @@ wf.body(func(args) {
 						"pl7.app/vdj/chain": chainName
 					},
 					annotations: {
-						"pl7.app/label": "Convergent neighbour frequency",
+						"pl7.app/label": withChain("Convergent neighbour frequency"),
+						"pl7.app/description": "Count of same-length amino-acid CDR3s in the sample that differ from this clone's CDR3 by exactly one amino acid, divided by the total number of unique nucleotide CDR3s in the sample. Per sample. The Convergent hit threshold is applied to this value. Higher values indicate denser one-mutation neighbourhoods — the signal fast-STAR uses to detect convergent selection.",
 						"pl7.app/table/visibility": "default",
+						// d3-format percent with significant figures, trim trailing
+						// zeros (R63). Underlying value stays Double; only display
+						// changes. Histogram X-axis labels + significant-line label
+						// (R48) inherit the same format from the axis numberFormat.
+						"pl7.app/format": ".3~%",
 						"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }]))
 					}
 				}
@@ -186,23 +224,50 @@ wf.body(func(args) {
 				column: "fastStar",
 				spec: {
 					name: "pl7.app/vdj/convergence/fastStar",
-					valueType: "Int",
+					// String "Hit" / "Not hit" per R62 — the column reads as a
+					// discrete categorical filter (PlTableFilters + chip styling).
+					// Underlying threshold semantics live in apply_threshold.py.
+					valueType: "String",
 					domain: {
 						"pl7.app/block": blockId,
 						"pl7.app/vdj/chain": chainName
 					},
 					annotations: {
-						"pl7.app/label": "Convergent hit (fast-STAR)",
-						"pl7.app/table/visibility": "default"
+						"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
+						"pl7.app/description": "Hit when this clone's convergent neighbour frequency exceeds the configured threshold for this chain — meaning the clone has unusually many same-length CDR3s that differ by exactly one amino acid, suggesting convergent evolution under antigen-driven selection. Not hit otherwise. Computed independently per sample.",
+						"pl7.app/table/visibility": "default",
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
 					}
 				}
 			}
 		]
-		// clusterSize column is emitted by Stage 3 only — include in the
-		// import schema only when the cluster filter is on. xsv.importFile
-		// would error on a declared-but-missing column otherwise.
+		// Stage 3 outputs (clusterSize + fastStarClusterFiltered) are
+		// only present in the TSV when the cluster filter is on —
+		// include in the import schema accordingly; xsv.importFile would
+		// error on declared-but-missing columns otherwise.
 		if args.applyClusterFilter {
 			columnSpecs = append(columnSpecs, {
+				column: "fastStarClusterFiltered",
+				spec: {
+					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
+					// Strict subset of fastStar's "Hit" set (R32 / R58 / R62) —
+					// additive, not replacement: the cluster-filtered view sits
+					// alongside the threshold-only view.
+					valueType: "String",
+					domain: {
+						"pl7.app/block": blockId,
+						"pl7.app/vdj/chain": chainName
+					},
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
+						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 lies in a single-linkage cluster of at least the configured minimum size (Hamming-1 / Levenshtein-1 distance). Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
+						"pl7.app/table/visibility": "default",
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
+					}
+				}
+			}, {
 				column: "clusterSize",
 				spec: {
 					name: "pl7.app/vdj/convergence/clusterSize",
@@ -212,7 +277,7 @@ wf.body(func(args) {
 						"pl7.app/vdj/chain": chainName
 					},
 					annotations: {
-						"pl7.app/label": "Convergent cluster size",
+						"pl7.app/label": withChain("Convergent cluster size"),
 						"pl7.app/table/visibility": "default"
 					}
 				}
@@ -253,30 +318,38 @@ wf.body(func(args) {
 		}
 	}
 
-	// Heavy pipeline — always runs.
-	heavy := runChainPipeline(args.inputRef, "aaCDR3", "ntCDR3", args.chain, args.threshold)
+	outputs := {}
+	exports := {}
 
-	outputs := {
-		convergencePf: pframes.exportFrame(heavy.pf),
-		stage1Logs: heavy.stage1Logs,
-		heavyHitStats: heavy.statsJson
-	}
-	exports := {
-		convergence: heavy.pf
+	// Heavy pipeline — runs when chainH is populated.
+	if !is_undefined(args.chainH) {
+		heavy := runChainPipeline(
+			args.chainH,
+			"heavyAaCDR3",
+			"heavyNtCDR3",
+			"heavySampleLabel",
+			args.chainHName,
+			args.thresholdH
+		)
+		outputs.convergencePf = pframes.exportFrame(heavy.pf)
+		outputs.heavyHitStats = heavy.statsJson
+		outputs.stage1LogsHeavy = heavy.stage1Logs
+		exports.convergence = heavy.pf
 	}
 
-	// Light pipeline — runs only when the user picked an LC chain.
-	if !is_undefined(args.lightChainRef) {
+	// Light pipeline — runs when chainL is populated.
+	if !is_undefined(args.chainL) {
 		light := runChainPipeline(
-			args.lightChainRef,
+			args.chainL,
 			"lightAaCDR3",
 			"lightNtCDR3",
-			args.lightChainName,
+			"lightSampleLabel",
+			args.chainLName,
 			args.thresholdL
 		)
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
-		outputs.lightStage1Logs = light.stage1Logs
 		outputs.lightHitStats = light.statsJson
+		outputs.stage1LogsLight = light.stage1Logs
 		exports.lightConvergence = light.pf
 	}
 

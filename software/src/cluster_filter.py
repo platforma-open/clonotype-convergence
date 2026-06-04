@@ -1,16 +1,19 @@
 """Stage 3 — paper's "binder" cluster filter (optional, gated by
 args.applyClusterFilter per R58).
 
-Reads Stage 2's output (which already has fastStar set by threshold),
-per-sample runs the vendored Output.cluster() (DBSCAN + Levenshtein-1)
-from output_HC.py with `threshold=-1` so its internal Nb_freq filter is
-a no-op (Stage 2 already filtered). Sequences whose CDR3 doesn't survive
-a cluster of size >= --cluster-min are demoted from fastStar=1 to
-fastStar=0. Surviving rows additionally get a `clusterSize` column
-populated with the size of their cluster (non-survivors get 0).
-Output TSV has the input schema + clusterSize. Per R60 this template
-stays pure: caching is keyed on (stage2Output, clusterMin), independent
-of threshold.
+Reads Stage 2's output (which has fastStar already set as String
+"Hit"/"Not hit" by threshold). Per sample, runs DBSCAN with the
+vendored Levenshtein-1 metric on the fastStar=="Hit" subset and
+identifies clones whose cluster reaches --cluster-min. Emits an
+**additive** new column `fastStarClusterFiltered` ("Hit" for survivors,
+"Not hit" for everyone else — strict subset of fastStar's "Hit" set per
+R32, R58, R60). Stage 2's `fastStar` is NOT modified. Surviving rows
+additionally get a `clusterSize` column populated with the size of
+their natural Levenshtein-1 cluster (non-hit rows get 0).
+
+Output TSV has the input schema + `fastStarClusterFiltered` + `clusterSize`.
+Per R60 this template stays pure: caching is keyed on
+(stage2Output, clusterMin), independent of threshold.
 
 CLI:
     cluster_filter.py
@@ -19,14 +22,14 @@ CLI:
         --cluster-min <int>    # DBSCAN min_samples (paper default: 10)
         --chain <str>
         [--sample-column <name>]    # defaults to sampleId; pass empty to disable
-        [--stats-json <path>]       # write {above, total} for the badge (R49)
+        [--stats-json <path>]       # write {above, total, beforeCluster} for stats modal (R65)
 
 Per-group structured stdout per R44 — one event per line, prefixed
 ``[sample <label>, chain <chain>]``.
 
-When --stats-json is given, writes a JSON sidecar reflecting the
-cluster-filtered hit count (so the UI badge shows the binder count
-when the toggle is on). Mirrors apply_threshold.py.
+When --stats-json is given, writes a JSON sidecar with the
+cluster-filtered survivor count, the pre-filter hit count (Stage 2's
+output), and the total row count — consumed by the stats modal (R65).
 """
 
 from __future__ import annotations
@@ -42,6 +45,10 @@ import pandas as pd
 from sklearn.cluster import DBSCAN
 
 from output_HC import Output  # vendored for paper attribution; we use its lev_metric
+
+
+HIT = "Hit"
+NOT_HIT = "Not hit"
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,7 +72,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def log(prefix: str, msg: str) -> None:
-    print(f"{prefix} {msg}", flush=True)
+    print(f"{prefix} {msg}")
 
 
 def cluster_sample(
@@ -82,7 +89,7 @@ def cluster_sample(
         threshold, so the column means the same thing across cluster_min
         tweaks).
       - survivors_idx: original df indices of rows whose cluster reached
-        cluster_min and stay at fastStar=1.
+        cluster_min.
       - surviving_cluster_count: number of distinct clusters that met the
         cluster_min threshold (log info).
 
@@ -130,20 +137,33 @@ def main() -> int:
     required = {"fastStar", "aaSeqCDR3", "Nb_freq"}
     missing = required - set(df.columns)
     if missing:
-        print(f"error: input TSV missing required columns: {sorted(missing)}", flush=True)
+        print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
-    # clusterSize is new in Stage 3 — start at 0 for all rows; populate
-    # for survivors below.
+    # Initialise additive columns:
+    #   fastStarClusterFiltered: "Not hit" by default; survivors flip to "Hit"
+    #     (R25 / R32 / R58: strict subset of fastStar's "Hit" set)
+    #   clusterSize: 0 by default; populated for ALL hits below
+    df["fastStarClusterFiltered"] = NOT_HIT
     df["clusterSize"] = 0
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     grouping = bool(sample_col) and sample_col in df.columns
     label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
-    hits_before_total = int(df["fastStar"].sum())
+    hits_before_total = int((df["fastStar"] == HIT).sum())
     survivors_idx: set[int] = set()
     surviving_clusters_total = 0
+
+    def _write_stats(above: int, total: int, before_cluster: int) -> None:
+        if args.stats_json is None:
+            return
+        args.stats_json.parent.mkdir(parents=True, exist_ok=True)
+        args.stats_json.write_text(json.dumps({
+            "above": above,
+            "total": total,
+            "beforeCluster": before_cluster,
+        }))
 
     if hits_before_total == 0:
         # Nothing to cluster anywhere — pass through unchanged. Still
@@ -151,22 +171,15 @@ def main() -> int:
         # (LC data is commonly sparse — sub-nMin → zero hits — and we
         # mustn't break the downstream resolver on that path).
         print(
-            f"[chain {args.chain}] no hits to cluster; passing through unchanged",
-            flush=True,
+            f"[chain {args.chain}] no hits to cluster; passing through unchanged"
         )
         df.to_csv(args.output, sep="\t", index=False)
-        if args.stats_json is not None:
-            args.stats_json.parent.mkdir(parents=True, exist_ok=True)
-            args.stats_json.write_text(json.dumps({
-                "above": 0,
-                "total": int(len(df)),
-                "beforeCluster": 0,
-            }))
+        _write_stats(above=0, total=int(len(df)), before_cluster=0)
         return 0
 
     if grouping:
         for sample_id, group in df.groupby(df[sample_col].astype(str), sort=True):
-            sample_hits = group[group["fastStar"] == 1]
+            sample_hits = group[group["fastStar"] == HIT]
             display = (
                 str(group[label_col].iloc[0])
                 if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
@@ -200,7 +213,7 @@ def main() -> int:
                     "(no clusters reached min_samples)",
                 )
     else:
-        hits_df = df[df["fastStar"] == 1]
+        hits_df = df[df["fastStar"] == HIT]
         prefix = f"[chain {args.chain}]"
         sizes_by_idx, survivors_idx, surviving_clusters_total = cluster_sample(
             hits_df, args.cluster_min
@@ -212,40 +225,33 @@ def main() -> int:
             f"cluster-min={args.cluster_min} hits: {hits_before_total} → {len(survivors_idx)}",
         )
 
-    # Rewrite fastStar in place: anything that was 1 but not in the
-    # survivor index gets demoted to 0. clusterSize for these rows stays
-    # at 0 (initial value).
-    demoted_mask = (df["fastStar"] == 1) & ~df.index.isin(survivors_idx)
-    df.loc[demoted_mask, "fastStar"] = 0
+    # Mark survivors in the additive column. fastStar itself is untouched
+    # — R32 / R58 require the cluster filter to be additive, not
+    # replacement: downstream consumers comparing runs across toggle
+    # states see a consistent fastStar signal, with the filtered version
+    # surfaced explicitly when present.
+    survivor_mask = df.index.isin(survivors_idx)
+    df.loc[survivor_mask, "fastStarClusterFiltered"] = HIT
 
-    hits_after_total = int(df["fastStar"].sum())
+    hits_after_total = int((df["fastStarClusterFiltered"] == HIT).sum())
     print(
         f"[chain {args.chain}] cluster-min={args.cluster_min} "
         f"total hits: {hits_before_total} → {hits_after_total} "
-        f"({surviving_clusters_total} surviving clusters across all samples)",
-        flush=True,
+        f"({surviving_clusters_total} surviving clusters across all samples)"
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.output, sep="\t", index=False)
 
-    if args.stats_json is not None:
-        # `above` matches Stage 2's stats schema (count of current
-        # fastStar=1 rows, = cluster survivors here). `beforeCluster`
-        # is added so the UI badge can show the funnel (threshold →
-        # cluster). The presence of this key is the UI's signal that
-        # the cluster filter ran.
-        stats = {
-            "above": int(df["fastStar"].sum()),
-            "total": int(len(df)),
-            "beforeCluster": hits_before_total,
-        }
-        args.stats_json.parent.mkdir(parents=True, exist_ok=True)
-        args.stats_json.write_text(json.dumps(stats))
+    _write_stats(
+        above=hits_after_total,
+        total=int(len(df)),
+        before_cluster=hits_before_total,
+    )
 
     elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s", flush=True)
-    print(f"[chain {args.chain}] cluster-filter done", flush=True)
+    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    print(f"[chain {args.chain}] cluster-filter done")
     return 0
 
 

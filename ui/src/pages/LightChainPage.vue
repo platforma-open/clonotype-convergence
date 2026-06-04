@@ -8,8 +8,8 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// See HeavyChainPage — mirrored badge for the light-chain hit count.
-const hitStats = computed(() => app.model.outputs.lightHitStats);
+// R67 — restrict GraphMaker's value picker to nbFreq only.
+const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
 
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
   const pcols = app.model.outputs.lightHistogramPfPcols;
@@ -38,32 +38,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       chartType="histogram"
       :p-frame="app.model.outputs.lightHistogramPf"
       :default-options="defaultOptions"
-    >
-      <template
-        v-if="hitStats && (hitStats.above > 0 || (hitStats.beforeCluster ?? 0) > 0)"
-        #titleLineSlot
-      >
-        <span :class="$style.hitStats">
-          <template v-if="hitStats.beforeCluster !== undefined">
-            {{ hitStats.beforeCluster.toLocaleString() }} above threshold ·
-            {{ hitStats.above.toLocaleString() }} passed cluster filter (of
-            {{ hitStats.total.toLocaleString() }}, all samples)
-          </template>
-          <template v-else>
-            {{ hitStats.above.toLocaleString() }} of {{ hitStats.total.toLocaleString() }}
-            above threshold (all samples)
-          </template>
-        </span>
-      </template>
-    </GraphMaker>
+      :data-column-predicate="nbFreqOnly"
+    />
   </PlBlockPage>
 </template>
-
-<style module>
-.hitStats {
-  display: flex;
-  align-items: center;
-  opacity: 0.7;
-  font-size: 0.9em;
-}
-</style>

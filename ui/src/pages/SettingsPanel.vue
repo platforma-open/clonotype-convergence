@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { plRefsEqual, type PlRef } from "@platforma-sdk/model";
+import type { PlRef } from "@platforma-sdk/model";
 import {
   PlAccordionSection,
   PlAlert,
@@ -14,81 +14,92 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// Snapshot pattern (R8): when the user picks a new dataset, write BOTH
-// `data.inputRef` AND `data.inputDerivedFacts` in the same user-gesture
+const HEAVY_CHAIN = "IGHeavy";
+const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
+const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
+
+const factsFor = (ref: PlRef | undefined) => {
+  if (!ref) return undefined;
+  const key = canonicalize(ref as unknown as Record<string, unknown>);
+  return key === undefined ? undefined : app.model.outputs.factsByRef?.[key];
+};
+
+// Snapshot pattern (R8, R24): when the user picks the main input,
+// write BOTH `mainRef` AND `mainRefFacts` in the same user-gesture
 // handler. Reads from the model's factsByRef map keyed by canonical
-// PlRef. No watcher-driven hairpin — args lambda validates from
-// `data.inputDerivedFacts` alone.
-function onPickInput(ref: PlRef | undefined) {
+// PlRef. Picking a new main also clears the LC pick because the LC
+// options depend on the main pick (R66).
+function onPickMain(ref: PlRef | undefined) {
   if (ref === undefined) {
-    app.model.data.inputRef = undefined;
-    app.model.data.inputDerivedFacts = undefined;
-    app.model.data.lightChainPick = undefined;
-    app.model.data.lightChainRef = undefined;
+    app.model.data.mainRef = undefined;
+    app.model.data.mainRefFacts = undefined;
+    app.model.data.lightRef = undefined;
+    app.model.data.lightRefFacts = undefined;
     return;
   }
-  const key = canonicalize(ref as unknown as Record<string, unknown>);
-  const facts = key === undefined ? undefined : app.model.outputs.factsByRef?.[key];
-  app.model.data.inputRef = ref;
-  app.model.data.inputDerivedFacts = facts;
-  // Drop the previous LC pick — different dataset.
-  app.model.data.lightChainPick = undefined;
-  app.model.data.lightChainRef = undefined;
+  app.model.data.mainRef = ref;
+  app.model.data.mainRefFacts = factsFor(ref);
+  app.model.data.lightRef = undefined;
+  app.model.data.lightRefFacts = undefined;
 }
 
-// Light-chain picker options. Model returns array of {ref, label, chain};
-// we map to PlDropdownRef's expected {ref, label} shape so labels match
-// what users see in the input dataset picker (e.g. "IG Light").
-const lightChainDropdownOptions = computed(() =>
-  (app.model.outputs.lightChainOptions ?? []).map((o) => ({
-    ref: o.ref,
-    label: o.label,
-  })),
+// Which chain(s) are detected on the main pick. The main itself may
+// carry both chains (SC IG anchor) but per R66 we only AUTO-process
+// the heavy slot from the main pick — LC opt-in goes through the SC
+// checkbox. Bulk mode processes whichever single chain the picked
+// anchor carries — no secondary LC dropdown.
+const mainChains = computed(() => app.model.data.mainRefFacts?.chains ?? []);
+const mainHasHeavy = computed(() => mainChains.value.includes(HEAVY_CHAIN));
+const mainHasLight = computed(() => mainChains.value.some((c) => LIGHT_CHAINS.has(c)));
+const mainIsBulkLight = computed(() => mainHasLight.value && !mainHasHeavy.value);
+const mainIsSC = computed(() => app.model.data.mainRefFacts?.axisName === SC_AXIS);
+
+// Heavy slot active iff the main pick has heavy.
+const heavyActive = computed(() => mainHasHeavy.value);
+
+// LC slot active iff:
+//   - main is bulk-light (LC IS the main), OR
+//   - SC main + LC checkbox ticked (lightRef set).
+const lightActive = computed(() => mainIsBulkLight.value || app.model.data.lightRef !== undefined);
+
+// LC opt-in only exists in SC paired mode (R66). Bulk mode is
+// strictly single-chain — no checkbox, no secondary dropdown.
+const showLightCheckbox = computed(
+  () => mainIsSC.value && mainHasHeavy.value && mainHasLight.value,
 );
+const lightChecked = computed(() => app.model.data.lightRef !== undefined);
 
-const hasLightChainOptions = computed(() => lightChainDropdownOptions.value.length > 0);
-
-// Snapshot writer for the LC picker. The user picks a ref; we find the
-// matching entry in the model's options array to extract the chain
-// string (workflow needs it for chain-domain tagging of output columns,
-// and sections() uses it for κ / λ qualifier labels). Both fields go
-// into `data` in one gesture — same hairpin-free shape as the heavy
-// input snapshot.
-function onPickLightChain(ref: PlRef | undefined) {
-  if (ref === undefined) {
-    app.model.data.lightChainPick = undefined;
-    app.model.data.lightChainRef = undefined;
-    return;
+// Checkbox toggle: writes lightRef ← mainRef (same anchor; LC siblings
+// hang off it as column-domain children). Cleared on uncheck.
+function onToggleLightCheckbox(v: boolean) {
+  if (v && app.model.data.mainRef) {
+    app.model.data.lightRef = app.model.data.mainRef;
+    app.model.data.lightRefFacts = app.model.data.mainRefFacts;
+  } else {
+    app.model.data.lightRef = undefined;
+    app.model.data.lightRefFacts = undefined;
   }
-  const match = app.model.outputs.lightChainOptions?.find((o) => plRefsEqual(o.ref, ref));
-  app.model.data.lightChainRef = ref;
-  app.model.data.lightChainPick = match?.chain;
 }
 
 // Live PlAlert mirror (R9). Mirrors args lambda's checks.
 const alertMessage = computed<string | undefined>(() => {
-  const live = app.model.outputs.upstreamFacts;
-  if (live === undefined) return undefined;
-  if (app.model.data.inputRef === undefined) return undefined;
+  const facts = app.model.data.mainRefFacts;
+  if (app.model.data.mainRef === undefined || facts === undefined) return undefined;
 
-  const tcr = live.chains.filter((c) => c.startsWith("TCR"));
+  const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
   if (tcr.length > 0) {
     return `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`;
   }
-  if (live.chains.length === 0) {
-    return "Selected input has no detectable chain — re-select an input.";
+  if (facts.chains.length === 0) {
+    return "Selected input has no detectable BCR chain — re-select an input.";
   }
-  if (live.chains.length > 1) {
-    return `Selected input spans multiple chains (${live.chains.join(", ")}).`;
+  if (!mainHasHeavy.value && !mainHasLight.value) {
+    return `Selected input chains "${facts.chains.join(", ")}" are not BCR — re-select an input.`;
   }
-  const chain = live.chains[0];
-  if (chain !== "IGHeavy") {
-    return `Selected input chain is "${chain}", not IGHeavy. Pick the IG Heavy anchor.`;
-  }
-  if (!live.hasAaCDR3 || !live.hasNtCDR3) {
+  if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
     return "Selected input is missing required CDR3 columns — re-select an input.";
   }
-  if (!live.hasAbundance) {
+  if (!facts.hasAbundance) {
     return "Selected input has no abundance column — re-select an input.";
   }
   return undefined;
@@ -98,15 +109,15 @@ const alertMessage = computed<string | undefined>(() => {
 <template>
   <PlDropdownRef
     :options="app.model.outputs.datasetOptions"
-    :model-value="app.model.data.inputRef"
+    :model-value="app.model.data.mainRef"
     label="Input dataset"
     clearable
     required
-    @update:model-value="onPickInput"
+    @update:model-value="onPickMain"
   >
     <template #tooltip>
-      MiXCR clonotyping output to analyze. Must contain B-cell receptor heavy-chain data — light
-      chains and T-cell receptors are not supported as the primary input.
+      MiXCR clonotyping output to analyze. Accepts any B-cell receptor anchor — heavy bulk, light
+      bulk, or single-cell paired (heavy + light on one anchor). T-cell receptors aren't supported.
     </template>
   </PlDropdownRef>
 
@@ -114,14 +125,17 @@ const alertMessage = computed<string | undefined>(() => {
     {{ alertMessage }}
   </PlAlert>
 
+  <!-- Heavy-chain threshold. Visible iff a heavy chain is present on
+       the main pick (bulk-heavy OR SC IG main). -->
   <PlNumberField
-    :model-value="app.model.data.threshold"
+    v-if="heavyActive"
+    :model-value="app.model.data.thresholdH"
     label="Heavy-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
     required
-    @update:model-value="(v) => (app.model.data.threshold = v)"
+    @update:model-value="(v) => (app.model.data.thresholdH = v)"
   >
     <template #tooltip>
       Frequency cutoff for the convergence call. Clonotypes with a neighbour-frequency above this
@@ -131,46 +145,52 @@ const alertMessage = computed<string | undefined>(() => {
     </template>
   </PlNumberField>
 
-  <!-- Light-chain picker (R18). Hidden when the upstream has no LC
-       anchors. Opt-in by design — empty by default, user picks
-       explicitly to enable LC processing. -->
-  <PlDropdownRef
-    v-if="hasLightChainOptions"
-    :model-value="app.model.data.lightChainRef"
-    :options="lightChainDropdownOptions"
-    label="Light chain"
-    clearable
-    @update:model-value="onPickLightChain"
+  <!-- LC opt-in (R66). SC IG main → checkbox (same anchor carries
+       both chains as column-domain siblings). Bulk-heavy main →
+       dropdown of LC anchors. Bulk-light main → neither (LC is main). -->
+  <PlCheckbox
+    v-if="showLightCheckbox"
+    :model-value="lightChecked"
+    @update:model-value="onToggleLightCheckbox"
   >
-    <template #tooltip>
-      Optional. Pick a light-chain anchor from the same clonotyping run to run a parallel
-      convergence pipeline on its clonotypes. Light-chain results are exploratory — the threshold is
-      uncalibrated for light chains and should be re-tuned on the histogram.
-    </template>
-  </PlDropdownRef>
+    Process light chain
+    <PlTooltip class="info" position="top">
+      <template #tooltip>
+        The selected single-cell anchor carries light-chain siblings on the same per-cell axis
+        (column-domain key <code>scClonotypeChain = "B"</code>). Check this to also run the
+        convergence pipeline on those LC siblings — emits a parallel light-chain hit column and
+        histogram. Unchecked = heavy only.
+      </template>
+    </PlTooltip>
+  </PlCheckbox>
 
+  <!-- Light-chain threshold. Visible iff LC processing is active:
+       bulk-light MAIN, or SC main + LC checkbox ticked. No default
+       value (R17). -->
   <PlNumberField
-    v-if="hasLightChainOptions"
+    v-if="lightActive"
     :model-value="app.model.data.thresholdL"
     label="Light-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
-    :disabled="app.model.data.lightChainPick === undefined"
+    placeholder="e.g. 0.000961 (heavy reference — recalibrate for LC)"
+    required
     @update:model-value="(v) => (app.model.data.thresholdL = v)"
   >
     <template #tooltip>
-      Frequency cutoff for the light-chain convergence call. Defaults to the heavy-chain value.
-      Light-chain diversity is lower (no D segment, shorter CDR3), so the heavy-calibrated value
-      often over-flags — recalibrate visually on the light-chain histogram.
+      Frequency cutoff for the light-chain convergence call. No default — light-chain diversity is
+      lower (no D segment, shorter CDR3) and has no published FDR calibration, so the
+      heavy-calibrated value (0.000961) typically over-flags. Set explicitly and recalibrate
+      visually on the light-chain histogram.
     </template>
   </PlNumberField>
 
   <PlAccordionSection label="Advanced settings">
-    <!-- Cluster filter (R58, Phase 7.5). Off by default; matches v1
-         threshold-only semantics. When on, fastStar additionally
-         requires the clone's CDR3 to lie in a Hamming/Levenshtein-1
-         cluster of size >= clusterMin (paper's binder definition). -->
+    <!-- Cluster filter (R58). Off by default. When on, an additional
+         fastStarClusterFiltered column marks hits that ALSO lie in a
+         Hamming/Levenshtein-1 cluster of size >= clusterMin
+         (paper's binder definition). -->
     <PlCheckbox
       :model-value="app.model.data.applyClusterFilter ?? false"
       @update:model-value="(v) => (app.model.data.applyClusterFilter = v)"
@@ -178,9 +198,10 @@ const alertMessage = computed<string | undefined>(() => {
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
-          Further restrict hits to clonotypes that lie in a Hamming/Levenshtein-1 cluster of size at
-          least the threshold below. Mitigates noise from sequencing errors and matches Abbate et
-          al. 2024's headline "binder" definition. Default off — keeps the threshold-only semantics.
+          Adds a stricter hit definition alongside the threshold-only one: clonotypes that also lie
+          in a Hamming/Levenshtein-1 cluster of size at least the threshold below. Mitigates
+          sequencing-error noise and matches Abbate et al. 2024's headline "binder" definition. Off
+          by default — the threshold-only hit column stays as the primary signal.
         </template>
       </PlTooltip>
     </PlCheckbox>

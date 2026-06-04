@@ -33,6 +33,7 @@
           "artifact": "py-archive",
           "cmd": [
             "python",
+            "-u",
             "{pkg}/compute_neighbours.py"
           ]
         }
@@ -42,6 +43,7 @@
           "artifact": "py-archive",
           "cmd": [
             "python",
+            "-u",
             "{pkg}/apply_threshold.py"
           ]
         }
@@ -51,6 +53,7 @@
           "artifact": "py-archive",
           "cmd": [
             "python",
+            "-u",
             "{pkg}/cluster_filter.py"
           ]
         }

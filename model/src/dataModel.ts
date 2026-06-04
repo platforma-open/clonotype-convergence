@@ -5,15 +5,14 @@ export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(
   settingsOpen: true,
   logsOpen: false,
   mainTableState: createPlDataTableStateV2(),
-  lightMainTableState: createPlDataTableStateV2(),
   // Empty string = user hasn't customised the label; the derived
   // chain/threshold subtitle shows as a placeholder in the page header.
   customBlockLabel: "",
-  // Surface defaults in the UI from the start. The args lambda has the
-  // same fallbacks as a safety net, but seeding here means PlNumberField
-  // shows 0.000961 / 100 immediately rather than empty fields.
-  threshold: 0.000961,
-  thresholdL: 0.000961,
+  // R16 — heavy-chain threshold default 0.000961 (≈5% FDR target on
+  // Abbate et al. 2024 human IgH calibration).
+  // R17 — thresholdL deliberately has NO default; user must enter it
+  // explicitly so they don't ship an inappropriate value silently.
+  thresholdH: 0.000961,
   nMin: 100,
   // Cluster filter (R58, Phase 7.5) — off by default to preserve v1
   // semantics. Paper default 10 for cluster_min when the toggle is on.

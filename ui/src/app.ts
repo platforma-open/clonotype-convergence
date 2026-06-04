@@ -2,18 +2,18 @@ import { platforma } from "@platforma-open/milaboratories.clonotype-convergence.
 import { defineAppV3 } from "@platforma-sdk/ui-vue";
 import HeavyChainPage from "./pages/HeavyChainPage.vue";
 import LightChainPage from "./pages/LightChainPage.vue";
-import LightTablePage from "./pages/LightTablePage.vue";
 import MainPage from "./pages/MainPage.vue";
 
 export const sdkPlugin = defineAppV3(platforma, () => {
   return {
     routes: {
-      // "/" → heavy clonotype table (entry point).
+      // "/" → main clonotype table. Anchored on the main pick (heavy
+      // when populated, else light) — in SC paired mode both chains'
+      // convergence columns join via the shared scClonotypeKey axis.
       "/": () => MainPage,
-      // Per-chain pages: <chain>/histogram + <chain>/table for consistency.
-      // Heavy's table is "/" so we don't need a separate /heavy/table route.
+      // Per-chain frequency-distribution histograms. Each shown only
+      // when its chain is processed (see model.sections()).
       "/convergence/heavy": () => HeavyChainPage,
-      "/convergence/light/table": () => LightTablePage,
       "/convergence/light": () => LightChainPage,
     },
   };
