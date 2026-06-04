@@ -5,7 +5,13 @@ import type {
   PlRef,
   RenderCtxBase,
 } from "@platforma-sdk/model";
-import { BlockModelV3, createPFrameForGraphs, createPlDataTableV3 } from "@platforma-sdk/model";
+import {
+  BlockModelV3,
+  createPFrameForGraphs,
+  createPlDataTableSheet,
+  createPlDataTableV3,
+  getUniquePartitionKeys,
+} from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import { blockDataModel } from "./dataModel";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
@@ -331,6 +337,21 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return discoverUpstreamFacts(ctx, ctx.data.mainRef);
   })
 
+  // R52 — sample picker above the mainTable. Extracts unique sampleId
+  // partition keys from the picked anchor (which IS sample-partitioned
+  // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
+  // one sample at a time. SDK pins to a single sample — there is no
+  // "all samples" entry. Cross-sample comparison is left to downstream
+  // blocks operating on the long-format PColumns.
+  .output("mainTableSheets", (ctx) => {
+    if (!ctx.data.mainRef) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    if (!anchor) return undefined;
+    const samples = getUniquePartitionKeys(anchor.data)?.[0];
+    if (!samples) return undefined;
+    return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
+  })
+
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
   // UI snapshot writer reads this to write ref + facts in one tick
   // (R8, R24).
@@ -478,7 +499,21 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return createPlDataTableV3(ctx, {
       columns: {
         anchors: { main: fastStarSpec },
-        selector: { mode: "enrichment" },
+        selector: {
+          mode: "enrichment",
+          // Drop per-sample-only columns (Sample label, donor, dataset,
+          // metadata) — the sample sheet pins one sampleId at a time
+          // (R52), so these columns would just repeat the picked value
+          // on every row. `partialAxesMatch: false` excludes only
+          // columns whose axes are *exactly* [sampleId] (multi-axis
+          // columns that include sampleId stay).
+          exclude: [
+            {
+              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+              partialAxesMatch: false,
+            },
+          ],
+        },
       },
       tableState: ctx.data.mainTableState,
       displayOptions: {

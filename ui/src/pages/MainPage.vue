@@ -67,8 +67,11 @@ watch(
 );
 
 // PlAgDataTableV2 settings — bound to the model's mainTable output (R52).
+// `sheets` adds the sample picker above the table (one sample at a
+// time; SDK pins to a single value).
 const tableSettings = usePlDataTableSettingsV2({
   model: () => app.model.outputs.mainTable,
+  sheets: () => app.model.outputs.mainTableSheets,
 });
 
 // PlBlockPage hides the entire subtitle row when v-model:subtitle is
