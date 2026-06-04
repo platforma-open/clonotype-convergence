@@ -278,6 +278,7 @@ wf.body(func(args) {
 					},
 					annotations: {
 						"pl7.app/label": withChain("Convergent cluster size"),
+						"pl7.app/description": "Size of the single-linkage Hamming/Levenshtein-1 cluster this clone's CDR3 belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
 				}
