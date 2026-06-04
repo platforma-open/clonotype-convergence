@@ -129,13 +129,12 @@ const alertMessage = computed<string | undefined>(() => {
        the main pick (bulk-heavy OR SC IG main). -->
   <PlNumberField
     v-if="heavyActive"
-    :model-value="app.model.data.thresholdH"
+    v-model="app.model.data.thresholdH"
     label="Heavy-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
     required
-    @update:model-value="(v) => (app.model.data.thresholdH = v)"
   >
     <template #tooltip>
       Frequency cutoff for the convergence call. Clonotypes with a neighbour-frequency above this
@@ -169,14 +168,13 @@ const alertMessage = computed<string | undefined>(() => {
        value (R17). -->
   <PlNumberField
     v-if="lightActive"
-    :model-value="app.model.data.thresholdL"
+    v-model="app.model.data.thresholdL"
     label="Light-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
     placeholder="e.g. 0.000961 (heavy reference — recalibrate for LC)"
     required
-    @update:model-value="(v) => (app.model.data.thresholdL = v)"
   >
     <template #tooltip>
       Frequency cutoff for the light-chain convergence call. No default — light-chain diversity is
@@ -191,10 +189,7 @@ const alertMessage = computed<string | undefined>(() => {
          fastStarClusterFiltered column marks hits that ALSO lie in a
          Hamming/Levenshtein-1 cluster of size >= clusterMin
          (paper's binder definition). -->
-    <PlCheckbox
-      :model-value="app.model.data.applyClusterFilter ?? false"
-      @update:model-value="(v) => (app.model.data.applyClusterFilter = v)"
-    >
+    <PlCheckbox v-model="app.model.data.applyClusterFilter">
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
@@ -207,13 +202,12 @@ const alertMessage = computed<string | undefined>(() => {
     </PlCheckbox>
 
     <PlNumberField
-      :model-value="app.model.data.clusterMin"
+      v-model="app.model.data.clusterMin"
       label="Minimum cluster size"
       :min="1"
       :step="1"
       :disabled="!app.model.data.applyClusterFilter"
       required
-      @update:model-value="(v) => (app.model.data.clusterMin = v)"
     >
       <template #tooltip>
         Minimum number of similar clonotypes (Hamming/Levenshtein-1 cluster) required for a hit to
@@ -222,11 +216,10 @@ const alertMessage = computed<string | undefined>(() => {
     </PlNumberField>
 
     <PlNumberField
-      :model-value="app.model.data.nMin"
+      v-model="app.model.data.nMin"
       label="Minimum unique CDR3 per sample"
       :min="1"
       :step="1"
-      @update:model-value="(v) => (app.model.data.nMin = v)"
     >
       <template #tooltip>
         Samples with fewer than this many unique nucleotide CDR3 sequences are skipped. Below this

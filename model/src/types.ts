@@ -104,8 +104,10 @@ export type BlockData = {
   /** Sample-size floor (R12). */
   nMin?: number;
 
-  // Cluster filter (R58). Toggle + cluster-min.
-  applyClusterFilter?: boolean;
+  // Cluster filter (R58). Toggle + cluster-min. Toggle is required
+  // (initialised to false by dataModel.init); the v-model binding on
+  // the Advanced-settings PlCheckbox requires a strict boolean.
+  applyClusterFilter: boolean;
   clusterMin?: number;
 
   // UI-only state (never projects to args).
