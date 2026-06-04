@@ -4,11 +4,8 @@ import HeavyChainPage from "./pages/HeavyChainPage.vue";
 import LightChainPage from "./pages/LightChainPage.vue";
 import MainPage from "./pages/MainPage.vue";
 
-export const sdkPlugin = defineAppV3(platforma, (app) => {
+export const sdkPlugin = defineAppV3(platforma, () => {
   return {
-    // Drives the progress line in the project list / block header
-    // while the workflow is running.
-    progress: () => app.model.outputs.isRunning,
     routes: {
       // "/" → main clonotype table. Anchored on the main pick (heavy
       // when populated, else light) — in SC paired mode both chains'
