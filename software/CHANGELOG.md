@@ -1,4 +1,4 @@
-# @platforma-open/milaboratories.clonotype-convergence
+# @platforma-open/milaboratories.clonotype-convergence.software
 
 ## 1.1.0
 
@@ -18,14 +18,3 @@
   table with a sample picker above it, two per-chain neighbour-frequency
   histograms with a configurable threshold line, and a centered hit-statistics
   modal in the main-page header.
-
-### Patch Changes
-
-- Updated dependencies [c318d11]
-  - @platforma-open/milaboratories.clonotype-convergence.model@1.1.0
-  - @platforma-open/milaboratories.clonotype-convergence.ui@1.1.0
-  - @platforma-open/milaboratories.clonotype-convergence.workflow@1.1.0
-
-## 1.0.0
-
-Initial scaffold.
