@@ -300,11 +300,17 @@ wf.body(func(args) {
 			cpu: 2
 		})
 
+		// Trace label carries the distinguishing settings (threshold(s),
+		// nMin, cluster filter) so downstream deriveDistinctLabels can tell
+		// apart columns from multiple convergence blocks reading the same
+		// dataset. customBlockLabel (user override) wins; else the
+		// parameter-encoding defaultBlockLabel; static name as last resort.
+		traceLabel := args.customBlockLabel || args.defaultBlockLabel || "Clonotype convergence (fast-STAR)"
 		trace := pSpec.makeTrace(anchorSpec, {
 			type: "milaboratories.clonotype-convergence",
 			id: blockId,
 			importance: 50,
-			label: "Clonotype convergence (fast-STAR)"
+			label: traceLabel
 		})
 
 		pfBuilder := pframes.pFrameBuilder()

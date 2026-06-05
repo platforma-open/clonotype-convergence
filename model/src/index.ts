@@ -9,6 +9,7 @@ import {
 import canonicalize from "canonicalize";
 import {
   formatSubtitle,
+  getDefaultBlockLabel,
   inputAnchorSpecs,
   isHeavy,
   isLight,
@@ -125,6 +126,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const args: BlockArgs = {
       nMin: data.nMin,
       applyClusterFilter,
+      customBlockLabel: data.customBlockLabel,
+      defaultBlockLabel: getDefaultBlockLabel(data),
     };
     if (chainH) {
       args.chainH = chainH;
