@@ -126,10 +126,12 @@ def cluster_sample(
         str(unique.iloc[i]["aaSeqCDR3"]): sizes_by_label[int(label)]
         for i, label in enumerate(labels)
     }
-    cluster_size_by_idx: dict[int, int] = {
-        int(row["index"]): size_by_cdr3[str(row["aaSeqCDR3"])]
-        for _, row in indexed.iterrows()
-    }
+    cluster_size_by_idx: dict[int, int] = dict(
+        zip(
+            indexed["index"].astype(int),
+            indexed["aaSeqCDR3"].astype(str).map(size_by_cdr3).astype(int),
+        )
+    )
     survivors_idx = {
         idx for idx, size in cluster_size_by_idx.items() if size >= cluster_min
     }

@@ -72,7 +72,7 @@ export function discoverUpstreamFacts<A, U>(
     // chain is implicit on the anchor itself.
     const key = chain ?? "";
     if (spec.name === "pl7.app/vdj/sequence" && spec.domain?.["pl7.app/vdj/feature"] === "CDR3") {
-      const alphabet = spec.domain["pl7.app/alphabet"];
+      const alphabet = spec.domain?.["pl7.app/alphabet"];
       if (alphabet === "aminoacid") hasAaCDR3[key] = true;
       if (alphabet === "nucleotide") hasNtCDR3[key] = true;
     }
