@@ -22,7 +22,7 @@ export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(
   // bins template, log Y axis (long-tail signal — most clones have
   // small Nb_freq, a few have very large).
   graphStateHistogramHeavy: {
-    title: "Convergent neighbour frequency (heavy chain)",
+    title: "Convergent neighbour frequency",
     template: "bins",
     currentTab: null,
     layersSettings: {
@@ -39,7 +39,7 @@ export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(
   // Light-chain histogram graph state (Phase 7). Same shape as heavy;
   // different fill colour to disambiguate at a glance.
   graphStateHistogramLight: {
-    title: "Convergent neighbour frequency (light chain)",
+    title: "Convergent neighbour frequency",
     template: "bins",
     currentTab: null,
     layersSettings: {

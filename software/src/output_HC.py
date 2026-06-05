@@ -4,12 +4,6 @@
 # Repository: https://github.com/statbiophys/STAR
 # Paper: Abbate et al., PNAS 2024 (DOI: 10.1073/pnas.2401058121).
 #
-# LICENSING NOTE: The upstream STAR repository ships without a LICENSE file.
-# Vendoring is done provisionally to make the block functional during
-# development; license clearance must be obtained from the STAR authors
-# (statbiophys group, Thomas Dupic / Thierry Mora / Aleksandra Walczak)
-# before any publication or distribution of this block. Track in MILAB-6354.
-#
 # The implementation is the paper's "binder" definition (Methods §
 # "Computation of the threshold for the binder identification"):
 #   - DBSCAN on aa CDR3 set with Levenshtein-1 metric (eps=1)

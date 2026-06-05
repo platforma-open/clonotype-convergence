@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -105,7 +104,15 @@ def cluster_sample(
     if len(sample_hits) == 0:
         return {}, set(), 0
     indexed = sample_hits.reset_index()
-    data = indexed["aaSeqCDR3"]
+    # Deduplicate by aaSeqCDR3 BEFORE DBSCAN. compute_neighbours.py
+    # left-merges per-aa STAR stats back onto per-(nt-clonotype) rows,
+    # so the same aaSeqCDR3 can appear in N consecutive rows (one per
+    # nt-variant). Running DBSCAN on those would count nt-variants of
+    # one aa CDR3 as a 10-member cluster — the paper's binder
+    # definition wants 10 DISTINCT aa CDR3s within Hamming-1. Dedupe →
+    # cluster → fan back out so cluster_size is sequence-distinct.
+    unique = indexed.drop_duplicates(subset=["aaSeqCDR3"]).reset_index(drop=True)
+    data = unique["aaSeqCDR3"]
     X = np.arange(len(data)).reshape(-1, 1)
     labels = DBSCAN(
         metric=lambda x, y: Output.lev_metric(x, y, data),
@@ -115,10 +122,16 @@ def cluster_sample(
     sizes_by_label: dict[int, int] = (
         pd.Series(labels).value_counts().astype(int).to_dict()
     )
-    cluster_size_by_idx: dict[int, int] = {
-        int(indexed.iloc[i]["index"]): sizes_by_label[int(label)]
+    size_by_cdr3: dict[str, int] = {
+        str(unique.iloc[i]["aaSeqCDR3"]): sizes_by_label[int(label)]
         for i, label in enumerate(labels)
     }
+    cluster_size_by_idx: dict[int, int] = dict(
+        zip(
+            indexed["index"].astype(int),
+            indexed["aaSeqCDR3"].astype(str).map(size_by_cdr3).astype(int),
+        )
+    )
     survivors_idx = {
         idx for idx, size in cluster_size_by_idx.items() if size >= cluster_min
     }
@@ -130,7 +143,6 @@ def cluster_sample(
 
 def main() -> int:
     args = parse_args()
-    t0 = time.monotonic()
 
     df = pd.read_csv(args.input, sep="\t")
 
@@ -249,8 +261,7 @@ def main() -> int:
         before_cluster=hits_before_total,
     )
 
-    elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    # No wall-clock log — pure template requires deterministic stdout.
     print(f"[chain {args.chain}] cluster-filter done")
     return 0
 

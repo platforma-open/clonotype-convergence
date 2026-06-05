@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -55,7 +54,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    t0 = time.monotonic()
 
     df = pd.read_csv(args.input, sep="\t")
 
@@ -99,8 +97,8 @@ def main() -> int:
         args.stats_json.parent.mkdir(parents=True, exist_ok=True)
         args.stats_json.write_text(json.dumps(stats))
 
-    elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    # No wall-clock log — pure template requires deterministic stdout
+    # for cache stability (see compute_neighbours.py for the long form).
     print(f"[chain {args.chain}] apply-threshold done")
     return 0
 

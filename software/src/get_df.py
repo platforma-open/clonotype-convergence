@@ -37,25 +37,24 @@ class Get_df:
         self.data = data
 
     def frequency(self):
-        df_freq=pd.DataFrame(self.data["aaSeqCDR3"])
-        df_freq["size"]=1
-        n_df=len(df_freq)
-        temp=df_freq.groupby(['aaSeqCDR3'], sort = False).sum()
-        temp["frequency"]=temp["size"]/n_df
-        temp=temp.reset_index()
-        temp=temp.set_index("aaSeqCDR3").to_dict()["frequency"]
-        return temp
+        # PATCH: groupby().size() instead of dummy-size + groupby().sum().
+        # Upstream pattern triggers pandas 2.x string-concat / numeric_only
+        # deprecation warnings (and is slower); .size() is direct and safe.
+        n_df = len(self.data)
+        if n_df == 0:
+            return {}
+        sizes = self.data.groupby("aaSeqCDR3", sort=False).size()
+        return (sizes / n_df).to_dict()
 
 
     def multiplicity(self):
+        # PATCH: same .size() rewrite as frequency().
         unique_nucl = self.data.drop_duplicates("nSeqCDR3")
-        unique_nucl.reset_index(drop = True, inplace = True)
-        unique_nucl=unique_nucl.assign(size=1)
-        n_df=len(unique_nucl)
-        temp=unique_nucl.groupby(['aaSeqCDR3'], sort = False).sum()
-        temp=temp.reset_index()
-        temp=temp.set_index("aaSeqCDR3").to_dict()["size"]
-        return temp, len(unique_nucl)
+        n_df = len(unique_nucl)
+        if n_df == 0:
+            return {}, 0
+        sizes = unique_nucl.groupby("aaSeqCDR3", sort=False).size().astype(int)
+        return sizes.to_dict(), n_df
 
 
     def neighbours(self):

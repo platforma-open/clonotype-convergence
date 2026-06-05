@@ -24,21 +24,35 @@ const factsFor = (ref: PlRef | undefined) => {
   return key === undefined ? undefined : app.model.outputs.factsByRef?.[key];
 };
 
+// Look up the dataset label as shown in the dropdown for the picked ref.
+// Snapshotted at pick time so the page subtitle (R55) renders without
+// having to re-resolve options later.
+const labelFor = (ref: PlRef | undefined): string | undefined => {
+  if (!ref) return undefined;
+  const key = canonicalize(ref as unknown as Record<string, unknown>);
+  return app.model.outputs.datasetOptions?.find(
+    (o) => canonicalize(o.ref as unknown as Record<string, unknown>) === key,
+  )?.label;
+};
+
 // Snapshot pattern (R8, R24): when the user picks the main input,
-// write BOTH `mainRef` AND `mainRefFacts` in the same user-gesture
-// handler. Reads from the model's factsByRef map keyed by canonical
-// PlRef. Picking a new main also clears the LC pick because the LC
-// options depend on the main pick (R66).
+// write `mainRef`, `mainRefFacts`, AND `mainRefLabel` in the same
+// user-gesture handler. Reads from the model's factsByRef map +
+// datasetOptions, both keyed by canonical PlRef. Picking a new main
+// also clears the LC pick because the LC options depend on the main
+// pick (R66).
 function onPickMain(ref: PlRef | undefined) {
   if (ref === undefined) {
     app.model.data.mainRef = undefined;
     app.model.data.mainRefFacts = undefined;
+    app.model.data.mainRefLabel = undefined;
     app.model.data.lightRef = undefined;
     app.model.data.lightRefFacts = undefined;
     return;
   }
   app.model.data.mainRef = ref;
   app.model.data.mainRefFacts = factsFor(ref);
+  app.model.data.mainRefLabel = labelFor(ref);
   app.model.data.lightRef = undefined;
   app.model.data.lightRefFacts = undefined;
 }
@@ -129,13 +143,12 @@ const alertMessage = computed<string | undefined>(() => {
        the main pick (bulk-heavy OR SC IG main). -->
   <PlNumberField
     v-if="heavyActive"
-    :model-value="app.model.data.thresholdH"
+    v-model="app.model.data.thresholdH"
     label="Heavy-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
     required
-    @update:model-value="(v) => (app.model.data.thresholdH = v)"
   >
     <template #tooltip>
       Frequency cutoff for the convergence call. Clonotypes with a neighbour-frequency above this
@@ -169,14 +182,13 @@ const alertMessage = computed<string | undefined>(() => {
        value (R17). -->
   <PlNumberField
     v-if="lightActive"
-    :model-value="app.model.data.thresholdL"
+    v-model="app.model.data.thresholdL"
     label="Light-chain threshold"
     :min="0"
     :max="1"
     :step="0.0001"
     placeholder="e.g. 0.000961 (heavy reference — recalibrate for LC)"
     required
-    @update:model-value="(v) => (app.model.data.thresholdL = v)"
   >
     <template #tooltip>
       Frequency cutoff for the light-chain convergence call. No default — light-chain diversity is
@@ -191,10 +203,7 @@ const alertMessage = computed<string | undefined>(() => {
          fastStarClusterFiltered column marks hits that ALSO lie in a
          Hamming/Levenshtein-1 cluster of size >= clusterMin
          (paper's binder definition). -->
-    <PlCheckbox
-      :model-value="app.model.data.applyClusterFilter ?? false"
-      @update:model-value="(v) => (app.model.data.applyClusterFilter = v)"
-    >
+    <PlCheckbox v-model="app.model.data.applyClusterFilter">
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
@@ -207,13 +216,12 @@ const alertMessage = computed<string | undefined>(() => {
     </PlCheckbox>
 
     <PlNumberField
-      :model-value="app.model.data.clusterMin"
+      v-model="app.model.data.clusterMin"
       label="Minimum cluster size"
       :min="1"
       :step="1"
       :disabled="!app.model.data.applyClusterFilter"
       required
-      @update:model-value="(v) => (app.model.data.clusterMin = v)"
     >
       <template #tooltip>
         Minimum number of similar clonotypes (Hamming/Levenshtein-1 cluster) required for a hit to
@@ -222,11 +230,10 @@ const alertMessage = computed<string | undefined>(() => {
     </PlNumberField>
 
     <PlNumberField
-      :model-value="app.model.data.nMin"
+      v-model="app.model.data.nMin"
       label="Minimum unique CDR3 per sample"
       :min="1"
       :step="1"
-      @update:model-value="(v) => (app.model.data.nMin = v)"
     >
       <template #tooltip>
         Samples with fewer than this many unique nucleotide CDR3 sequences are skipped. Below this
