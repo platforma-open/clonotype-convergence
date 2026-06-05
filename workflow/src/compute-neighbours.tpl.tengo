@@ -29,6 +29,14 @@ self.body(func(inputs) {
 		addFile("input.tsv", inputTsv).
 		saveFile("output.tsv").
 		saveStdoutStream().
+		// Pin the expensive neighbour computation in cache so threshold-only
+		// changes (which re-render the workflow but leave this pure stage's
+		// inputs identical) recover this result instead of recomputing it.
+		// Without a TTL the intermediate output is unreferenced once Stage 2
+		// consumes it and reference-counting GC drops it before the next
+		// render can reuse it. Matches the heavy MiXCR stages
+		// (mixcr-analyze: cache 48h). R56.
+		cacheHours(24).
 		run()
 
 	return {
