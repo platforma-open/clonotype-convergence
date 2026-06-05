@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -118,7 +117,6 @@ def process_group(
 
 def main() -> int:
     args = parse_args()
-    t0 = time.monotonic()
 
     df = pd.read_csv(args.input, sep="\t")
 
@@ -201,8 +199,12 @@ def main() -> int:
     out = pd.concat(outputs, ignore_index=True)
     out.to_csv(args.output, sep="\t", index=False)
 
-    elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    # Intentionally NO wall-clock log line here: this template is a pure
+    # template (cache key omits threshold per R56), so stdout content must
+    # be deterministic across re-runs with identical inputs. A wall-clock
+    # elapsed value would mutate the captured stdout-stream resource and
+    # break the cache (CID conflict when threshold-only changes attempt to
+    # reuse Stage 1's slot).
     print(f"[chain {args.chain}] compute-neighbours done")
     return 0
 

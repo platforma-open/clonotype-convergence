@@ -8,6 +8,7 @@ const app = useApp();
 const hasHeavy = computed(() => !!app.model.outputs.runLogsHeavy);
 const hasLight = computed(() => !!app.model.outputs.runLogsLight);
 const dualChain = computed(() => hasHeavy.value && hasLight.value);
+const isRunning = computed(() => app.model.outputs.isRunning);
 </script>
 
 <template>
@@ -28,6 +29,7 @@ const dualChain = computed(() => hasHeavy.value && hasLight.value);
       <PlLogView :log-handle="app.model.outputs.runLogsLight" />
     </section>
   </div>
+  <p v-else-if="isRunning" :class="$style.runningHint">Calculations started.</p>
   <p v-else>Run the block to see logs.</p>
 </template>
 
@@ -45,5 +47,11 @@ const dualChain = computed(() => hasHeavy.value && hasLight.value);
   color: var(--txt-02, #555);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.runningHint {
+  padding: 12px 16px;
+  color: var(--txt-02, #555);
+  font-size: 13px;
+  line-height: 1.45;
 }
 </style>

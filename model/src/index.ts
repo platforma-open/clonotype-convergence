@@ -155,7 +155,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // Mode (bulk vs SC) is detected post-selection by inspecting the
   // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
-    const broad = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
+    const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
     return broad.filter((opt) => {
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
       if (!spec) return false;
@@ -219,7 +219,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // UI snapshot writer reads this to write ref + facts in one tick
   // (R8, R24).
   .output("factsByRef", (ctx) => {
-    const options = ctx.resultPool.getOptions(inputAnchorSpecs, { refsWithEnrichments: true });
+    const options = ctx.resultPool.getOptions(inputAnchorSpecs);
     const result: Record<string, UpstreamFacts> = {};
     for (const opt of options) {
       const facts = discoverUpstreamFacts(ctx, opt.ref);
@@ -381,9 +381,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
+          // First rule wins. Force `pl7.app/label` (clonotype-id
+          // label) to default-visible — some MiXCR builds emit it
+          // with `visibility: "optional"` in its own annotations, so
+          // without this rule the Clone ID column shows up hidden on
+          // server runs (R52).
+          {
+            match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
+            visibility: "default",
+          },
           {
             match: (spec: PColumnSpec) => {
-              if (spec.name === "pl7.app/label") return false;
               if (spec.name === "pl7.app/sampleId") return false;
               if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
               if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;

@@ -59,19 +59,30 @@ export function friendlyChain(chain: string): string {
   return chain;
 }
 
-// R55 subtitle — derived from the populated chain slots in `data`.
-// Empty when not enough is picked to be meaningful (the page header
-// renders the placeholder, project list falls back to "").
+// R55 subtitle — "<dataset_label> <threshold>" in single-chain mode
+// (bulk-heavy, bulk-light, SC heavy-only); "<dataset_label> <thresholdH>
+// / Light <thresholdL>" in SC paired mode. Dataset label is snapshotted
+// at pick time from the dropdown option. Empty when not enough is picked
+// to be meaningful.
 export function formatSubtitle(data: BlockData): string | undefined {
-  const parts: string[] = [];
-  const chains = data.mainRefFacts?.chains ?? [];
-  const heavy = chains.find(isHeavy);
-  const light = chains.find(isLight);
-  if (heavy && data.thresholdH !== undefined) {
-    parts.push(`${friendlyChain(heavy)} ${data.thresholdH}`);
+  const facts = data.mainRefFacts;
+  if (!facts || !data.mainRefLabel) return undefined;
+
+  const isSC = facts.axisName === SC_AXIS;
+  const hasHeavyChain = facts.chains.some(isHeavy);
+
+  // Main-pick threshold: heavy when the main carries heavy (bulk-heavy
+  // or SC IG), light only for bulk-light (LC is the picked main).
+  const mainThreshold = hasHeavyChain ? data.thresholdH : data.thresholdL;
+  if (mainThreshold === undefined) return undefined;
+
+  const parts = [`${data.mainRefLabel} ${mainThreshold}`];
+
+  // SC paired (LC checkbox ticked) adds the LC suffix as a literal
+  // "Light <thresholdL>", no friendly-chain mapping.
+  if (isSC && data.lightRef !== undefined && data.thresholdL !== undefined) {
+    parts.push(`Light ${data.thresholdL}`);
   }
-  if (light && data.thresholdL !== undefined) {
-    parts.push(`${friendlyChain(light)} ${data.thresholdL}`);
-  }
-  return parts.length === 0 ? undefined : parts.join(" / ");
+
+  return parts.join(" / ");
 }

@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -142,7 +141,6 @@ def cluster_sample(
 
 def main() -> int:
     args = parse_args()
-    t0 = time.monotonic()
 
     df = pd.read_csv(args.input, sep="\t")
 
@@ -261,8 +259,7 @@ def main() -> int:
         before_cluster=hits_before_total,
     )
 
-    elapsed = time.monotonic() - t0
-    print(f"[chain {args.chain}] elapsed: {elapsed:.2f}s")
+    # No wall-clock log — pure template requires deterministic stdout.
     print(f"[chain {args.chain}] cluster-filter done")
     return 0
 

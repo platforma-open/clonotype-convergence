@@ -24,21 +24,35 @@ const factsFor = (ref: PlRef | undefined) => {
   return key === undefined ? undefined : app.model.outputs.factsByRef?.[key];
 };
 
+// Look up the dataset label as shown in the dropdown for the picked ref.
+// Snapshotted at pick time so the page subtitle (R55) renders without
+// having to re-resolve options later.
+const labelFor = (ref: PlRef | undefined): string | undefined => {
+  if (!ref) return undefined;
+  const key = canonicalize(ref as unknown as Record<string, unknown>);
+  return app.model.outputs.datasetOptions?.find(
+    (o) => canonicalize(o.ref as unknown as Record<string, unknown>) === key,
+  )?.label;
+};
+
 // Snapshot pattern (R8, R24): when the user picks the main input,
-// write BOTH `mainRef` AND `mainRefFacts` in the same user-gesture
-// handler. Reads from the model's factsByRef map keyed by canonical
-// PlRef. Picking a new main also clears the LC pick because the LC
-// options depend on the main pick (R66).
+// write `mainRef`, `mainRefFacts`, AND `mainRefLabel` in the same
+// user-gesture handler. Reads from the model's factsByRef map +
+// datasetOptions, both keyed by canonical PlRef. Picking a new main
+// also clears the LC pick because the LC options depend on the main
+// pick (R66).
 function onPickMain(ref: PlRef | undefined) {
   if (ref === undefined) {
     app.model.data.mainRef = undefined;
     app.model.data.mainRefFacts = undefined;
+    app.model.data.mainRefLabel = undefined;
     app.model.data.lightRef = undefined;
     app.model.data.lightRefFacts = undefined;
     return;
   }
   app.model.data.mainRef = ref;
   app.model.data.mainRefFacts = factsFor(ref);
+  app.model.data.mainRefLabel = labelFor(ref);
   app.model.data.lightRef = undefined;
   app.model.data.lightRefFacts = undefined;
 }

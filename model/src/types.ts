@@ -82,6 +82,11 @@ export type BlockData = {
   /** Snapshot facts for `mainRef`. Written by the main-picker handler
    *  in the same user-gesture as `mainRef` (R8, R24). */
   mainRefFacts?: UpstreamFacts;
+  /** Snapshot label for `mainRef` — the exact dropdown text the user
+   *  saw when they picked. Used as the dataset prefix in the page
+   *  subtitle so the subtitle reads e.g. "MyMixcrBulk 0.000961"
+   *  (single chain) or "MyMixcrSc 0.000961 / Light 0.03" (SC paired). */
+  mainRefLabel?: string;
 
   /** Optional secondary light-chain pick. Visible when the main pick
    *  CAN pair with a light chain:
