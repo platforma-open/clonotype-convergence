@@ -1,5 +1,15 @@
 # @platforma-open/milaboratories.clonotype-convergence
 
+## 1.1.1
+
+### Patch Changes
+
+- 245e096: minor fixes
+- Updated dependencies [245e096]
+  - @platforma-open/milaboratories.clonotype-convergence.workflow@1.1.1
+  - @platforma-open/milaboratories.clonotype-convergence.model@1.1.1
+  - @platforma-open/milaboratories.clonotype-convergence.ui@1.1.1
+
 ## 1.1.0
 
 ### Minor Changes
