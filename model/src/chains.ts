@@ -109,9 +109,10 @@ export function getDefaultBlockLabel(data: BlockData): string {
 // two convergence blocks on different inputs (e.g. different chains) is a
 // likely setup, and the dataset label is what disambiguates them in the
 // page header. Dataset label is snapshotted at pick time. Empty until an
-// input is picked.
+// input is picked. A " - " separates the dataset from the settings so the
+// commas inside the settings part don't blur into the dataset name.
 export function formatSubtitle(data: BlockData): string | undefined {
   if (!data.mainRefFacts || !data.mainRefLabel) return undefined;
   const settings = getDefaultBlockLabel(data);
-  return settings.length > 0 ? `${data.mainRefLabel} ${settings}` : data.mainRefLabel;
+  return settings.length > 0 ? `${data.mainRefLabel} - ${settings}` : data.mainRefLabel;
 }
