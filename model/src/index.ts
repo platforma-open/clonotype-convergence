@@ -4,6 +4,7 @@ import {
   createPFrameForGraphs,
   createPlDataTableSheet,
   createPlDataTableV3,
+  discoverTableColumnSnaphots,
   getUniquePartitionKeys,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
@@ -362,25 +363,44 @@ export const platforma = BlockModelV3.create(blockDataModel)
     )?.spec;
     if (!fastStarSpec) return undefined;
 
-    return createPlDataTableV3(ctx, {
-      columns: {
-        anchors: { main: fastStarSpec },
-        selector: {
-          mode: "enrichment",
-          // Drop per-sample-only columns (Sample label, donor, dataset,
-          // metadata) — the sample sheet pins one sampleId at a time
-          // (R52), so these columns would just repeat the picked value
-          // on every row. `partialAxesMatch: false` excludes only
-          // columns whose axes are *exactly* [sampleId] (multi-axis
-          // columns that include sampleId stay).
-          exclude: [
-            {
-              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-              partialAxesMatch: false,
-            },
-          ],
-        },
+    // Enrichment pulls every column sharing the anchor's axes from the
+    // result pool — including convergence columns from OTHER convergence
+    // blocks upstream. Discover first, then drop those in JS: an exclude
+    // selector can't express "block != this one" (the spec driver's regex
+    // runs in wasm/Rust, which has no negative lookahead), so we filter by
+    // the block domain here. This block's id sits on the anchor's own
+    // domain (pl7.app/block).
+    const thisBlockId = fastStarSpec.domain?.["pl7.app/block"];
+    const variants = discoverTableColumnSnaphots(ctx, {
+      anchors: { main: fastStarSpec },
+      selector: {
+        mode: "enrichment",
+        // Drop per-sample-only columns (Sample label, donor, dataset,
+        // metadata) — the sample sheet pins one sampleId at a time
+        // (R52), so these columns would just repeat the picked value
+        // on every row. `partialAxesMatch: false` excludes only
+        // columns whose axes are *exactly* [sampleId] (multi-axis
+        // columns that include sampleId stay).
+        exclude: [
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: false,
+          },
+        ],
       },
+    });
+    if (!variants) return undefined;
+
+    // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
+    // and this block's own convergence columns; drop convergence columns
+    // produced by other instances of this block.
+    const ownVariants = variants.filter((v) => {
+      if (!v.column.spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      return v.column.spec.domain?.["pl7.app/block"] === thisBlockId;
+    });
+
+    return createPlDataTableV3(ctx, {
+      columns: ownVariants,
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
