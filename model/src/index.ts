@@ -405,6 +405,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // produced by other instances of this block.
     const ownVariants = variants.filter((v) => {
       if (!v.column.spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       return v.column.spec.domain?.["pl7.app/block"] === thisBlockId;
     });
 
