@@ -29,6 +29,7 @@
     },
     "meta": {
       "title": "Clonotype Convergence",
+      "logo": "file:../logos/block-logo.png",
       "url": "https://github.com/platforma-open/clonotype-convergence",
       "support": "mailto:support@milaboratories.com",
       "description": "Detect antigen-driven clonotype convergence in a single BCR repertoire (fast-STAR).",
@@ -41,7 +42,8 @@
       ],
       "organization": {
         "name": "MiLaboratories Inc",
-        "url": "https://milaboratories.com/"
+        "url": "https://milaboratories.com/",
+        "logo": "file:../logos/organization-logo.png"
       }
     }
   }

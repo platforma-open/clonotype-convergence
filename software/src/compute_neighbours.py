@@ -88,8 +88,9 @@ def process_group(
     if n_nt < n_min:
         log(
             prefix,
-            f"error: unique nt CDR3 count {n_nt} below nMin {n_min}; "
-            "group skipped (N_nt below the floor where neighbour density is meaningful)",
+            f"Error: sample unique nt CDR3 count ({n_nt}) below the defined "
+            f"minimum ({n_min}). This minimum defines the floor where neighbour "
+            "density is meaningful; group skipped",
         )
         return None
 

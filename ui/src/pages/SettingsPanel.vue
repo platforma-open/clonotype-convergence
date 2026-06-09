@@ -130,8 +130,8 @@ const alertMessage = computed<string | undefined>(() => {
     @update:model-value="onPickMain"
   >
     <template #tooltip>
-      MiXCR clonotyping output to analyze. Accepts any B-cell receptor anchor — heavy bulk, light
-      bulk, or single-cell paired (heavy + light on one anchor). T-cell receptors aren't supported.
+      VDJ output to analyze. Accepts any B-cell receptor — bulk Heavy/Light, or single-cell. T-cell
+      receptors aren't supported. For in-vivo (immunised) repertoires only.
     </template>
   </PlDropdownRef>
 
@@ -169,10 +169,9 @@ const alertMessage = computed<string | undefined>(() => {
     Process light chain
     <PlTooltip class="info" position="top">
       <template #tooltip>
-        The selected single-cell anchor carries light-chain siblings on the same per-cell axis
-        (column-domain key <code>scClonotypeChain = "B"</code>). Check this to also run the
-        convergence pipeline on those LC siblings — emits a parallel light-chain hit column and
-        histogram. Unchecked = heavy only.
+        The selected single-cell input contains both heavy and light chains. Check to also analyze
+        the light chain — emits a parallel light-chain hit column and histogram. Unchecked = heavy
+        only.
       </template>
     </PlTooltip>
   </PlCheckbox>
@@ -207,10 +206,10 @@ const alertMessage = computed<string | undefined>(() => {
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
-          Adds a stricter hit definition alongside the threshold-only one: clonotypes that also lie
-          in a Hamming/Levenshtein-1 cluster of size at least the threshold below. Mitigates
-          sequencing-error noise and matches Abbate et al. 2024's headline "binder" definition. Off
-          by default — the threshold-only hit column stays as the primary signal.
+          Adds a stricter hit definition alongside the threshold-only one: clonotypes whose CDR3
+          sits in a cluster of similar CDR3s (one-edit distance) of at least the size below.
+          Mitigates sequencing-error noise and matches Abbate et al. 2024's headline "binder"
+          definition. Off by default — the threshold-only hit column stays as the primary signal.
         </template>
       </PlTooltip>
     </PlCheckbox>
@@ -224,8 +223,8 @@ const alertMessage = computed<string | undefined>(() => {
       required
     >
       <template #tooltip>
-        Minimum number of similar clonotypes (Hamming/Levenshtein-1 cluster) required for a hit to
-        survive the binder filter. Paper default is 10.
+        Minimum size of the CDR3 cluster (one-edit distance) required for a hit to survive the
+        binder filter. Paper default is 10.
       </template>
     </PlNumberField>
 

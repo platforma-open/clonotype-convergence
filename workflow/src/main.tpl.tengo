@@ -261,7 +261,7 @@ wf.body(func(args) {
 					},
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 lies in a single-linkage cluster of at least the configured minimum size (Hamming-1 / Levenshtein-1 distance). Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
+						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
@@ -278,7 +278,7 @@ wf.body(func(args) {
 					},
 					annotations: {
 						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Size of the single-linkage Hamming/Levenshtein-1 cluster this clone's CDR3 belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
+						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
 				}
