@@ -375,6 +375,15 @@ export const platforma = BlockModelV3.create(blockDataModel)
       anchors: { main: fastStarSpec },
       selector: {
         mode: "enrichment",
+        // Direct-only: no cross-domain linker hops. Without this, enrichment
+        // traverses linkers from the clonotype axis into other blocks' axis
+        // systems (e.g. clonotype-clustering's cluster-id axis,
+        // clonotype-space's), pulling their columns AND introducing extra
+        // axes into the table. maxHops:0 keeps enrichment to columns on the
+        // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
+        // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
+        // optional via the visibility rules below.
+        maxHops: 0,
         // Drop per-sample-only columns (Sample label, donor, dataset,
         // metadata) — the sample sheet pins one sampleId at a time
         // (R52), so these columns would just repeat the picked value
@@ -404,11 +413,24 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
-          // First rule wins. Force `pl7.app/label` (clonotype-id
-          // label) to default-visible — some MiXCR builds emit it
-          // with `visibility: "optional"` in its own annotations, so
-          // without this rule the Clone ID column shows up hidden on
-          // server runs (R52).
+          // First rule wins. Hide per-sample-only columns (axes exactly
+          // [sampleId]) — chiefly the Sample label that the table's
+          // automatic axis-label discovery re-adds for the array-form
+          // `columns`. The sample sheet pins one sampleId at a time (R52),
+          // so they'd just repeat the picked value on every row. Must come
+          // before the `pl7.app/label` rule below, which would otherwise
+          // force the Sample label visible. (The object-form selector used
+          // to exclude these; the array form re-adds them, so we hide here.)
+          {
+            match: (spec: PColumnSpec) =>
+              spec.axesSpec.length === 1 && spec.axesSpec[0]?.name === "pl7.app/sampleId",
+            visibility: "hidden",
+          },
+          // Force `pl7.app/label` (clonotype-id label) to default-visible
+          // — some MiXCR builds emit it with `visibility: "optional"` in
+          // its own annotations, so without this rule the Clone ID column
+          // shows up hidden on server runs (R52). The Sample label is
+          // already caught by the rule above (first match wins).
           {
             match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
             visibility: "default",
