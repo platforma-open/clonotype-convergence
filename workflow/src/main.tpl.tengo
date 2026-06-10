@@ -77,6 +77,14 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "heavy", idx: 0 }],
 			name: "pl7.app/label"
 		}, "heavySampleLabel")
+		// Clone-ID label (per-clonotype-axis pl7.app/label). Bundled
+		// here so the histogram pframe ships labels alongside our
+		// convergence columns — the model output passes the pframe
+		// through, no anchored discovery at render time.
+		bb.addMulti({
+			axes: [{ anchor: "heavy", idx: 1 }],
+			name: "pl7.app/label"
+		}, "heavyCloneLabel")
 	}
 
 	if !is_undefined(args.chainL) {
@@ -98,6 +106,10 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "light", idx: 0 }],
 			name: "pl7.app/label"
 		}, "lightSampleLabel")
+		bb.addMulti({
+			axes: [{ anchor: "light", idx: 1 }],
+			name: "pl7.app/label"
+		}, "lightCloneLabel")
 	}
 
 	return { columns: bb.build() }
@@ -124,7 +136,7 @@ wf.body(func(args) {
 	// optional sampleLabel), runs Stage 1 then Stage 2, optionally Stage 3,
 	// and imports the final TSV back into a pframe of convergence
 	// PColumns chain-tagged with `chainName`. Returns the built pframe.
-	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, chainName, threshold) {
+	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, chainName, threshold) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
 		// untouched in single-chain mode. Uniform shape across all
@@ -318,6 +330,17 @@ wf.body(func(args) {
 			v := importedFrames[k]
 			pfBuilder.add(k, trace.inject(v.spec), v.data)
 		}
+		// Bundle the upstream label columns into the pframe so the
+		// histogram's "Show for" picker and tooltips render sample
+		// names + Clone IDs without the model needing to do anchored
+		// discovery at render time. No trace.inject — we're re-emitting
+		// upstream-owned labels, not claiming ownership.
+		for i, c in columns.getColumns(labelKey) {
+			pfBuilder.add("sampleLabel_" + string(i), c.spec, c.data)
+		}
+		for i, c in columns.getColumns(cloneLabelKey) {
+			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
+		}
 		return {
 			pf: pfBuilder.build(),
 			stage1Logs: stage1.output("logs"),
@@ -336,6 +359,7 @@ wf.body(func(args) {
 			"heavyAaCDR3",
 			"heavyNtCDR3",
 			"heavySampleLabel",
+			"heavyCloneLabel",
 			args.chainHName,
 			args.thresholdH
 		)
@@ -353,6 +377,7 @@ wf.body(func(args) {
 			"lightAaCDR3",
 			"lightNtCDR3",
 			"lightSampleLabel",
+			"lightCloneLabel",
 			args.chainLName,
 			args.thresholdL
 		)

@@ -1,7 +1,6 @@
 import type { InferOutputsType, PColumnSpec, PFrameHandle, PlRef } from "@platforma-sdk/model";
 import {
   BlockModelV3,
-  createPFrameForGraphs,
   createPlDataTableSheet,
   createPlDataTableV3,
   discoverTableColumnSnaphots,
@@ -266,7 +265,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
   // Heavy-chain p-frame for the heavy histogram. Conditional on the
   // heavy pipeline running (workflow's `convergencePf` output is only
-  // emitted when args.chainH is set).
+  // emitted when args.chainH is set). The workflow bundles sample-
+  // label + clone-label columns into convergencePf so the histogram
+  // already has the labels it needs — model just passes them through
+  // with ctx.createPFrame (no broad enrichment).
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -276,7 +278,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       })
       ?.getPColumns();
     if (pCols === undefined) return undefined;
-    return createPFrameForGraphs(ctx, pCols);
+    return ctx.createPFrame(pCols);
   })
   .output("histogramPfPcols", (ctx) => {
     const pCols = ctx.outputs
@@ -299,7 +301,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Light-chain p-frame for the light histogram. Emitted when args.chainL is set.
+  // Light-chain p-frame for the light histogram. See histogramPf
+  // above — labels come from the workflow's lightConvergencePf.
   .outputWithStatus("lightHistogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -309,7 +312,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       })
       ?.getPColumns();
     if (pCols === undefined) return undefined;
-    return createPFrameForGraphs(ctx, pCols);
+    return ctx.createPFrame(pCols);
   })
   .output("lightHistogramPfPcols", (ctx) => {
     const pCols = ctx.outputs
