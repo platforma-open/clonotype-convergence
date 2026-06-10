@@ -321,7 +321,8 @@ wf.body(func(args) {
 		return {
 			pf: pfBuilder.build(),
 			stage1Logs: stage1.output("logs"),
-			statsJson: finalStatsJson
+			statsJson: finalStatsJson,
+			skippedJson: stage1.output("skippedJson")
 		}
 	}
 
@@ -341,6 +342,7 @@ wf.body(func(args) {
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.stage1LogsHeavy = heavy.stage1Logs
+		outputs.heavySkippedJson = heavy.skippedJson
 		exports.convergence = heavy.pf
 	}
 
@@ -357,6 +359,7 @@ wf.body(func(args) {
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
 		outputs.lightHitStats = light.statsJson
 		outputs.stage1LogsLight = light.stage1Logs
+		outputs.lightSkippedJson = light.skippedJson
 		exports.lightConvergence = light.pf
 	}
 

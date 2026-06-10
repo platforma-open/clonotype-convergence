@@ -8,7 +8,7 @@ self := import("@platforma-sdk/workflow-tengo:tpl")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 exec := import("@platforma-sdk/workflow-tengo:exec")
 
-self.defineOutputs("outputTsv", "logs")
+self.defineOutputs("outputTsv", "logs", "skippedJson")
 
 computeNeighboursSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:compute-neighbours")
 
@@ -26,8 +26,10 @@ self.body(func(inputs) {
 		arg("--output").arg("output.tsv").
 		arg("--nMin").arg(string(nMin)).
 		arg("--chain").arg(chain).
+		arg("--skipped-json").arg("skipped.json").
 		addFile("input.tsv", inputTsv).
 		saveFile("output.tsv").
+		saveFileContent("skipped.json").
 		saveStdoutStream().
 		// Pin the expensive neighbour computation in cache so threshold-only
 		// changes (which re-render the workflow but leave this pure stage's
@@ -41,6 +43,7 @@ self.body(func(inputs) {
 
 	return {
 		outputTsv: cmd.getFile("output.tsv"),
-		logs: cmd.getStdoutStream()
+		logs: cmd.getStdoutStream(),
+		skippedJson: cmd.getFileContent("skipped.json")
 	}
 })

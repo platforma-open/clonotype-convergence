@@ -332,6 +332,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
+  // Skipped-samples warning sidecar from Stage 1 (R12). Reads the
+  // JSON written by compute_neighbours.py — list of sample labels
+  // whose unique-nt-CDR3 count fell below nMin, plus the nMin in
+  // effect at the time. UI surfaces a PlAlert above the main table
+  // when either chain has skipped samples.
+  .output("heavySkippedSamples", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "heavySkippedJson",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getDataAsJson<{ skipped: string[]; nMin: number }>(),
+  )
+  .output("lightSkippedSamples", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "lightSkippedJson",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getDataAsJson<{ skipped: string[]; nMin: number }>(),
+  )
+
   // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For

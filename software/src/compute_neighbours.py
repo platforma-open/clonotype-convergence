@@ -31,6 +31,7 @@ Per-group structured stdout per R44 — one event per line, prefixed
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -53,6 +54,13 @@ def parse_args() -> argparse.Namespace:
         default="sampleId",
         dest="sample_column",
         help="Column to group rows by (pass empty string to disable grouping).",
+    )
+    parser.add_argument(
+        "--skipped-json",
+        type=Path,
+        default=None,
+        help="Optional JSON sidecar listing samples skipped (below nMin). "
+        "Used by the UI to surface a warning above the main table.",
     )
     return parser.parse_args()
 
@@ -175,6 +183,15 @@ def main() -> int:
             outputs.append(result)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Always write the skipped-samples JSON (empty list when nothing was
+    # skipped) so the workflow output exists regardless of input quality.
+    # Lets the model resolve it unconditionally.
+    if args.skipped_json is not None:
+        args.skipped_json.parent.mkdir(parents=True, exist_ok=True)
+        args.skipped_json.write_text(
+            json.dumps({"skipped": skipped, "nMin": args.nMin})
+        )
 
     if not outputs:
         # All groups below nMin — emit an empty (header-only) TSV and

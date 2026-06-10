@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   PlAgDataTableV2,
+  PlAlert,
   PlBlockPage,
   PlBtnGhost,
   PlDialogModal,
@@ -52,6 +53,19 @@ const statsOpen = computed({
 // promoted from histogram-page corner to main-page header.
 const hasAnyStats = computed(
   () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
+);
+
+// Skipped-samples warning (R12). Stage 1 drops samples whose unique
+// nt-CDR3 count falls below nMin; the JSON sidecar carries the names
+// so the UI can flag them above the table.
+const skippedSamples = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.skipped ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.skipped ?? [];
+  // De-duplicate across chains: the same sample can fail both.
+  return Array.from(new Set([...heavy, ...light]));
+});
+const skippedNMin = computed<number | undefined>(
+  () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
 );
 
 // Auto-close the Settings modal when a run starts — mirrors the
@@ -120,6 +134,16 @@ const customBlockLabel = computed({
         </template>
       </PlBtnGhost>
     </template>
+
+    <PlAlert v-if="skippedSamples.length > 0" type="warn" icon>
+      <template #title>
+        {{ skippedSamples.length }} sample{{ skippedSamples.length === 1 ? "" : "s" }} excluded
+      </template>
+      The following sample{{ skippedSamples.length === 1 ? " has" : "s have" }} fewer than
+      {{ skippedNMin }} unique nucleotide CDR3 sequences and
+      {{ skippedSamples.length === 1 ? "was" : "were" }} skipped: {{ skippedSamples.join(", ") }}.
+      Adjust "Minimum unique CDR3 per sample" in Advanced settings to include them.
+    </PlAlert>
 
     <PlAgDataTableV2
       v-model="app.model.data.mainTableState"
