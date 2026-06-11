@@ -361,7 +361,11 @@ export const platforma = BlockModelV3.create(blockDataModel)
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
-      ?.getDataAsJson<{ skipped: string[]; nMin: number }>(),
+      ?.getDataAsJson<{
+        belowMin: string[];
+        allEmpty: boolean;
+        nMin: number;
+      }>(),
   )
   .output("lightSkippedSamples", (ctx) =>
     ctx.outputs
@@ -370,7 +374,11 @@ export const platforma = BlockModelV3.create(blockDataModel)
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
-      ?.getDataAsJson<{ skipped: string[]; nMin: number }>(),
+      ?.getDataAsJson<{
+        belowMin: string[];
+        allEmpty: boolean;
+        nMin: number;
+      }>(),
   )
 
   // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
