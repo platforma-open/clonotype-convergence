@@ -163,16 +163,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
       if (!spec) return false;
       const axisName = spec.axesSpec[1]?.name;
+      let chainOk: boolean;
       if (axisName === SC_AXIS) {
         const receptor = spec.axesSpec[1]?.domain?.["pl7.app/vdj/receptor"];
-        return receptor === SC_BCR_RECEPTOR;
+        chainOk = receptor === SC_BCR_RECEPTOR;
+      } else {
+        // Bulk path: chain in axis or column domain.
+        const chain =
+          spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
+        chainOk = !!chain && !chain.startsWith("TCR") && (isHeavy(chain) || isLight(chain));
       }
-      // Bulk path: chain in axis or column domain.
-      const chain =
-        spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
-      if (!chain) return false;
-      if (chain.startsWith("TCR")) return false;
-      return isHeavy(chain) || isLight(chain);
+      if (!chainOk) return false;
+      // CDR3-readiness gate. Only offer a dataset once its CDR3 sibling
+      // specs are present in the pool. This closes a snapshot-timing race:
+      // right after a block reload the result pool repopulates incrementally
+      // and there is a window where the anchor column is present but its
+      // CDR3 siblings are not yet. Without this gate a user could pick
+      // during that window and the args/alert snapshot (mainRefFacts) would
+      // freeze a false "missing CDR3" until re-pick — and a published
+      // version update reloads the same way, so this is user-facing.
+      // discoverUpstreamFacts is the same check factsByRef/the snapshot use,
+      // so an offered dataset always has CDR3 facts ready at pick time;
+      // during the window the dataset simply appears a moment later.
+      const facts = discoverUpstreamFacts(ctx, opt.ref);
+      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3;
     });
   })
 
