@@ -144,6 +144,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
+    // R69 — single-sample export. Not required (export is conditional on
+    // it being set); projected only when present so it doesn't add an
+    // undefined key to args.
+    if (data.exportSampleId !== undefined) {
+      args.exportSampleId = data.exportSampleId;
+    }
     return args;
   })
 
@@ -216,6 +222,22 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
+  })
+
+  // R75 — options for the "Sample to export" picker. value = raw sampleId,
+  // label = human sample name (findLabels resolves the pl7.app/label column
+  // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
+  // from the UPSTREAM anchor's partition keys, so it's available before this
+  // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
+  // mainTableSheets. Undefined until a dataset is picked.
+  .output("exportSampleOptions", (ctx) => {
+    if (!ctx.data.mainRef) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    if (!anchor) return undefined;
+    const samples = getUniquePartitionKeys(anchor.data)?.[0];
+    if (!samples) return undefined;
+    const labels = ctx.resultPool.findLabels(anchor.spec.axesSpec[0]);
+    return samples.map((v) => ({ value: String(v), label: labels?.[v] ?? String(v) }));
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
@@ -431,9 +453,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // and this block's own convergence columns; drop convergence columns
     // produced by other instances of this block.
     const ownVariants = variants.filter((v) => {
-      if (!v.column.spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      const spec = v.column.spec;
+      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
-      return v.column.spec.domain?.["pl7.app/block"] === thisBlockId;
+      if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
+      // Drop our single-sample EXPORT family (R70) from the block's own
+      // table — it's downstream-only. With a sample picked, those columns
+      // are in the result pool, and enrichment broadcasts them across
+      // samples (showing "— <sample>" labels). The internal multi-sample
+      // columns carry the sampleId axis; the export columns are clonotype-
+      // only, so this keeps the former and drops the latter.
+      return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     });
 
     return createPlDataTableV3(ctx, {

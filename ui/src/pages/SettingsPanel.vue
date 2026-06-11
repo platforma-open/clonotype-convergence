@@ -4,12 +4,13 @@ import {
   PlAccordionSection,
   PlAlert,
   PlCheckbox,
+  PlDropdown,
   PlDropdownRef,
   PlNumberField,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
 import canonicalize from "canonicalize";
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -55,6 +56,11 @@ function onPickMain(ref: PlRef | undefined) {
   app.model.data.mainRefLabel = labelFor(ref);
   app.model.data.lightRef = undefined;
   app.model.data.lightRefFacts = undefined;
+  // NOTE: exportSampleId is NOT cleared here — a different dataset from the
+  // same clonotyping run can share the exact sample list, and we want to
+  // keep the pick in that case. Validity is reconciled reactively below
+  // (watch on exportSampleOptions), which only drops the pick when the new
+  // list genuinely lacks it.
 }
 
 // Which chain(s) are detected on the main pick. The main itself may
@@ -118,6 +124,31 @@ const alertMessage = computed<string | undefined>(() => {
   }
   return undefined;
 });
+
+// Reconcile the exported-sample pick against the current dataset's sample
+// list. Drop it ONLY when the loaded list genuinely lacks it (e.g. the new
+// dataset has different samples); keep it when the new dataset shares the
+// same samples (heavy vs light from one clonotyping run). The readiness
+// guard is essential: while the list is undefined/empty (startup, or the
+// gap right after a dataset change before options recompute) we do nothing,
+// so a valid pick is never wiped during the not-ready window.
+//
+// This is NOT a hairpin: exportSampleOptions depends on the dataset
+// (mainRef), not on exportSampleId, so this write cannot feed back into the
+// watched output; and the write is deterministic, so it's idempotent across
+// clients.
+watch(
+  () => app.model.outputs.exportSampleOptions,
+  (options) => {
+    if (!options || options.length === 0) return; // not ready — leave the pick alone
+    const current = app.model.data.exportSampleId;
+    if (current === undefined) return;
+    if (!options.some((o) => o.value === current)) {
+      app.model.data.exportSampleId = undefined;
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -196,6 +227,26 @@ const alertMessage = computed<string | undefined>(() => {
       visually on the light-chain histogram.
     </template>
   </PlNumberField>
+
+  <!-- Single-sample export (R69, R75). Picks which sample's convergence
+       columns get exported (collapsed to a clonotype-only axis) for
+       Antibody Lead Selection. No default — unset exports nothing. Options
+       come from the upstream dataset's samples, so the picker is usable
+       before the first run. -->
+  <PlDropdown
+    v-if="app.model.data.mainRef"
+    v-model="app.model.data.exportSampleId"
+    :options="app.model.outputs.exportSampleOptions ?? []"
+    label="Sample to export"
+    clearable
+  >
+    <template #tooltip>
+      Antibody Lead Selection works on one sample at a time, so convergence is exported for a single
+      sample. Pick which one — its name is carried on the exported columns. Leave empty to export
+      nothing. Change it and press Run to re-export; this is fast, since only the selected sample is
+      recomputed.
+    </template>
+  </PlDropdown>
 
   <PlAccordionSection label="Advanced settings">
     <!-- Cluster filter (R58). Off by default. When on, an additional
