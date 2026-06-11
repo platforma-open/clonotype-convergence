@@ -55,18 +55,25 @@ const hasAnyStats = computed(
   () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
 );
 
-// Skipped-samples warning (R12). Stage 1 drops samples whose unique
-// nt-CDR3 count falls below nMin; the JSON sidecar carries the names
-// so the UI can flag them above the table.
-const skippedSamples = computed<string[]>(() => {
-  const heavy = app.model.outputs.heavySkippedSamples?.skipped ?? [];
-  const light = app.model.outputs.lightSkippedSamples?.skipped ?? [];
-  // De-duplicate across chains: the same sample can fail both.
+// Skipped-samples warning (R12). `belowMin` lists samples that had
+// CDR3 data but fewer unique nts than the nMin floor — surfaced with
+// advice to adjust nMin. The chain-wide "no usable data" case is
+// surfaced separately via `allEmpty` (see below).
+const skippedBelowMin = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.belowMin ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.belowMin ?? [];
   return Array.from(new Set([...heavy, ...light]));
 });
 const skippedNMin = computed<number | undefined>(
   () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
 );
+
+// "All empty" — the chain ran but produced nothing usable AND has no
+// per-sample skip reason to explain it (every input row had null /
+// empty CDR3s). Chain-attributed so the user knows which chain is
+// the problem in dual-chain mode.
+const heavyAllEmpty = computed(() => app.model.outputs.heavySkippedSamples?.allEmpty === true);
+const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allEmpty === true);
 
 // Auto-close the Settings modal when a run starts — mirrors the
 // clonotype-space / immune-assay-data pattern. Logs stay open since
@@ -135,14 +142,26 @@ const customBlockLabel = computed({
       </PlBtnGhost>
     </template>
 
-    <PlAlert v-if="skippedSamples.length > 0" type="warn" icon>
+    <PlAlert v-if="skippedBelowMin.length > 0" type="warn" icon>
       <template #title>
-        {{ skippedSamples.length }} sample{{ skippedSamples.length === 1 ? "" : "s" }} excluded
+        {{ skippedBelowMin.length }} sample{{ skippedBelowMin.length === 1 ? "" : "s" }} below
+        minimum
       </template>
-      The following sample{{ skippedSamples.length === 1 ? " has" : "s have" }} fewer than
-      {{ skippedNMin }} unique nucleotide CDR3 sequences and
-      {{ skippedSamples.length === 1 ? "was" : "were" }} skipped: {{ skippedSamples.join(", ") }}.
-      Adjust "Minimum unique CDR3 per sample" in Advanced settings to include them.
+      {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
+      fewer than {{ skippedNMin }} unique nucleotide CDR3 sequences and
+      {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
+      Adjust "Minimum unique CDR3 per sample" in Advanced settings to include
+      {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+    </PlAlert>
+
+    <PlAlert v-if="heavyAllEmpty" type="warn" icon>
+      <template #title>No heavy-chain data</template>
+      No samples had usable CDR3 data for the heavy chain. Check the upstream input.
+    </PlAlert>
+
+    <PlAlert v-if="lightAllEmpty" type="warn" icon>
+      <template #title>No light-chain data</template>
+      No samples had usable CDR3 data for the light chain. Check the upstream input.
     </PlAlert>
 
     <PlAgDataTableV2
