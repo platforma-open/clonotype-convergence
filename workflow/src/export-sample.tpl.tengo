@@ -1,0 +1,29 @@
+// Single-sample export collapse (R74).
+//
+// Pure template: cache key = (inputTsv, sampleId). Filtering the full
+// multi-sample TSV down to one sample is the expensive part (it reads
+// every sample's rows), so isolating it in a PURE template is what lets
+// the filtered result dedup across blocks and runs — the chosen sample's
+// rows are identical regardless of which block instance asks for them.
+// The block-specific import (blockId-tagged columns) stays in the caller
+// and reads this small filtered TSV, so it never re-reads the full TSV.
+//
+// Inline `pt` in the caller did NOT dedup across blocks (verified on a
+// big project: the ~11min filter re-ran for a second same-settings block);
+// the pure-template boundary fixes that by content-addressing the output.
+
+self := import("@platforma-sdk/workflow-tengo:tpl")
+pt := import("@platforma-sdk/workflow-tengo:pt")
+
+self.defineOutputs("outputTsv")
+
+self.body(func(inputs) {
+	ptWf := pt.workflow().mem("4GiB").cpu(2)
+	ptWf.frame(inputs.inputTsv, { xsvType: "tsv" }).
+		filter(pt.col("sampleId").eq(pt.lit(inputs.sampleId))).
+		save("export.tsv")
+
+	return {
+		outputTsv: ptWf.run().getFile("export.tsv")
+	}
+})

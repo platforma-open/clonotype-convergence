@@ -145,9 +145,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
       args.clusterMin = clusterMin;
     }
     // R69 — single-sample export. Not required (export is conditional on
-    // it being set); projected only when present so it doesn't add an
-    // undefined key to args.
-    if (data.exportSampleId !== undefined) {
+    // it being set); projected only when a non-empty sampleId is chosen.
+    // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
+    // empty string, which must count as "no selection" — otherwise the
+    // workflow would run the export collapse with a filter matching no
+    // rows (re-reading the whole TSV + re-importing per block every run).
+    if (data.exportSampleId) {
       args.exportSampleId = data.exportSampleId;
     }
     return args;
