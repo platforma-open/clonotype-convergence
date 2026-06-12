@@ -233,20 +233,17 @@ watch(
        Antibody Lead Selection. No default — unset exports nothing. Options
        come from the upstream dataset's samples, so the picker is usable
        before the first run. -->
+  <PlAlert v-if="app.model.data.mainRef" type="info">
+    Convergence is exported for one sample at a time, on a per-clonotype basis. Pick a sample to
+    make its convergence available to downstream blocks.
+  </PlAlert>
   <PlDropdown
     v-if="app.model.data.mainRef"
     v-model="app.model.data.exportSampleId"
     :options="app.model.outputs.exportSampleOptions ?? []"
     label="Sample to export"
     clearable
-  >
-    <template #tooltip>
-      Antibody Lead Selection works on one sample at a time, so convergence is exported for a single
-      sample. Pick which one — its name is carried on the exported columns. Leave empty to export
-      nothing. Change it and press Run to re-export; this is fast, since only the selected sample is
-      recomputed.
-    </template>
-  </PlDropdown>
+  />
 
   <PlAccordionSection label="Advanced settings">
     <!-- Cluster filter (R58). Off by default. When on, an additional
