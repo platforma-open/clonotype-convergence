@@ -322,7 +322,11 @@ wf.body(func(args) {
 						// changes. Histogram X-axis labels + significant-line label
 						// (R48) inherit the same format from the axis numberFormat.
 						"pl7.app/format": ".3~%",
-						"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }]))
+						"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
+						// Rankable score for downstream lead selection (R70): higher
+						// convergent frequency = stronger signal, so rank descending.
+						"pl7.app/isScore": "true",
+						"pl7.app/score/rankingOrder": "decreasing"
 					}
 				}
 			},
@@ -343,7 +347,12 @@ wf.body(func(args) {
 						"pl7.app/description": "Hit when this clone's convergent neighbour frequency exceeds the configured threshold for this chain — meaning the clone has unusually many same-length CDR3s that differ by exactly one amino acid, suggesting convergent evolution under antigen-driven selection. Not hit otherwise. Computed independently per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
-						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+						// Discoverable score + default "keep only Hit" filter for
+						// downstream lead selection: string_in via the discrete
+						// annotations above (R70).
+						"pl7.app/isScore": "true",
+						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
 					}
 				}
 			}
