@@ -71,13 +71,15 @@ def log(prefix: str, msg: str) -> None:
 
 def process_group(
     group_df: pd.DataFrame,
-    sample_id: str,
+    sample_label: str,
     chain: str,
     n_min: int,
 ):
     """Run Get_df on one sample's rows. Returns annotated dataframe, or
-    None if the group fails the nMin floor."""
-    prefix = f"[sample {sample_id}, chain {chain}]"
+    None if the group fails the nMin floor. `sample_label` is a display-only
+    label for logs (a project-neutral counter like "3/12"): the heavy TSV
+    carries anonymized sampleIds, so logs must not reference project-local ids."""
+    prefix = f"[sample {sample_label}, chain {chain}]"
     log(prefix, f"input rows: {len(group_df)}")
 
     # Drop rows with null / empty / NaN in either CDR3 column (R13).
@@ -137,9 +139,6 @@ def main() -> int:
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     grouping = bool(sample_col) and sample_col in df.columns
-    # Prefer the human-readable sample label for log prefixes when the
-    # workflow attached one; fall back to the raw sampleId otherwise.
-    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
     # Pre-grouping drop of rows with null/empty CDR3 fields. The
     # workflow's TSV builder outer-joins by axis name, which can drag
@@ -160,38 +159,35 @@ def main() -> int:
             "aaSeqCDR3 or nSeqCDR3 before per-sample grouping"
         )
 
-    # Capture sample IDs + labels from the POST-drop dataframe. Samples
-    # whose every row was null/empty CDR3 (join noise from project-wide
-    # sample-label columns that match a different MiXCR run's samples)
-    # are already gone — they never enter the iteration or the skipped
-    # list. Real samples that survived the drop are the universe of
-    # samples we either process or report as "below minimum".
-    sample_displays: dict[str, str] = {}
+    # Capture sample IDs from the POST-drop dataframe. Samples whose every
+    # row was null/empty CDR3 (join noise from project-wide sample columns
+    # matching a different MiXCR run's samples) are already gone — they never
+    # enter the iteration or the skipped list. Real samples that survived the
+    # drop are the universe we either process or report as "below minimum".
+    # These ids are anonymization fingerprints (the heavy TSV carries no real
+    # sampleId): the skipped list keeps them so the workflow can de-anonymize
+    # them back to human labels downstream, while logs use a neutral counter.
+    sample_ids: list[str] = []
     if grouping:
-        for sid in sorted(df[sample_col].astype(str).unique().tolist()):
-            label = sid
-            if label_col is not None:
-                rows = df[df[sample_col].astype(str) == sid]
-                if len(rows) > 0 and pd.notna(rows[label_col].iloc[0]):
-                    label = str(rows[label_col].iloc[0])
-            sample_displays[sid] = label
+        sample_ids = sorted(df[sample_col].astype(str).unique().tolist())
 
     outputs = []
     # Single skip reason: sample had CDR3 data but unique-nt count
     # < nMin. Lowering nMin in Advanced settings may include it. The
-    # "no rows after drop" case is unreachable because sample_displays
+    # "no rows after drop" case is unreachable because sample_ids
     # was seeded only from samples with at least one valid CDR3 row;
     # the chain-wide all-empty case is surfaced via the `allEmpty` flag
     # below instead of as per-sample entries.
     skipped: list[str] = []
 
     if grouping:
-        for sample_id in sorted(sample_displays.keys()):
-            display = sample_displays[sample_id]
+        total_samples = len(sample_ids)
+        for idx, sample_id in enumerate(sample_ids, start=1):
             group = df[df[sample_col].astype(str) == sample_id]
-            result = process_group(group, display, args.chain, args.nMin)
+            result = process_group(group, str(idx) + "/" + str(total_samples), args.chain, args.nMin)
             if result is None:
-                skipped.append(display)
+                # Keep the anonymized sampleId — de-anonymized to a label downstream.
+                skipped.append(sample_id)
                 continue
             outputs.append(result)
     else:
@@ -231,9 +227,12 @@ def main() -> int:
         # produces empty PColumns rather than the whole workflow
         # aborting. The UI surfaces "no data" naturally via the empty
         # histogram pframe / table rows.
+        # Report the count only — the skipped list holds anonymized
+        # fingerprints (de-anonymized to human labels downstream for the UI),
+        # so printing the raw ids here would leak meaningless hashes.
         print(
-            f"[chain {args.chain}] warning: all groups below nMin "
-            f"(skipped: {skipped}); emitting empty output"
+            f"[chain {args.chain}] warning: all {len(skipped)} group(s) below "
+            "nMin; emitting empty output"
         )
         empty = pd.DataFrame(
             columns=list(df.columns) + ["multiplicity", "neighbours", "Nb_freq"]
@@ -242,8 +241,10 @@ def main() -> int:
         return 0
 
     if skipped:
+        # Count only — `skipped` holds anonymized fingerprints (de-anonymized
+        # to human labels downstream for the UI warning); don't leak raw ids.
         print(
-            f"[chain {args.chain}] skipped groups (below nMin): {skipped}"
+            f"[chain {args.chain}] {len(skipped)} group(s) skipped (below nMin)"
         )
 
     out = pd.concat(outputs, ignore_index=True)

@@ -8,7 +8,7 @@ self := import("@platforma-sdk/workflow-tengo:tpl")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 exec := import("@platforma-sdk/workflow-tengo:exec")
 
-self.defineOutputs("outputTsv", "logs", "statsJson")
+self.defineOutputs("outputTsv", "statsJson")
 
 applyThresholdSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:apply-threshold")
 
@@ -29,12 +29,10 @@ self.body(func(inputs) {
 		addFile("input.tsv", inputTsv).
 		saveFile("output.tsv").
 		saveFileContent("stats.json").
-		saveStdoutStream().
 		run()
 
 	return {
 		outputTsv: cmd.getFile("output.tsv"),
-		logs: cmd.getStdoutStream(),
 		statsJson: cmd.getFileContent("stats.json")
 	}
 })

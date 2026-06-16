@@ -65,18 +65,16 @@ def main() -> int:
     df["fastStar"] = (df["Nb_freq"] > args.threshold).map({True: HIT, False: NOT_HIT})
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
-    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
     if sample_col and sample_col in df.columns:
-        for sample_id, group in df.groupby(df[sample_col].astype(str), sort=True):
+        # Heavy TSV carries anonymized sampleIds, so log a project-neutral
+        # counter rather than the (fingerprint) id.
+        groups = list(df.groupby(df[sample_col].astype(str), sort=True))
+        total = len(groups)
+        for idx, (_sample_id, group) in enumerate(groups, start=1):
             hits = int((group["fastStar"] == HIT).sum())
-            display = (
-                str(group[label_col].iloc[0])
-                if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
-                else sample_id
-            )
             print(
-                f"[sample {display}, chain {args.chain}] "
+                f"[sample {idx}/{total}, chain {args.chain}] "
                 f"threshold: {args.threshold}, hit count: {hits} / {len(group)}"
             )
     else:
