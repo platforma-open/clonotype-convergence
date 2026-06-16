@@ -14,9 +14,8 @@ them under their own column family. Nothing exports until a sample is picked
 and the block is re-run, so the choice stays explicit; the sample name lives in
 the column labels and trace.
 
-The multi-sample family stays in the result pool: it drives this block's own
-table and histograms, lead selection ignores it (it rejects per-sample-axis
-columns), and pooling it is what keeps the compute pipeline recoverable so a
-second identical block dedups instead of recomputing. The collapse runs in a
-pure template, so the filtered result content-addresses and dedups across
-blocks and runs.
+The multi-sample family stays internal to the block: it drives the in-block
+table and histograms, but is not exported to the result pool — downstream
+consumers enrich by clonotype key, never by the per-sample axis, so the
+single-sample family is the only convergence data the block exposes
+downstream. The collapse runs in a pure template.

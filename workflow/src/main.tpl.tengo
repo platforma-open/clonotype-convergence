@@ -537,19 +537,19 @@ wf.body(func(args) {
 			args.chainHName,
 			args.thresholdH
 		)
+		// Multi-sample family stays INTERNAL (R71): it drives this block's own
+		// table + histograms only. It is not pooled downstream — consumers
+		// enrich by clonotype key, never by sampleId axis, so the per-sample
+		// columns have no downstream use. (Pooling it earlier was purely to keep
+		// the compute chain recoverable for cross-block dedup; under
+		// anonymization the import re-runs regardless, so that buys nothing.)
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.stage1LogsHeavy = heavy.stage1Logs
 		outputs.heavySkippedJson = heavy.skippedJson
-		// Export the multi-sample family to the pool. This is what keeps the
-		// computation chain recoverable for cross-block dedup — without it a
-		// second identical block recomputes Stage 2 + import (the regression).
-		// Harmless to antibody lead selection: it rejects sampleId-axis
-		// columns, so it never offers this family — only the single-sample
-		// one below. (Relaxes the earlier R71 "don't pool multi-sample".)
-		exports.convergence = heavy.pf
 		// Single-sample collapsed family for lead selection (R70), only when
-		// a sample is picked. Same column names, clonotype-only axis.
+		// a sample is picked. Same column names, clonotype-only axis — the only
+		// convergence data the block exports downstream.
 		if !is_undefined(heavy.exportPf) {
 			exports.convergenceSingleSample = heavy.exportPf
 		}
@@ -566,11 +566,11 @@ wf.body(func(args) {
 			args.chainLName,
 			args.thresholdL
 		)
+		// Light multi-sample family also internal-only (R71) — see heavy above.
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
 		outputs.lightHitStats = light.statsJson
 		outputs.stage1LogsLight = light.stage1Logs
 		outputs.lightSkippedJson = light.skippedJson
-		exports.lightConvergence = light.pf
 		if !is_undefined(light.exportPf) {
 			exports.lightConvergenceSingleSample = light.exportPf
 		}
