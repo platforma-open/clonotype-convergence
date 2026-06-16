@@ -332,7 +332,7 @@ wf.body(func(args) {
 					name: "pl7.app/vdj/convergence/fastStar",
 					// String "Hit" / "Not hit" per R62 — the column reads as a
 					// discrete categorical filter (PlTableFilters + chip styling).
-					// Underlying threshold semantics live in apply_threshold.py.
+					// Underlying threshold semantics live in apply-threshold.tpl.tengo.
 					valueType: "String",
 					domain: {
 						"pl7.app/block": blockId,
