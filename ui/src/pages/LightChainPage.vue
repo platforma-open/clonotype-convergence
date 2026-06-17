@@ -18,7 +18,10 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
     (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/nbFreq",
   );
   if (!nbFreq) return undefined;
-  return [
+  const fastStar = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/fastStar",
+  );
+  const defaults: PredefinedGraphOption<"histogram">[] = [
     {
       inputName: "value",
       selectedSource: nbFreq.spec,
@@ -28,6 +31,13 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       selectedSource: nbFreq.spec.axesSpec[0],
     },
   ];
+  if (fastStar) {
+    defaults.push({
+      inputName: "grouping",
+      selectedSource: fastStar.spec,
+    });
+  }
+  return defaults;
 });
 </script>
 

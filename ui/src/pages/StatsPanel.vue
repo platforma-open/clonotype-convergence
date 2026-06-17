@@ -21,7 +21,10 @@ function rowsFor(s: HitStats): Row[] {
   } else {
     rows.push({ label: "Above threshold", value: fmt(s.above) });
   }
-  rows.push({ label: "Total clonotypes", value: fmt(s.total) });
+  // "Total records" rather than "Total clonotypes": the underlying
+  // counts come from the long-format (sampleId, clonotypeKey) frame,
+  // so a clonotype shared by N samples contributes N records.
+  rows.push({ label: "Total records (clonotype × sample)", value: fmt(s.total) });
   return rows;
 }
 </script>

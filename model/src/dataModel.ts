@@ -1,4 +1,5 @@
 import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
+import { DEFAULT_NMIN } from "./chains";
 import type { BlockData } from "./types";
 
 export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
@@ -13,7 +14,7 @@ export const blockDataModel = new DataModelBuilder().from<BlockData>("v1").init(
   // R17 — thresholdL deliberately has NO default; user must enter it
   // explicitly so they don't ship an inappropriate value silently.
   thresholdH: 0.000961,
-  nMin: 100,
+  nMin: DEFAULT_NMIN,
   // Cluster filter (R58, Phase 7.5) — off by default to preserve v1
   // semantics. Paper default 10 for cluster_min when the toggle is on.
   applyClusterFilter: false,

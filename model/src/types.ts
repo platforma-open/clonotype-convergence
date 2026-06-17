@@ -69,6 +69,15 @@ export type BlockArgs = {
   /** DBSCAN min_samples for the binder cluster filter. Projected
    *  only when applyClusterFilter is true. */
   clusterMin?: number;
+
+  // Labels projected into the workflow trace step so downstream blocks
+  // can disambiguate columns from multiple convergence blocks.
+  /** User-overridden block label (empty when unset). */
+  customBlockLabel: string;
+  /** Parameter-encoding fallback label (threshold(s), nMin, cluster) —
+   *  see getDefaultBlockLabel. Used as the trace label when
+   *  customBlockLabel is empty. */
+  defaultBlockLabel: string;
 };
 
 /** Unified V3 data model — block args inputs PLUS UI state. */

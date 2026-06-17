@@ -31,6 +31,7 @@ Per-group structured stdout per R44 — one event per line, prefixed
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -53,6 +54,13 @@ def parse_args() -> argparse.Namespace:
         default="sampleId",
         dest="sample_column",
         help="Column to group rows by (pass empty string to disable grouping).",
+    )
+    parser.add_argument(
+        "--skipped-json",
+        type=Path,
+        default=None,
+        help="Optional JSON sidecar listing samples skipped (below nMin). "
+        "Used by the UI to surface a warning above the main table.",
     )
     return parser.parse_args()
 
@@ -88,8 +96,9 @@ def process_group(
     if n_nt < n_min:
         log(
             prefix,
-            f"error: unique nt CDR3 count {n_nt} below nMin {n_min}; "
-            "group skipped (N_nt below the floor where neighbour density is meaningful)",
+            f"Error: sample unique nt CDR3 count ({n_nt}) below the defined "
+            f"minimum ({n_min}). This minimum defines the floor where neighbour "
+            "density is meaningful; group skipped",
         )
         return None
 
@@ -126,6 +135,12 @@ def main() -> int:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
+    sample_col = args.sample_column.strip() if args.sample_column else ""
+    grouping = bool(sample_col) and sample_col in df.columns
+    # Prefer the human-readable sample label for log prefixes when the
+    # workflow attached one; fall back to the raw sampleId otherwise.
+    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
+
     # Pre-grouping drop of rows with null/empty CDR3 fields. The
     # workflow's TSV builder outer-joins by axis name, which can drag
     # in spurious rows from project-wide siblings (e.g. the sampleLabel
@@ -145,24 +160,35 @@ def main() -> int:
             "aaSeqCDR3 or nSeqCDR3 before per-sample grouping"
         )
 
-    sample_col = args.sample_column.strip() if args.sample_column else ""
-    grouping = bool(sample_col) and sample_col in df.columns
-    # Prefer the human-readable sample label for log prefixes when the
-    # workflow attached one; fall back to the raw sampleId otherwise.
-    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
+    # Capture sample IDs + labels from the POST-drop dataframe. Samples
+    # whose every row was null/empty CDR3 (join noise from project-wide
+    # sample-label columns that match a different MiXCR run's samples)
+    # are already gone — they never enter the iteration or the skipped
+    # list. Real samples that survived the drop are the universe of
+    # samples we either process or report as "below minimum".
+    sample_displays: dict[str, str] = {}
+    if grouping:
+        for sid in sorted(df[sample_col].astype(str).unique().tolist()):
+            label = sid
+            if label_col is not None:
+                rows = df[df[sample_col].astype(str) == sid]
+                if len(rows) > 0 and pd.notna(rows[label_col].iloc[0]):
+                    label = str(rows[label_col].iloc[0])
+            sample_displays[sid] = label
 
     outputs = []
-    skipped = []
+    # Single skip reason: sample had CDR3 data but unique-nt count
+    # < nMin. Lowering nMin in Advanced settings may include it. The
+    # "no rows after drop" case is unreachable because sample_displays
+    # was seeded only from samples with at least one valid CDR3 row;
+    # the chain-wide all-empty case is surfaced via the `allEmpty` flag
+    # below instead of as per-sample entries.
+    skipped: list[str] = []
 
     if grouping:
-        sample_ids = sorted(df[sample_col].astype(str).unique().tolist())
-        for sample_id in sample_ids:
+        for sample_id in sorted(sample_displays.keys()):
+            display = sample_displays[sample_id]
             group = df[df[sample_col].astype(str) == sample_id]
-            display = (
-                str(group[label_col].iloc[0])
-                if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
-                else sample_id
-            )
             result = process_group(group, display, args.chain, args.nMin)
             if result is None:
                 skipped.append(display)
@@ -174,6 +200,30 @@ def main() -> int:
             outputs.append(result)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    # "All empty" — chain produced nothing usable AND no sample fell
+    # below the nMin floor to explain it. Happens when every input row
+    # had null/empty CDR3s (e.g. an LC anchor whose siblings are all
+    # heavy-only, or a chain that simply isn't represented in the
+    # picked input). The UI uses this to render a chain-attributed
+    # "no data" alert distinct from the per-sample skip list.
+    all_empty = len(outputs) == 0 and len(skipped) == 0
+
+    # Always write the skipped-samples JSON (empty list when nothing
+    # was skipped) so the workflow output exists regardless of input
+    # quality. `belowMin` carries the per-sample skips, `allEmpty`
+    # handles the chain-wide no-data case.
+    if args.skipped_json is not None:
+        args.skipped_json.parent.mkdir(parents=True, exist_ok=True)
+        args.skipped_json.write_text(
+            json.dumps(
+                {
+                    "belowMin": skipped,
+                    "allEmpty": all_empty,
+                    "nMin": args.nMin,
+                }
+            )
+        )
 
     if not outputs:
         # All groups below nMin — emit an empty (header-only) TSV and

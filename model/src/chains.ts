@@ -22,6 +22,11 @@ export const inputAnchorSpecs = [
 
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
+// Default sample-size floor (R12). Shared by the data model's init() and
+// the trace-label builder, which omits nMin from the label when it's
+// left at this default.
+export const DEFAULT_NMIN = 100;
+
 // MiXCR chain DOMAIN values (R28). Heavy = "IGHeavy"; light family
 // includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
 // surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
@@ -59,30 +64,55 @@ export function friendlyChain(chain: string): string {
   return chain;
 }
 
-// R55 subtitle — "<dataset_label> <threshold>" in single-chain mode
-// (bulk-heavy, bulk-light, SC heavy-only); "<dataset_label> <thresholdH>
-// / Light <thresholdL>" in SC paired mode. Dataset label is snapshotted
-// at pick time from the dropdown option. Empty when not enough is picked
-// to be meaningful.
-export function formatSubtitle(data: BlockData): string | undefined {
+// Settings portion of the block's identity label — threshold(s), nMin
+// (only when non-default), and the cluster filter. This is the single
+// source of truth shared by the page subtitle and the column trace, so
+// the two stay consistent:
+//   - column trace uses it as-is (the dataset is already in the column
+//     domain — no need to repeat it);
+//   - the subtitle prefixes the dataset label (see formatSubtitle).
+// deriveDistinctLabels in downstream blocks (graph-maker, data-mapping)
+// renders the trace label only when needed to disambiguate, so a single
+// block's labels are unchanged; without these settings two blocks on the
+// same dataset with different settings collapse to identical labels.
+export function getDefaultBlockLabel(data: BlockData): string {
+  const parts: string[] = [];
+
   const facts = data.mainRefFacts;
-  if (!facts || !data.mainRefLabel) return undefined;
-
-  const isSC = facts.axisName === SC_AXIS;
-  const hasHeavyChain = facts.chains.some(isHeavy);
-
-  // Main-pick threshold: heavy when the main carries heavy (bulk-heavy
-  // or SC IG), light only for bulk-light (LC is the picked main).
-  const mainThreshold = hasHeavyChain ? data.thresholdH : data.thresholdL;
-  if (mainThreshold === undefined) return undefined;
-
-  const parts = [`${data.mainRefLabel} ${mainThreshold}`];
-
-  // SC paired (LC checkbox ticked) adds the LC suffix as a literal
-  // "Light <thresholdL>", no friendly-chain mapping.
-  if (isSC && data.lightRef !== undefined && data.thresholdL !== undefined) {
-    parts.push(`Light ${data.thresholdL}`);
+  if (facts) {
+    const isSC = facts.axisName === SC_AXIS;
+    const mainThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
+    if (mainThreshold !== undefined) {
+      let thr = `thr ${mainThreshold}`;
+      if (isSC && data.lightRef !== undefined && data.thresholdL !== undefined) {
+        thr += ` / L thr ${data.thresholdL}`;
+      }
+      parts.push(thr);
+    }
   }
 
-  return parts.join(" / ");
+  // Only surface nMin when it deviates from the default — keeps the
+  // common case uncluttered.
+  if (data.nMin !== undefined && data.nMin !== DEFAULT_NMIN) {
+    parts.push(`nMin ${data.nMin}`);
+  }
+  if (data.applyClusterFilter && data.clusterMin !== undefined) {
+    parts.push(`cluster ≥ ${data.clusterMin}`);
+  }
+
+  return parts.join(", ");
+}
+
+// R55 subtitle — dataset label + settings (getDefaultBlockLabel), kept
+// consistent with the column trace label which uses the same settings
+// string. Unlike most multi-setting blocks we DO keep the dataset here:
+// two convergence blocks on different inputs (e.g. different chains) is a
+// likely setup, and the dataset label is what disambiguates them in the
+// page header. Dataset label is snapshotted at pick time. Empty until an
+// input is picked. A " - " separates the dataset from the settings so the
+// commas inside the settings part don't blur into the dataset name.
+export function formatSubtitle(data: BlockData): string | undefined {
+  if (!data.mainRefFacts || !data.mainRefLabel) return undefined;
+  const settings = getDefaultBlockLabel(data);
+  return settings.length > 0 ? `${data.mainRefLabel} - ${settings}` : data.mainRefLabel;
 }

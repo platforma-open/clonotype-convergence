@@ -1,14 +1,15 @@
 import type { InferOutputsType, PColumnSpec, PFrameHandle, PlRef } from "@platforma-sdk/model";
 import {
   BlockModelV3,
-  createPFrameForGraphs,
   createPlDataTableSheet,
   createPlDataTableV3,
+  discoverTableColumnSnaphots,
   getUniquePartitionKeys,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
   formatSubtitle,
+  getDefaultBlockLabel,
   inputAnchorSpecs,
   isHeavy,
   isLight,
@@ -125,6 +126,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const args: BlockArgs = {
       nMin: data.nMin,
       applyClusterFilter,
+      customBlockLabel: data.customBlockLabel,
+      defaultBlockLabel: getDefaultBlockLabel(data),
     };
     if (chainH) {
       args.chainH = chainH;
@@ -160,16 +163,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
       if (!spec) return false;
       const axisName = spec.axesSpec[1]?.name;
+      let chainOk: boolean;
       if (axisName === SC_AXIS) {
         const receptor = spec.axesSpec[1]?.domain?.["pl7.app/vdj/receptor"];
-        return receptor === SC_BCR_RECEPTOR;
+        chainOk = receptor === SC_BCR_RECEPTOR;
+      } else {
+        // Bulk path: chain in axis or column domain.
+        const chain =
+          spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
+        chainOk = !!chain && !chain.startsWith("TCR") && (isHeavy(chain) || isLight(chain));
       }
-      // Bulk path: chain in axis or column domain.
-      const chain =
-        spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
-      if (!chain) return false;
-      if (chain.startsWith("TCR")) return false;
-      return isHeavy(chain) || isLight(chain);
+      if (!chainOk) return false;
+      // CDR3-readiness gate. Only offer a dataset once its CDR3 sibling
+      // specs are present in the pool. This closes a snapshot-timing race:
+      // right after a block reload the result pool repopulates incrementally
+      // and there is a window where the anchor column is present but its
+      // CDR3 siblings are not yet. Without this gate a user could pick
+      // during that window and the args/alert snapshot (mainRefFacts) would
+      // freeze a false "missing CDR3" until re-pick — and a published
+      // version update reloads the same way, so this is user-facing.
+      // discoverUpstreamFacts is the same check factsByRef/the snapshot use,
+      // so an offered dataset always has CDR3 facts ready at pick time;
+      // during the window the dataset simply appears a moment later.
+      const facts = discoverUpstreamFacts(ctx, opt.ref);
+      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3;
     });
   })
 
@@ -262,7 +279,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
   // Heavy-chain p-frame for the heavy histogram. Conditional on the
   // heavy pipeline running (workflow's `convergencePf` output is only
-  // emitted when args.chainH is set).
+  // emitted when args.chainH is set). The workflow bundles sample-
+  // label + clone-label columns into convergencePf so the histogram
+  // already has the labels it needs — model just passes them through
+  // with ctx.createPFrame (no broad enrichment).
   .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -272,7 +292,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       })
       ?.getPColumns();
     if (pCols === undefined) return undefined;
-    return createPFrameForGraphs(ctx, pCols);
+    return ctx.createPFrame(pCols);
   })
   .output("histogramPfPcols", (ctx) => {
     const pCols = ctx.outputs
@@ -295,7 +315,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Light-chain p-frame for the light histogram. Emitted when args.chainL is set.
+  // Light-chain p-frame for the light histogram. See histogramPf
+  // above — labels come from the workflow's lightConvergencePf.
   .outputWithStatus("lightHistogramPf", (ctx): PFrameHandle | undefined => {
     const pCols = ctx.outputs
       ?.resolve({
@@ -305,7 +326,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       })
       ?.getPColumns();
     if (pCols === undefined) return undefined;
-    return createPFrameForGraphs(ctx, pCols);
+    return ctx.createPFrame(pCols);
   })
   .output("lightHistogramPfPcols", (ctx) => {
     const pCols = ctx.outputs
@@ -326,6 +347,38 @@ export const platforma = BlockModelV3.create(blockDataModel)
         allowPermanentAbsence: true,
       })
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
+  )
+
+  // Skipped-samples warning sidecar from Stage 1 (R12). Reads the
+  // JSON written by compute_neighbours.py — list of sample labels
+  // whose unique-nt-CDR3 count fell below nMin, plus the nMin in
+  // effect at the time. UI surfaces a PlAlert above the main table
+  // when either chain has skipped samples.
+  .output("heavySkippedSamples", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "heavySkippedJson",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getDataAsJson<{
+        belowMin: string[];
+        allEmpty: boolean;
+        nMin: number;
+      }>(),
+  )
+  .output("lightSkippedSamples", (ctx) =>
+    ctx.outputs
+      ?.resolve({
+        field: "lightSkippedJson",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getDataAsJson<{
+        belowMin: string[];
+        allEmpty: boolean;
+        nMin: number;
+      }>(),
   )
 
   // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
@@ -359,33 +412,75 @@ export const platforma = BlockModelV3.create(blockDataModel)
     )?.spec;
     if (!fastStarSpec) return undefined;
 
-    return createPlDataTableV3(ctx, {
-      columns: {
-        anchors: { main: fastStarSpec },
-        selector: {
-          mode: "enrichment",
-          // Drop per-sample-only columns (Sample label, donor, dataset,
-          // metadata) — the sample sheet pins one sampleId at a time
-          // (R52), so these columns would just repeat the picked value
-          // on every row. `partialAxesMatch: false` excludes only
-          // columns whose axes are *exactly* [sampleId] (multi-axis
-          // columns that include sampleId stay).
-          exclude: [
-            {
-              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-              partialAxesMatch: false,
-            },
-          ],
-        },
+    // Enrichment pulls every column sharing the anchor's axes from the
+    // result pool — including convergence columns from OTHER convergence
+    // blocks upstream. Discover first, then drop those in JS: an exclude
+    // selector can't express "block != this one" (the spec driver's regex
+    // runs in wasm/Rust, which has no negative lookahead), so we filter by
+    // the block domain here. This block's id sits on the anchor's own
+    // domain (pl7.app/block).
+    const thisBlockId = fastStarSpec.domain?.["pl7.app/block"];
+    const variants = discoverTableColumnSnaphots(ctx, {
+      anchors: { main: fastStarSpec },
+      selector: {
+        mode: "enrichment",
+        // Direct-only: no cross-domain linker hops. Without this, enrichment
+        // traverses linkers from the clonotype axis into other blocks' axis
+        // systems (e.g. clonotype-clustering's cluster-id axis,
+        // clonotype-space's), pulling their columns AND introducing extra
+        // axes into the table. maxHops:0 keeps enrichment to columns on the
+        // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
+        // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
+        // optional via the visibility rules below.
+        maxHops: 0,
+        // Drop per-sample-only columns (Sample label, donor, dataset,
+        // metadata) — the sample sheet pins one sampleId at a time
+        // (R52), so these columns would just repeat the picked value
+        // on every row. `partialAxesMatch: false` excludes only
+        // columns whose axes are *exactly* [sampleId] (multi-axis
+        // columns that include sampleId stay).
+        exclude: [
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: false,
+          },
+        ],
       },
+    });
+    if (!variants) return undefined;
+
+    // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
+    // and this block's own convergence columns; drop convergence columns
+    // produced by other instances of this block.
+    const ownVariants = variants.filter((v) => {
+      if (!v.column.spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
+      return v.column.spec.domain?.["pl7.app/block"] === thisBlockId;
+    });
+
+    return createPlDataTableV3(ctx, {
+      columns: ownVariants,
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
-          // First rule wins. Force `pl7.app/label` (clonotype-id
-          // label) to default-visible — some MiXCR builds emit it
-          // with `visibility: "optional"` in its own annotations, so
-          // without this rule the Clone ID column shows up hidden on
-          // server runs (R52).
+          // First rule wins. Hide per-sample-only columns (axes exactly
+          // [sampleId]) — chiefly the Sample label that the table's
+          // automatic axis-label discovery re-adds for the array-form
+          // `columns`. The sample sheet pins one sampleId at a time (R52),
+          // so they'd just repeat the picked value on every row. Must come
+          // before the `pl7.app/label` rule below, which would otherwise
+          // force the Sample label visible. (The object-form selector used
+          // to exclude these; the array form re-adds them, so we hide here.)
+          {
+            match: (spec: PColumnSpec) =>
+              spec.axesSpec.length === 1 && spec.axesSpec[0]?.name === "pl7.app/sampleId",
+            visibility: "hidden",
+          },
+          // Force `pl7.app/label` (clonotype-id label) to default-visible
+          // — some MiXCR builds emit it with `visibility: "optional"` in
+          // its own annotations, so without this rule the Clone ID column
+          // shows up hidden on server runs (R52). The Sample label is
+          // already caught by the rule above (first match wins).
           {
             match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
             visibility: "default",

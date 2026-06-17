@@ -8,7 +8,7 @@ self := import("@platforma-sdk/workflow-tengo:tpl")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 exec := import("@platforma-sdk/workflow-tengo:exec")
 
-self.defineOutputs("outputTsv", "logs")
+self.defineOutputs("outputTsv", "logs", "skippedJson")
 
 computeNeighboursSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:compute-neighbours")
 
@@ -26,13 +26,24 @@ self.body(func(inputs) {
 		arg("--output").arg("output.tsv").
 		arg("--nMin").arg(string(nMin)).
 		arg("--chain").arg(chain).
+		arg("--skipped-json").arg("skipped.json").
 		addFile("input.tsv", inputTsv).
 		saveFile("output.tsv").
+		saveFileContent("skipped.json").
 		saveStdoutStream().
+		// Pin the expensive neighbour computation in cache so threshold-only
+		// changes (which re-render the workflow but leave this pure stage's
+		// inputs identical) recover this result instead of recomputing it.
+		// Without a TTL the intermediate output is unreferenced once Stage 2
+		// consumes it and reference-counting GC drops it before the next
+		// render can reuse it. Matches the heavy MiXCR stages
+		// (mixcr-analyze: cache 48h). R56.
+		cacheHours(24).
 		run()
 
 	return {
 		outputTsv: cmd.getFile("output.tsv"),
-		logs: cmd.getStdoutStream()
+		logs: cmd.getStdoutStream(),
+		skippedJson: cmd.getFileContent("skipped.json")
 	}
 })

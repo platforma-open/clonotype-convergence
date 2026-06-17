@@ -77,6 +77,14 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "heavy", idx: 0 }],
 			name: "pl7.app/label"
 		}, "heavySampleLabel")
+		// Clone-ID label (per-clonotype-axis pl7.app/label). Bundled
+		// here so the histogram pframe ships labels alongside our
+		// convergence columns — the model output passes the pframe
+		// through, no anchored discovery at render time.
+		bb.addMulti({
+			axes: [{ anchor: "heavy", idx: 1 }],
+			name: "pl7.app/label"
+		}, "heavyCloneLabel")
 	}
 
 	if !is_undefined(args.chainL) {
@@ -98,6 +106,10 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "light", idx: 0 }],
 			name: "pl7.app/label"
 		}, "lightSampleLabel")
+		bb.addMulti({
+			axes: [{ anchor: "light", idx: 1 }],
+			name: "pl7.app/label"
+		}, "lightCloneLabel")
 	}
 
 	return { columns: bb.build() }
@@ -124,7 +136,7 @@ wf.body(func(args) {
 	// optional sampleLabel), runs Stage 1 then Stage 2, optionally Stage 3,
 	// and imports the final TSV back into a pframe of convergence
 	// PColumns chain-tagged with `chainName`. Returns the built pframe.
-	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, chainName, threshold) {
+	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, chainName, threshold) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
 		// untouched in single-chain mode. Uniform shape across all
@@ -261,7 +273,7 @@ wf.body(func(args) {
 					},
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 lies in a single-linkage cluster of at least the configured minimum size (Hamming-1 / Levenshtein-1 distance). Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
+						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
@@ -278,7 +290,7 @@ wf.body(func(args) {
 					},
 					annotations: {
 						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Size of the single-linkage Hamming/Levenshtein-1 cluster this clone's CDR3 belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
+						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
 				}
@@ -300,11 +312,17 @@ wf.body(func(args) {
 			cpu: 2
 		})
 
+		// Trace label carries the distinguishing settings (threshold(s),
+		// nMin, cluster filter) so downstream deriveDistinctLabels can tell
+		// apart columns from multiple convergence blocks reading the same
+		// dataset. customBlockLabel (user override) wins; else the
+		// parameter-encoding defaultBlockLabel; static name as last resort.
+		traceLabel := args.customBlockLabel || args.defaultBlockLabel || "Clonotype convergence (fast-STAR)"
 		trace := pSpec.makeTrace(anchorSpec, {
 			type: "milaboratories.clonotype-convergence",
 			id: blockId,
 			importance: 50,
-			label: "Clonotype convergence (fast-STAR)"
+			label: traceLabel
 		})
 
 		pfBuilder := pframes.pFrameBuilder()
@@ -312,10 +330,22 @@ wf.body(func(args) {
 			v := importedFrames[k]
 			pfBuilder.add(k, trace.inject(v.spec), v.data)
 		}
+		// Bundle the upstream label columns into the pframe so the
+		// histogram's "Show for" picker and tooltips render sample
+		// names + Clone IDs without the model needing to do anchored
+		// discovery at render time. No trace.inject — we're re-emitting
+		// upstream-owned labels, not claiming ownership.
+		for i, c in columns.getColumns(labelKey) {
+			pfBuilder.add("sampleLabel_" + string(i), c.spec, c.data)
+		}
+		for i, c in columns.getColumns(cloneLabelKey) {
+			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
+		}
 		return {
 			pf: pfBuilder.build(),
 			stage1Logs: stage1.output("logs"),
-			statsJson: finalStatsJson
+			statsJson: finalStatsJson,
+			skippedJson: stage1.output("skippedJson")
 		}
 	}
 
@@ -329,12 +359,14 @@ wf.body(func(args) {
 			"heavyAaCDR3",
 			"heavyNtCDR3",
 			"heavySampleLabel",
+			"heavyCloneLabel",
 			args.chainHName,
 			args.thresholdH
 		)
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.stage1LogsHeavy = heavy.stage1Logs
+		outputs.heavySkippedJson = heavy.skippedJson
 		exports.convergence = heavy.pf
 	}
 
@@ -345,12 +377,14 @@ wf.body(func(args) {
 			"lightAaCDR3",
 			"lightNtCDR3",
 			"lightSampleLabel",
+			"lightCloneLabel",
 			args.chainLName,
 			args.thresholdL
 		)
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
 		outputs.lightHitStats = light.statsJson
 		outputs.stage1LogsLight = light.stage1Logs
+		outputs.lightSkippedJson = light.skippedJson
 		exports.lightConvergence = light.pf
 	}
 
