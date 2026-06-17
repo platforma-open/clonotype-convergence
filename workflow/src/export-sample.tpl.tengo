@@ -19,7 +19,10 @@ self.defineOutputs("outputTsv")
 
 self.body(func(inputs) {
 	ptWf := pt.workflow().mem("4GiB").cpu(2)
-	ptWf.frame(inputs.inputTsv, { xsvType: "tsv" }).
+	// inferSchema:false so sampleId reads as String — otherwise numeric-looking
+	// ids infer as Int64 and the eq() vs the String exportSampleId silently
+	// matches zero rows (empty export). Matches apply-threshold / deanonimization.
+	ptWf.frame(inputs.inputTsv, { xsvType: "tsv", inferSchema: false }).
 		filter(pt.col("sampleId").eq(pt.lit(inputs.sampleId))).
 		save("export.tsv")
 
