@@ -1,5 +1,28 @@
 # @platforma-open/milaboratories.clonotype-convergence.model
 
+## 1.1.2
+
+### Patch Changes
+
+- bf83c72: Exclude convergence columns produced by other instances of this block from the
+  main table. The table's anchor enrichment pulls every column sharing the
+  clonotype axes from the result pool, which surfaced duplicate convergence
+  columns when another convergence block was upstream. The discovered columns are
+  now filtered in the model by the `pl7.app/block` domain — keeping this block's
+  own convergence columns plus all non-convergence enrichment, dropping other
+  instances'.
+- 2c8fead: Separate the dataset name from the settings in the page subtitle with " - " so
+  the commas inside the settings part (threshold, nMin, cluster filter) don't blur
+  into the dataset name.
+- 85090fc: Encode the block's settings (threshold(s), nMin when non-default, cluster
+  filter) into the column trace label so downstream blocks (graph-maker,
+  data-mapping) can tell apart columns from multiple convergence blocks on the
+  same dataset — previously they collapsed to identical labels. The page
+  subtitle and the trace label now derive from one shared builder
+  (getDefaultBlockLabel): the subtitle prefixes the dataset, the trace omits it
+  (the dataset is already in the column domain). A user-set block label still
+  overrides both.
+
 ## 1.1.1
 
 ### Patch Changes

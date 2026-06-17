@@ -1,5 +1,26 @@
 # @platforma-open/milaboratories.clonotype-convergence.workflow
 
+## 1.1.2
+
+### Patch Changes
+
+- 8424b69: Cache the compute-neighbours (Stage 1) result with a 24h TTL. Stage 1 is the
+  expensive, threshold-independent STAR neighbour computation; without a cache
+  hint its intermediate output was reference-counted away once Stage 2 consumed
+  it, so changing only the threshold re-ran the whole pipeline. With the TTL, a
+  threshold change recovers Stage 1 from cache and recomputes only the cheap
+  downstream stages (observed: ~1h → ~10min on a real project).
+- 85090fc: Encode the block's settings (threshold(s), nMin when non-default, cluster
+  filter) into the column trace label so downstream blocks (graph-maker,
+  data-mapping) can tell apart columns from multiple convergence blocks on the
+  same dataset — previously they collapsed to identical labels. The page
+  subtitle and the trace label now derive from one shared builder
+  (getDefaultBlockLabel): the subtitle prefixes the dataset, the trace omits it
+  (the dataset is already in the column domain). A user-set block label still
+  overrides both.
+- Updated dependencies [542ba38]
+  - @platforma-open/milaboratories.clonotype-convergence.software@1.1.2
+
 ## 1.1.1
 
 ### Patch Changes

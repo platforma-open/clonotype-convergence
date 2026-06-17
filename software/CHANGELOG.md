@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence.software
 
+## 1.1.2
+
+### Patch Changes
+
+- 542ba38: update stats
+
 ## 1.1.1
 
 ### Patch Changes
