@@ -1,5 +1,44 @@
 # @platforma-open/milaboratories.clonotype-convergence.ui
 
+## 1.2.0
+
+### Minor Changes
+
+- fa2898c: Add single-sample convergence export for antibody lead selection.
+
+  A new "Sample to export" setting collapses the chosen sample's convergence
+  columns (neighbour count, neighbour frequency, hit flag) onto a clonotype-only
+  axis — dropping the per-sample axis that lead selection rejects — and exports
+  them under their own column family. Nothing exports until a sample is picked
+  and the block is re-run, so the choice stays explicit; the sample name lives in
+  the column labels and trace.
+
+  The multi-sample family stays internal to the block: it drives the in-block
+  table and histograms, but is not exported to the result pool — downstream
+  consumers enrich by clonotype key, never by the per-sample axis, so the
+  single-sample family is the only convergence data the block exposes
+  downstream. The collapse runs in a pure template.
+
+### Patch Changes
+
+- b7e5dab: Settings-panel UX hardening.
+
+  - Auto-close the Settings panel on a committed Run via a new `runArgsId` output
+    (canonicalized `activeArgs`) instead of watching the `isRunning` edge. The
+    `isRunning` false→true edge raced on the running-state sync and was missed for
+    fast / cached recomputes (threshold or export-sample changes), so the panel
+    intermittently stayed open after Run.
+  - Keep the already-selected input dataset in `datasetOptions` unconditionally.
+    Post-run pool churn could briefly fail its CDR3-readiness gate and drop it
+    from the options, making the `required` dropdown reconcile to another dataset
+    — a transient input flip (e.g. IG Heavy → IG Light) with a spurious "no BCR
+    chain" alert that healed when the pool settled. The gate still applies to
+    datasets that aren't currently selected.
+
+- Updated dependencies [b7e5dab]
+- Updated dependencies [fa2898c]
+  - @platforma-open/milaboratories.clonotype-convergence.model@1.2.0
+
 ## 1.1.2
 
 ### Patch Changes
