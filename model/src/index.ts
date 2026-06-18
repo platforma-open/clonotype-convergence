@@ -144,6 +144,15 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
+    // R69 — single-sample export. Not required (export is conditional on
+    // it being set); projected only when a non-empty sampleId is chosen.
+    // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
+    // empty string, which must count as "no selection" — otherwise the
+    // workflow would run the export collapse with a filter matching no
+    // rows (re-reading the whole TSV + re-importing per block every run).
+    if (data.exportSampleId) {
+      args.exportSampleId = data.exportSampleId;
+    }
     return args;
   })
 
@@ -159,7 +168,20 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
+    const selected = ctx.data.mainRef
+      ? canonicalize(ctx.data.mainRef as unknown as Record<string, unknown>)
+      : undefined;
     return broad.filter((opt) => {
+      // Keep the already-selected dataset present unconditionally. Otherwise,
+      // when post-run pool churn briefly fails its CDR3-readiness gate below,
+      // it drops out of the options and the `required` dropdown reconciles to
+      // another dataset — firing onPickMain and clobbering the mainRef snapshot
+      // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
+      // alert, healing when the pool settles). The gate only needs to stop a
+      // *new* pick of a not-ready dataset, not destabilise an existing one.
+      if (selected && canonicalize(opt.ref as unknown as Record<string, unknown>) === selected) {
+        return true;
+      }
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
       if (!spec) return false;
       const axisName = spec.axesSpec[1]?.name;
@@ -211,6 +233,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return canonicalize(ref as unknown as Record<string, unknown>);
   })
 
+  // Canonical id of the args that produced the current render (activeArgs).
+  // Changes only when a Run actually commits new args — so the UI can
+  // auto-close the Settings panel deterministically, regardless of run
+  // duration or whether the transient `isRunning` edge was observed. The
+  // isRunning-only close raced on the running-state sync and missed fast /
+  // cached recomputes (threshold or export-sample changes).
+  .output("runArgsId", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    return args ? canonicalize(args as unknown as Record<string, unknown>) : undefined;
+  })
+
   // R52 — sample picker above the mainTable. Extracts unique sampleId
   // partition keys from the picked anchor (which IS sample-partitioned
   // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
@@ -230,6 +263,22 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
+  })
+
+  // R75 — options for the "Sample to export" picker. value = raw sampleId,
+  // label = human sample name (findLabels resolves the pl7.app/label column
+  // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
+  // from the UPSTREAM anchor's partition keys, so it's available before this
+  // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
+  // mainTableSheets. Undefined until a dataset is picked.
+  .output("exportSampleOptions", (ctx) => {
+    if (!ctx.data.mainRef) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    if (!anchor) return undefined;
+    const samples = getUniquePartitionKeys(anchor.data)?.[0];
+    if (!samples) return undefined;
+    const labels = ctx.resultPool.findLabels(anchor.spec.axesSpec[0]);
+    return samples.map((v) => ({ value: String(v), label: labels?.[v] ?? String(v) }));
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
@@ -453,9 +502,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // and this block's own convergence columns; drop convergence columns
     // produced by other instances of this block.
     const ownVariants = variants.filter((v) => {
-      if (!v.column.spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      const spec = v.column.spec;
+      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
-      return v.column.spec.domain?.["pl7.app/block"] === thisBlockId;
+      if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
+      // Drop our single-sample EXPORT family (R70) from the block's own
+      // table — it's downstream-only. With a sample picked, those columns
+      // are in the result pool, and enrichment broadcasts them across
+      // samples (showing "— <sample>" labels). The internal multi-sample
+      // columns carry the sampleId axis; the export columns are clonotype-
+      // only, so this keeps the former and drops the latter.
+      return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     });
 
     return createPlDataTableV3(ctx, {

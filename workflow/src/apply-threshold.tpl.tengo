@@ -1,40 +1,51 @@
-// Stage 2 — apply threshold to Nb_freq, emit fastStar column.
+// Stage 2 — apply threshold to Nb_freq, emit fastStar column (pt, R56).
 //
-// Pure template per R56: cache key = (inputTsv, threshold, chain).
-// Threshold changes invalidate only this stage; Stage 1's expensive
-// neighbour-count output is recovered from cache.
+// Pure template: cache key = (inputTsv, threshold). Thresholding is a cheap
+// columnar op, so it runs in pt (ptabler) instead of a Python exec. A second
+// identical block recomputes it in seconds rather than recovering a retained
+// Python result, so this stage needs no cache TTL and produces no per-variant
+// accumulation — only Stage 1 (the expensive STAR neighbour count) keeps a
+// cache hint. The ephemeral de-anonymization downstream means the export chain
+// can't keep an intermediate alive anyway; making the step cheap sidesteps that.
 
 self := import("@platforma-sdk/workflow-tengo:tpl")
-assets := import("@platforma-sdk/workflow-tengo:assets")
-exec := import("@platforma-sdk/workflow-tengo:exec")
+pt := import("@platforma-sdk/workflow-tengo:pt")
 
-self.defineOutputs("outputTsv", "logs", "statsJson")
-
-applyThresholdSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:apply-threshold")
+self.defineOutputs("outputTsv", "statsJson")
 
 self.body(func(inputs) {
 	inputTsv := inputs.inputTsv
 	threshold := inputs.threshold
-	chain := inputs.chain
 
-	cmd := exec.builder().
-		software(applyThresholdSw).
-		cpu(1).
-		mem("1GiB").
-		arg("--input").arg("input.tsv").
-		arg("--output").arg("output.tsv").
-		arg("--stats-json").arg("stats.json").
-		arg("--threshold").arg(string(threshold)).
-		arg("--chain").arg(chain).
-		addFile("input.tsv", inputTsv).
-		saveFile("output.tsv").
-		saveFileContent("stats.json").
-		saveStdoutStream().
-		run()
+	ptWf := pt.workflow().mem("4GiB").cpu(2)
+
+	// fastStar = "Hit" iff Nb_freq > threshold (strict inequality, R32, R62).
+	// Read inferSchema:false (every column as text, like the de-anon step) and
+	// cast Nb_freq to Float64 only for the comparison, so a blank / non-numeric
+	// Nb_freq casts to null → not a hit → "Not hit" (matches the previous
+	// Python NaN handling). fastStar is never null (otherwise branch covers
+	// every row).
+	df := ptWf.frame(inputTsv, { xsvType: "tsv", inferSchema: false }).
+		withColumns(
+			pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(threshold))).
+				then(pt.lit("Hit")).
+				otherwise(pt.lit("Not hit")).
+				alias("fastStar"))
+
+	df.save("output.tsv")
+
+	// Hit-count sidecar for the stats modal (R65): a single-row ndjson
+	// {total, above}, parsed downstream via getDataAsJson. total counts every
+	// row (fastStar is never null); above counts the "Hit" rows.
+	df.select(
+		pt.col("fastStar").count().alias("total"),
+		pt.when(pt.col("fastStar").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")).
+		saveContent("stats.ndjson")
+
+	result := ptWf.run()
 
 	return {
-		outputTsv: cmd.getFile("output.tsv"),
-		logs: cmd.getStdoutStream(),
-		statsJson: cmd.getFileContent("stats.json")
+		outputTsv: result.getFile("output.tsv"),
+		statsJson: result.getFileContent("stats.ndjson")
 	}
 })
