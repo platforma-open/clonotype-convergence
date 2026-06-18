@@ -70,6 +70,12 @@ export type BlockArgs = {
    *  only when applyClusterFilter is true. */
   clusterMin?: number;
 
+  /** Single-sample export (R68–R76). Raw pl7.app/sampleId axis value of
+   *  the sample whose convergence columns are collapsed to a
+   *  clonotype-only axis and exported for antibody lead selection. No
+   *  default — when unset (key absent), nothing is exported. */
+  exportSampleId?: string;
+
   // Labels projected into the workflow trace step so downstream blocks
   // can disambiguate columns from multiple convergence blocks.
   /** User-overridden block label (empty when unset). */
@@ -123,6 +129,11 @@ export type BlockData = {
   // the Advanced-settings PlCheckbox requires a strict boolean.
   applyClusterFilter: boolean;
   clusterMin?: number;
+
+  /** Sample to export downstream (R69). Raw sampleId value, picked from
+   *  the `exportSampleOptions` output. No default — unset means no
+   *  export. Projects into args (staling), so changing it requires Run. */
+  exportSampleId?: string;
 
   // UI-only state (never projects to args).
   settingsOpen?: boolean;

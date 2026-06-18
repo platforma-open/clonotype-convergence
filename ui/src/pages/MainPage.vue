@@ -75,13 +75,16 @@ const skippedNMin = computed<number | undefined>(
 const heavyAllEmpty = computed(() => app.model.outputs.heavySkippedSamples?.allEmpty === true);
 const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allEmpty === true);
 
-// Auto-close the Settings modal when a run starts — mirrors the
-// clonotype-space / immune-assay-data pattern. Logs stay open since
-// they're the relevant panel during a run.
+// Auto-close the Settings modal when a Run commits. `runArgsId` (model output
+// over activeArgs) changes only when a Run actually commits new args, so this
+// fires once per run regardless of duration, dedup, or SDK timing. It replaces
+// an earlier `isRunning` false→true watch, which raced on the running-state
+// sync and missed fast/cached recomputes (threshold, export sample). Logs stay
+// open since they're the relevant panel during a run.
 watch(
-  () => app.model.outputs.isRunning,
-  (isRunning, wasRunning) => {
-    if (isRunning && !wasRunning && ui.activePanel === "settings") {
+  () => app.model.outputs.runArgsId,
+  (id, prev) => {
+    if (id && id !== prev && ui.activePanel === "settings") {
       ui.activePanel = null;
     }
   },

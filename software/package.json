@@ -38,16 +38,6 @@
           ]
         }
       },
-      "apply-threshold": {
-        "binary": {
-          "artifact": "py-archive",
-          "cmd": [
-            "python",
-            "-u",
-            "{pkg}/apply_threshold.py"
-          ]
-        }
-      },
       "cluster-filter": {
         "binary": {
           "artifact": "py-archive",

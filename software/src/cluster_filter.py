@@ -161,7 +161,6 @@ def main() -> int:
 
     sample_col = args.sample_column.strip() if args.sample_column else ""
     grouping = bool(sample_col) and sample_col in df.columns
-    label_col = "sampleLabel" if "sampleLabel" in df.columns else None
 
     hits_before_total = int((df["fastStar"] == HIT).sum())
     survivors_idx: set[int] = set()
@@ -190,14 +189,12 @@ def main() -> int:
         return 0
 
     if grouping:
-        for sample_id, group in df.groupby(df[sample_col].astype(str), sort=True):
+        # Heavy TSV carries anonymized sampleIds, so log a project-neutral counter.
+        groups = list(df.groupby(df[sample_col].astype(str), sort=True))
+        total = len(groups)
+        for idx, (_sample_id, group) in enumerate(groups, start=1):
             sample_hits = group[group["fastStar"] == HIT]
-            display = (
-                str(group[label_col].iloc[0])
-                if label_col and len(group) > 0 and pd.notna(group[label_col].iloc[0])
-                else sample_id
-            )
-            prefix = f"[sample {display}, chain {args.chain}]"
+            prefix = f"[sample {idx}/{total}, chain {args.chain}]"
             hits_before = len(sample_hits)
             if hits_before == 0:
                 log(prefix, "no hits to cluster")
