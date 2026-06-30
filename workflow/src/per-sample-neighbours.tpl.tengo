@@ -1,0 +1,129 @@
+// Per-sample neighbour computation (MILAB-6413, per-sample-dedup spike).
+//
+// processColumn body: receives ONE sample's slice of the packed convergence
+// input — a String PColumn keyed by clonotypeKey whose value is
+// "abundance|aaSeqCDR3|nSeqCDR3" (packed in main so the whole per-sample input
+// rides through the single sliced primary; see spec/per-sample-dedup.md, O1).
+// The sampleId is the processColumn group key and is NOT present in this
+// slice's content, so the body node's input — and therefore its cache id —
+// depends only on the sample's clonotype data. That is what makes a project
+// analysing a SUBSET of samples recover each shared sample from cache.
+//
+// Body: unpack the String column back into columns, write a per-sample TSV,
+// run compute-neighbours once (grouping disabled — it's already one sample).
+self := import("@platforma-sdk/workflow-tengo:tpl")
+assets := import("@platforma-sdk/workflow-tengo:assets")
+exec := import("@platforma-sdk/workflow-tengo:exec")
+xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
+pt := import("@platforma-sdk/workflow-tengo:pt")
+pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
+
+// Must match the processColumn output descriptor path (path: ["outputTsv"]).
+self.defineOutputs("outputTsv")
+
+computeNeighboursSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:compute-neighbours")
+clusterFilterSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:cluster-filter")
+
+self.body(func(inputs) {
+	// The sample's slice: String column keyed by clonotypeKey. The runner
+	// builds/locks the group resource before rendering, so no awaitState here.
+	packedData := inputs[pConstants.VALUE_FIELD_NAME]
+	clonoAxisSpec := inputs.clonoAxisSpec
+
+	// Spec for exporting the slice back to a TSV (one axis + the packed value).
+	// xsv.exportFrame writes each column's pl7.app/label as the TSV header (NOT
+	// the spec name). Use clean, predictable labels so the pt decode below can
+	// reference fixed headers regardless of the upstream clonotype axis label.
+	// Identity (name/type/domain) is preserved, so the spec still matches the data.
+	exportClonoAxisSpec := {
+		name: clonoAxisSpec.name,
+		type: clonoAxisSpec.type,
+		domain: clonoAxisSpec.domain,
+		annotations: { "pl7.app/label": "clonotypeKey" }
+	}
+	packedColSpec := {
+		kind: "PColumn",
+		name: "packed",
+		valueType: "String",
+		annotations: { "pl7.app/label": "packed" },
+		axesSpec: [exportClonoAxisSpec]
+	}
+	packedTsv := xsv.exportFrame([{ spec: packedColSpec, data: packedData }], "tsv", {})
+
+	// Unpack "abundance|aaSeqCDR3|nSeqCDR3" -> three columns; emit the TSV
+	// compute-neighbours expects (clonotypeKey, abundance, aaSeqCDR3, nSeqCDR3).
+	ptwf := pt.workflow().mem("4GiB").cpu(2)
+	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
+	df = df.withColumns(
+		pt.col("packed").extractEcmaRegex("([^|]*)\\|[^|]*\\|[^|]*").alias("abundance"),
+		pt.col("packed").extractEcmaRegex("[^|]*\\|([^|]*)\\|[^|]*").alias("aaSeqCDR3"),
+		pt.col("packed").extractEcmaRegex("[^|]*\\|[^|]*\\|([^|]*)").alias("nSeqCDR3")
+	).select(
+		pt.col("clonotypeKey"),
+		pt.col("abundance"),
+		pt.col("aaSeqCDR3"),
+		pt.col("nSeqCDR3")
+	)
+	df.save("input.tsv")
+	ptRes := ptwf.run()
+	perSampleInputTsv := ptRes.getFile("input.tsv")
+
+	// Stage 1 — neighbour density (the expensive STAR run). Pinned with
+	// cacheHours so a threshold-only change recovers it instead of recomputing
+	// (its CID excludes threshold), exactly like the whole-dataset stage did.
+	neighboursCmd := exec.builder().
+		software(computeNeighboursSw).
+		cpu(2).
+		mem("4GiB").
+		arg("--input").arg("input.tsv").
+		arg("--output").arg("neighbours.tsv").
+		arg("--nMin").arg(string(inputs.nMin)).
+		arg("--chain").arg(inputs.chain).
+		arg("--sample-column").arg(""). // one sample per invocation — disable grouping
+		addFile("input.tsv", perSampleInputTsv).
+		saveFile("neighbours.tsv").
+		cacheHours(24).
+		run()
+
+	// Stage 2 — apply threshold, emit fastStar. Pure pt (mirrors the
+	// whole-dataset apply-threshold.tpl, which moved off the Python software):
+	// fastStar = "Hit" iff Nb_freq > threshold (strict, R32/R62). inferSchema
+	// false → cast Nb_freq to Float64 only for the comparison, so blank /
+	// non-numeric Nb_freq casts to null → "Not hit". One sample per body, so no
+	// per-sample stats sidecar here (the badge aggregates downstream).
+	thrWf := pt.workflow().mem("1GiB").cpu(1)
+	thrDf := thrWf.frame(neighboursCmd.getFile("neighbours.tsv"), { xsvType: "tsv", inferSchema: false }).
+		withColumns(
+			pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(inputs.threshold))).
+				then(pt.lit("Hit")).
+				otherwise(pt.lit("Not hit")).
+				alias("fastStar"))
+	thrDf.save("thresholded.tsv")
+	thresholdedTsv := thrWf.run().getFile("thresholded.tsv")
+
+	// Stage 3 — paper's cluster filter, only when enabled. Adds
+	// fastStarClusterFiltered + clusterSize. One sample per invocation, so
+	// grouping is disabled (clusters within this sample's rows).
+	finalTsv := thresholdedTsv
+	if inputs.applyClusterFilter {
+		clusterCmd := exec.builder().
+			software(clusterFilterSw).
+			cpu(1).
+			mem("4GiB").
+			arg("--input").arg("input.tsv").
+			arg("--output").arg("output.tsv").
+			arg("--stats-json").arg("stats.json").
+			arg("--cluster-min").arg(string(inputs.clusterMin)).
+			arg("--chain").arg(inputs.chain).
+			arg("--sample-column").arg("").
+			addFile("input.tsv", finalTsv).
+			saveFile("output.tsv").
+			saveFileContent("stats.json").
+			run()
+		finalTsv = clusterCmd.getFile("output.tsv")
+	}
+
+	return {
+		outputTsv: finalTsv
+	}
+})

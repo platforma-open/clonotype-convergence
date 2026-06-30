@@ -38,7 +38,9 @@ pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 maps := import("@platforma-sdk/workflow-tengo:maps")
 pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 anonymize := import("@platforma-sdk/workflow-tengo:anonymize")
+pt := import("@platforma-sdk/workflow-tengo:pt")
 json := import("json")
+times := import("times")
 
 computeNeighboursTpl := assets.importTemplate(":compute-neighbours")
 applyThresholdTpl := assets.importTemplate(":apply-threshold")
@@ -46,6 +48,7 @@ clusterFilterTpl := assets.importTemplate(":cluster-filter")
 exportSampleTpl := assets.importTemplate(":export-sample")
 deanonimizationTpl := assets.importTemplate(":deanonimization")
 deanonimizeSkippedTpl := assets.importTemplate(":deanonimize-skipped")
+perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
@@ -214,6 +217,127 @@ wf.body(func(args) {
 		// Labels are re-attached downstream (sample-label columns in the pframe)
 		// and restored into the skipped-samples report via de-anonymization.
 		inputTsv := tsvBuilder.build()
+
+		// ---- Per-sample dedup spike (MILAB-6413, spec/per-sample-dedup.md) ----
+		// Isolated parallel path that does NOT touch the stages below. Goal: prove
+		// per-sample fan-out via processColumn recovers shared samples from cache
+		// across subset projects. Pack abundance + CDR3 into ONE String value per
+		// (sampleId, clonotypeKey), partition by sampleId, then processColumn
+		// collapses the clonotype axis so each group = one sample. sampleId is the
+		// group key (stripped from the per-sample body input), so each per-sample
+		// node depends only on its sample's clonotype data -> subset cache hits.
+		encWf := pt.workflow().mem("4GiB").cpu(2)
+		encDf := encWf.frame(inputTsv, { xsvType: "tsv", inferSchema: false })
+		encDf = encDf.withColumns(
+			pt.concatStr([pt.col("abundance"), pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
+		).select(pt.col("sampleId"), pt.col("clonotypeKey"), pt.col("packed"))
+		encDf.save("encoded.tsv")
+		encodedTsv := encWf.run().getFile("encoded.tsv")
+
+		encodedFrame := xsv.importFile(encodedTsv, "tsv", {
+			axes: [
+				{ column: "sampleId", spec: anchorSpec.axesSpec[0] },
+				{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }
+			],
+			columns: [{
+				column: "packed",
+				spec: {
+					name: "pl7.app/vdj/convergence/perSampleInput",
+					valueType: "String",
+					annotations: { "pl7.app/label": "Per-sample convergence input (packed)" }
+				}
+			}],
+			storageFormat: "Json",
+			partitionKeyLength: 1
+		}, { splitDataAndSpec: true, mem: "4GiB", cpu: 2 })
+
+		// Per-sample output columns. Stage-2 columns always; stage-3 cluster
+		// columns only when the filter is enabled — must match exactly what the
+		// body's TSV carries (xsv.importFile errors on declared-but-missing).
+		perSampleColSpecs := [
+			{ column: "neighbours", spec: {
+				name: "pl7.app/vdj/convergence/neighbours",
+				valueType: "Int",
+				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+				annotations: { "pl7.app/label": withChain("Convergent neighbours (per-sample)") }
+			}},
+			{ column: "Nb_freq", spec: {
+				name: "pl7.app/vdj/convergence/nbFreq",
+				valueType: "Double",
+				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+				annotations: { "pl7.app/label": withChain("Convergent neighbour frequency (per-sample)") }
+			}},
+			{ column: "fastStar", spec: {
+				name: "pl7.app/vdj/convergence/fastStar",
+				valueType: "String",
+				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+				annotations: {
+					"pl7.app/label": withChain("Convergent hit (fast-STAR, per-sample)"),
+					"pl7.app/isDiscreteFilter": "true",
+					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
+				}
+			}}
+		]
+		if args.applyClusterFilter {
+			perSampleColSpecs = append(perSampleColSpecs,
+				{ column: "fastStarClusterFiltered", spec: {
+					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
+					valueType: "String",
+					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit (cluster-filtered, per-sample)"),
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
+					}
+				}},
+				{ column: "clusterSize", spec: {
+					name: "pl7.app/vdj/convergence/clusterSize",
+					valueType: "Int",
+					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+					annotations: { "pl7.app/label": withChain("Convergent cluster size (per-sample)") }
+				}}
+			)
+		}
+
+		perSampleResult := pframes.processColumn(
+			encodedFrame["packed"],
+			perSampleNeighboursTpl,
+			[{
+				type: "Xsv",
+				xsvType: "tsv",
+				name: "neighbours",
+				path: ["outputTsv"],
+				settings: {
+					axes: [{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }],
+					columns: perSampleColSpecs,
+					storageFormat: "Parquet",
+					partitionKeyLength: 0
+				}
+			}],
+			{
+				aggregate: [{ name: anchorSpec.axesSpec[1].name }],
+				cpu: 2,
+				mem: "4GiB",
+				// Pin each per-sample iteration so its result survives
+				// reference-counting GC between renders; without this the
+				// per-sample nodes are dropped and re-executed every run,
+				// defeating cross-run / cross-project recovery (matches the
+				// cacheHours(24) the whole-dataset compute-neighbours uses).
+				stepCache: 24 * times.hour,
+				extra: {
+					clonoAxisSpec: anchorSpec.axesSpec[1],
+					nMin: args.nMin,
+					threshold: threshold,
+					applyClusterFilter: args.applyClusterFilter,
+					clusterMin: args.clusterMin,
+					chain: chainName
+				}
+			}
+		)
+		perSamplePfBuilder := pframes.pFrameBuilder()
+		perSampleResult.addXsvOutputToBuilder(perSamplePfBuilder, "neighbours", "perSample/")
+		perSamplePf := perSamplePfBuilder.build()
+		// ---- end per-sample dedup spike ----
 
 		stage1 := render.create(computeNeighboursTpl, {
 			inputTsv: inputTsv,
@@ -528,7 +652,8 @@ wf.body(func(args) {
 			exportPf: exportPf,
 			stage1Logs: stage1.output("logs"),
 			statsJson: finalStatsJson,
-			skippedJson: deanonSkippedJson
+			skippedJson: deanonSkippedJson,
+			perSamplePf: perSamplePf
 		}
 	}
 
@@ -556,6 +681,8 @@ wf.body(func(args) {
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.stage1LogsHeavy = heavy.stage1Logs
 		outputs.heavySkippedJson = heavy.skippedJson
+		// Per-sample dedup spike (MILAB-6413): parallel output for the subset-dedup test.
+		outputs.perSampleConvergencePf = pframes.exportFrame(heavy.perSamplePf)
 		// Single-sample collapsed family for lead selection (R70), only when
 		// a sample is picked. Same column names, clonotype-only axis — the only
 		// convergence data the block exports downstream.
