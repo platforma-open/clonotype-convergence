@@ -266,41 +266,61 @@ wf.body(func(args) {
 			partitionKeyLength: 1
 		}, { splitDataAndSpec: true, mem: "4GiB", cpu: 2 })
 
-		// Per-sample output columns. Stage-2 columns always; stage-3 cluster
-		// columns only when the filter is enabled — must match exactly what the
-		// body's TSV carries (xsv.importFile errors on declared-but-missing).
-		perSampleColSpecs := [
+		// Convergence output column specs (the real ones — descriptions, scores,
+		// formats, table visibility). Used for the per-sample processColumn output
+		// AND, for now, the single-sample export below. Stage-3 cluster columns
+		// only when the filter is enabled — must match exactly what the body's TSV
+		// carries (xsv.importFile errors on declared-but-missing).
+		columnSpecs := [
 			{ column: "neighbours", spec: {
 				name: "pl7.app/vdj/convergence/neighbours",
 				valueType: "Int",
 				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
-				annotations: { "pl7.app/label": withChain("Convergent neighbours (per-sample)") }
+				annotations: {
+					"pl7.app/label": withChain("Convergent neighbours"),
+					"pl7.app/table/visibility": "default",
+					"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted). The numerator of Convergent neighbour frequency."
+				}
 			}},
 			{ column: "Nb_freq", spec: {
 				name: "pl7.app/vdj/convergence/nbFreq",
 				valueType: "Double",
 				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
-				annotations: { "pl7.app/label": withChain("Convergent neighbour frequency (per-sample)") }
+				annotations: {
+					"pl7.app/label": withChain("Convergent neighbour frequency"),
+					"pl7.app/description": "Count of same-length amino-acid CDR3s in the sample that differ from this clone's CDR3 by exactly one amino acid, divided by the total number of unique nucleotide CDR3s in the sample. Per sample. The Convergent hit threshold is applied to this value. Higher values indicate denser one-mutation neighbourhoods — the signal fast-STAR uses to detect convergent selection.",
+					"pl7.app/table/visibility": "default",
+					"pl7.app/format": ".3~%",
+					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
+					"pl7.app/isScore": "true",
+					"pl7.app/score/rankingOrder": "decreasing"
+				}
 			}},
 			{ column: "fastStar", spec: {
 				name: "pl7.app/vdj/convergence/fastStar",
 				valueType: "String",
 				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
 				annotations: {
-					"pl7.app/label": withChain("Convergent hit (fast-STAR, per-sample)"),
+					"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
+					"pl7.app/description": "Hit when this clone's convergent neighbour frequency exceeds the configured threshold for this chain — meaning the clone has unusually many same-length CDR3s that differ by exactly one amino acid, suggesting convergent evolution under antigen-driven selection. Not hit otherwise. Computed independently per sample.",
+					"pl7.app/table/visibility": "default",
 					"pl7.app/isDiscreteFilter": "true",
-					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
+					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+					"pl7.app/isScore": "true",
+					"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
 				}
 			}}
 		]
 		if args.applyClusterFilter {
-			perSampleColSpecs = append(perSampleColSpecs,
+			columnSpecs = append(columnSpecs,
 				{ column: "fastStarClusterFiltered", spec: {
 					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
 					valueType: "String",
 					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
 					annotations: {
-						"pl7.app/label": withChain("Convergent hit (cluster-filtered, per-sample)"),
+						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
+						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
+						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
 					}
@@ -309,7 +329,11 @@ wf.body(func(args) {
 					name: "pl7.app/vdj/convergence/clusterSize",
 					valueType: "Int",
 					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
-					annotations: { "pl7.app/label": withChain("Convergent cluster size (per-sample)") }
+					annotations: {
+						"pl7.app/label": withChain("Convergent cluster size"),
+						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
+						"pl7.app/table/visibility": "default"
+					}
 				}}
 			)
 		}
@@ -324,7 +348,7 @@ wf.body(func(args) {
 				path: ["outputTsv"],
 				settings: {
 					axes: [{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }],
-					columns: perSampleColSpecs,
+					columns: columnSpecs,
 					storageFormat: "Parquet",
 					partitionKeyLength: 0
 				}
@@ -349,10 +373,7 @@ wf.body(func(args) {
 				}
 			}
 		)
-		perSamplePfBuilder := pframes.pFrameBuilder()
-		perSampleResult.addXsvOutputToBuilder(perSamplePfBuilder, "neighbours", "perSample/")
-		perSamplePf := perSamplePfBuilder.build()
-		// ---- end per-sample dedup spike ----
+		// ---- end per-sample fan-out setup; pf is built from perSampleResult below ----
 
 		stage1 := render.create(computeNeighboursTpl, {
 			inputTsv: inputTsv,
@@ -426,134 +447,6 @@ wf.body(func(args) {
 		})
 		deanonSkippedJson := deanonSkipped.output("skippedJson")
 
-		columnSpecs := [
-			{
-				column: "neighbours",
-				spec: {
-					name: "pl7.app/vdj/convergence/neighbours",
-					valueType: "Int",
-					domain: {
-						"pl7.app/block": blockId,
-						"pl7.app/vdj/chain": chainName
-					},
-					annotations: {
-						"pl7.app/label": withChain("Convergent neighbours"),
-						"pl7.app/table/visibility": "default",
-						"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted). The numerator of Convergent neighbour frequency."
-					}
-				}
-			},
-			{
-				column: "Nb_freq",
-				spec: {
-					name: "pl7.app/vdj/convergence/nbFreq",
-					valueType: "Double",
-					domain: {
-						"pl7.app/block": blockId,
-						"pl7.app/vdj/chain": chainName
-					},
-					annotations: {
-						"pl7.app/label": withChain("Convergent neighbour frequency"),
-						"pl7.app/description": "Count of same-length amino-acid CDR3s in the sample that differ from this clone's CDR3 by exactly one amino acid, divided by the total number of unique nucleotide CDR3s in the sample. Per sample. The Convergent hit threshold is applied to this value. Higher values indicate denser one-mutation neighbourhoods — the signal fast-STAR uses to detect convergent selection.",
-						"pl7.app/table/visibility": "default",
-						// d3-format percent with significant figures, trim trailing
-						// zeros (R63). Underlying value stays Double; only display
-						// changes. Histogram X-axis labels + significant-line label
-						// (R48) inherit the same format from the axis numberFormat.
-						"pl7.app/format": ".3~%",
-						"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
-						// Rankable score for downstream lead selection (R70): higher
-						// convergent frequency = stronger signal, so rank descending.
-						"pl7.app/isScore": "true",
-						"pl7.app/score/rankingOrder": "decreasing"
-					}
-				}
-			},
-			{
-				column: "fastStar",
-				spec: {
-					name: "pl7.app/vdj/convergence/fastStar",
-					// String "Hit" / "Not hit" per R62 — the column reads as a
-					// discrete categorical filter (PlTableFilters + chip styling).
-					// Underlying threshold semantics live in apply-threshold.tpl.tengo.
-					valueType: "String",
-					domain: {
-						"pl7.app/block": blockId,
-						"pl7.app/vdj/chain": chainName
-					},
-					annotations: {
-						"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
-						"pl7.app/description": "Hit when this clone's convergent neighbour frequency exceeds the configured threshold for this chain — meaning the clone has unusually many same-length CDR3s that differ by exactly one amino acid, suggesting convergent evolution under antigen-driven selection. Not hit otherwise. Computed independently per sample.",
-						"pl7.app/table/visibility": "default",
-						"pl7.app/isDiscreteFilter": "true",
-						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
-						// Discoverable score + default "keep only Hit" filter for
-						// downstream lead selection: string_in via the discrete
-						// annotations above (R70).
-						"pl7.app/isScore": "true",
-						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
-					}
-				}
-			}
-		]
-		// Stage 3 outputs (clusterSize + fastStarClusterFiltered) are
-		// only present in the TSV when the cluster filter is on —
-		// include in the import schema accordingly; xsv.importFile would
-		// error on declared-but-missing columns otherwise.
-		if args.applyClusterFilter {
-			columnSpecs = append(columnSpecs, {
-				column: "fastStarClusterFiltered",
-				spec: {
-					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
-					// Strict subset of fastStar's "Hit" set (R32 / R58 / R62) —
-					// additive, not replacement: the cluster-filtered view sits
-					// alongside the threshold-only view.
-					valueType: "String",
-					domain: {
-						"pl7.app/block": blockId,
-						"pl7.app/vdj/chain": chainName
-					},
-					annotations: {
-						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
-						"pl7.app/table/visibility": "default",
-						"pl7.app/isDiscreteFilter": "true",
-						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
-					}
-				}
-			}, {
-				column: "clusterSize",
-				spec: {
-					name: "pl7.app/vdj/convergence/clusterSize",
-					valueType: "Int",
-					domain: {
-						"pl7.app/block": blockId,
-						"pl7.app/vdj/chain": chainName
-					},
-					annotations: {
-						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
-						"pl7.app/table/visibility": "default"
-					}
-				}
-			})
-		}
-		importSpec := {
-			axes: [
-				{ column: "sampleId", spec: anchorSpec.axesSpec[0] },
-				{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }
-			],
-			columns: columnSpecs,
-			storageFormat: "Parquet",
-			partitionKeyLength: 0
-		}
-
-		importedFrames := xsv.importFile(deanonFinalTsv, "tsv", importSpec, {
-			splitDataAndSpec: true,
-			mem: "4GiB",
-			cpu: 2
-		})
-
 		// Trace label carries the distinguishing settings (threshold(s),
 		// nMin, cluster filter) so downstream deriveDistinctLabels can tell
 		// apart columns from multiple convergence blocks reading the same
@@ -567,10 +460,16 @@ wf.body(func(args) {
 			label: traceLabel
 		})
 
+		// Build the block's multi-sample pframe from the per-sample fan-out
+		// result. processColumn reassembles per-sample outputs keyed by
+		// (sampleId, clonotypeKey); inject the block trace into each column.
 		pfBuilder := pframes.pFrameBuilder()
-		for k in maps.getKeys(importedFrames) {
-			v := importedFrames[k]
-			pfBuilder.add(k, trace.inject(v.spec), v.data)
+		for columnName in perSampleResult.listXsvColumns("neighbours") {
+			pfBuilder.add(
+				columnName,
+				trace.inject(perSampleResult.outputSpec("neighbours", columnName)),
+				perSampleResult.outputData("neighbours", columnName)
+			)
 		}
 		// Bundle the upstream label columns into the pframe so the
 		// histogram's "Show for" picker and tooltips render sample
@@ -667,8 +566,7 @@ wf.body(func(args) {
 			exportPf: exportPf,
 			stage1Logs: stage1.output("logs"),
 			statsJson: finalStatsJson,
-			skippedJson: deanonSkippedJson,
-			perSamplePf: perSamplePf
+			skippedJson: deanonSkippedJson
 		}
 	}
 
@@ -696,8 +594,6 @@ wf.body(func(args) {
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.stage1LogsHeavy = heavy.stage1Logs
 		outputs.heavySkippedJson = heavy.skippedJson
-		// Per-sample dedup spike (MILAB-6413): parallel output for the subset-dedup test.
-		outputs.perSampleConvergencePf = pframes.exportFrame(heavy.perSamplePf)
 		// Single-sample collapsed family for lead selection (R70), only when
 		// a sample is picked. Same column names, clonotype-only axis — the only
 		// convergence data the block exports downstream.
