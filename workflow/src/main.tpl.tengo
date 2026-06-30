@@ -221,13 +221,28 @@ wf.body(func(args) {
 		// ---- Per-sample dedup spike (MILAB-6413, spec/per-sample-dedup.md) ----
 		// Isolated parallel path that does NOT touch the stages below. Goal: prove
 		// per-sample fan-out via processColumn recovers shared samples from cache
-		// across subset projects. Pack abundance + CDR3 into ONE String value per
-		// (sampleId, clonotypeKey), partition by sampleId, then processColumn
-		// collapses the clonotype axis so each group = one sample. sampleId is the
-		// group key (stripped from the per-sample body input), so each per-sample
-		// node depends only on its sample's clonotype data -> subset cache hits.
+		// across subset projects AND across projects that assign a different
+		// sampleId to the same sample. Pack abundance + CDR3 into ONE String value
+		// per (sampleId, clonotypeKey), partition by sampleId, then processColumn
+		// collapses the clonotype axis so each group = one sample. The runner does
+		// NOT pass the group key (sampleId) into the body render (passKey is off,
+		// process-pcolumn-data.tpl.tengo:405) — so the per-sample body node's cache
+		// id depends only on its sample's clonotype data, independent of the
+		// project-local sampleId. That makes anonymization unnecessary here: build
+		// the encode on the RAW abundance (real sampleId), and the per-sample
+		// output comes back keyed by the real sampleId with no de-anonymization.
+		rawTsvBuilder := pframes.tsvFileBuilder()
+		rawTsvBuilder.cpu(2)
+		rawTsvBuilder.mem("4GiB")
+		rawTsvBuilder.setAxisHeader(anchorSpec.axesSpec[0].name, "sampleId")
+		rawTsvBuilder.setAxisHeader(anchorSpec.axesSpec[1].name, "clonotypeKey")
+		rawTsvBuilder.add(columns.getColumn(aaKey), { header: "aaSeqCDR3" })
+		rawTsvBuilder.add(columns.getColumn(ntKey), { header: "nSeqCDR3" })
+		rawTsvBuilder.add(columns.getColumn(anchorRef), { header: "abundance" })
+		rawInputTsv := rawTsvBuilder.build()
+
 		encWf := pt.workflow().mem("4GiB").cpu(2)
-		encDf := encWf.frame(inputTsv, { xsvType: "tsv", inferSchema: false })
+		encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
 		encDf = encDf.withColumns(
 			pt.concatStr([pt.col("abundance"), pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
 		).select(pt.col("sampleId"), pt.col("clonotypeKey"), pt.col("packed"))
