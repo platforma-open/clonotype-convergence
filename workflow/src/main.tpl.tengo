@@ -42,11 +42,12 @@ pt := import("@platforma-sdk/workflow-tengo:pt")
 json := import("json")
 times := import("times")
 
+// Stage 1 (whole-dataset compute-neighbours) is retained ONLY to feed the Logs
+// panel + skipped-samples report until step B moves both to the per-sample path;
+// stages 2-3 and the TSV de-anon are gone (stats + export now come from the
+// per-sample fan-out). deanonimizeSkipped is still used for the skipped report.
 computeNeighboursTpl := assets.importTemplate(":compute-neighbours")
-applyThresholdTpl := assets.importTemplate(":apply-threshold")
-clusterFilterTpl := assets.importTemplate(":cluster-filter")
 exportSampleTpl := assets.importTemplate(":export-sample")
-deanonimizationTpl := assets.importTemplate(":deanonimization")
 deanonimizeSkippedTpl := assets.importTemplate(":deanonimize-skipped")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 
@@ -381,39 +382,50 @@ wf.body(func(args) {
 			chain: chainName
 		})
 
-		stage2 := render.create(applyThresholdTpl, {
-			inputTsv: stage1.output("outputTsv"),
-			threshold: threshold,
-			chain: chainName
-		})
-
-		// Stage 3 (R58, R60) — paper's binder cluster filter. When
-		// args.applyClusterFilter is on, render the template and use
-		// its output downstream; when off, skip it entirely.
-		// `finalTsv` is what gets pumped into the p-frame builder.
-		// `finalStatsJson` feeds the hit-count badge — Stage 3 emits
-		// its own stats.json so the badge reflects post-cluster hits.
-		finalTsv := stage2.output("outputTsv")
-		finalStatsJson := stage2.output("statsJson")
-		if args.applyClusterFilter {
-			stage3 := render.create(clusterFilterTpl, {
-				inputTsv: stage2.output("outputTsv"),
-				clusterMin: args.clusterMin,
-				chain: chainName
-			})
-			finalTsv = stage3.output("outputTsv")
-			finalStatsJson = stage3.output("statsJson")
+		// Combined per-sample convergence TSV (keyed by the real sampleId),
+		// reused for the hit-count badge and the single-sample export. Stats +
+		// export now derive from the per-sample fan-out result; the whole-dataset
+		// stages 2-3 and the TSV de-anon are gone.
+		//
+		// xsv.exportFrame writes each column's pl7.app/label as the TSV header, so
+		// build a header-stable pframe (field-name labels on the value columns and
+		// "sampleId"/"clonotypeKey" on the axes) — otherwise the rich table labels
+		// would become the headers and the stats pt / export filter couldn't find
+		// "fastStar" / "sampleId".
+		exportSrcBuilder := pframes.pFrameBuilder()
+		for columnName in perSampleResult.listXsvColumns("neighbours") {
+			origSpec := perSampleResult.outputSpec("neighbours", columnName)
+			exportSrcBuilder.add(columnName, {
+				kind: "PColumn",
+				name: origSpec.name,
+				valueType: origSpec.valueType,
+				domain: origSpec.domain,
+				annotations: { "pl7.app/label": columnName },
+				axesSpec: [
+					{ name: anchorSpec.axesSpec[0].name, type: anchorSpec.axesSpec[0].type, domain: anchorSpec.axesSpec[0].domain, annotations: { "pl7.app/label": "sampleId" } },
+					{ name: anchorSpec.axesSpec[1].name, type: anchorSpec.axesSpec[1].type, domain: anchorSpec.axesSpec[1].domain, annotations: { "pl7.app/label": "clonotypeKey" } }
+				]
+			}, perSampleResult.outputData("neighbours", columnName))
 		}
+		perSampleTsv := xsv.exportFrame(exportSrcBuilder.build(), "tsv", {})
 
-		// Restore real sample ids before importing / exporting. Ephemeral /
-		// per-project: the mapping is project-specific, so this step must never
-		// deduplicate. The heavy Stages 1-3 above stay deduped across projects;
-		// only this cheap relabel runs per project.
-		deanonStage := render.createEphemeral(deanonimizationTpl, {
-			inputTsv: finalTsv,
-			mapping: anonMapping
-		})
-		deanonFinalTsv := deanonStage.output("deanonimizedTsv")
+		// Hit-count stats badge (R65): {above, total, beforeCluster?}, counted over
+		// the reassembled per-sample fastStar. In cluster mode `above` is the
+		// cluster-filtered hit count and `beforeCluster` the pre-cluster fastStar
+		// hit count; otherwise `above` is the fastStar hit count.
+		hitCol := args.applyClusterFilter ? "fastStarClusterFiltered" : "fastStar"
+		statsWf := pt.workflow().mem("2GiB").cpu(1)
+		statsDf := statsWf.frame(perSampleTsv, { xsvType: "tsv", inferSchema: false })
+		statsAggs := [
+			pt.col("fastStar").count().alias("total"),
+			pt.when(pt.col(hitCol).eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
+		]
+		if args.applyClusterFilter {
+			statsAggs = append(statsAggs,
+				pt.when(pt.col("fastStar").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("beforeCluster"))
+		}
+		statsDf.select(statsAggs...).saveContent("stats.ndjson")
+		finalStatsJson := statsWf.run().getFileContent("stats.ndjson")
 
 		// real sampleId -> human label, read from the bundled (already-resolved)
 		// sample-label column. Fed to the skipped-report de-anonymization so the
@@ -498,17 +510,14 @@ wf.body(func(args) {
 			// Human sample name for the export column labels + trace (R72, R73).
 			sampleName := resolveSampleName(labelCols, args.exportSampleId)
 
-			// Filter the (de-anonymized) final TSV to the chosen sample via the
-			// :export-sample template (R74). Filtering runs on the per-project
-			// de-anonymized TSV by the real exportSampleId, so it does NOT dedup
-			// across projects (it sits downstream of the ephemeral de-anon) —
-			// acceptable since the export is block-specific anyway; the heavy
-			// Stages 1-3 still dedup. The block-specific import below reads only
-			// this small filtered TSV; xsv.importFile takes only the declared
-			// columns, so the now-constant sampleId column is dropped by
-			// importing on the clonotype axis alone.
+			// Filter the combined per-sample TSV (real sampleId) to the chosen
+			// sample via the :export-sample template (R74). The per-sample fan-out
+			// already dedups across projects; this small filter is block-specific.
+			// The block-specific import below reads only this filtered TSV;
+			// xsv.importFile takes only the declared columns, so the now-constant
+			// sampleId column is dropped by importing on the clonotype axis alone.
 			exportStage := render.create(exportSampleTpl, {
-				inputTsv: deanonFinalTsv,
+				inputTsv: perSampleTsv,
 				sampleId: args.exportSampleId
 			})
 			exportTsv := exportStage.output("outputTsv")
