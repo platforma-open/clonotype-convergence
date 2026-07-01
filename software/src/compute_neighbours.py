@@ -10,22 +10,28 @@ CLI:
         --output <tsv>
         --nMin <int>
         --chain <str>
-        [--sample-column <name>]   # defaults to sampleId; pass empty to disable
+        [--status-json <path>]
 
-Input TSV must contain `aaSeqCDR3` and `nSeqCDR3` columns. If
-`--sample-column` (default `sampleId`) is present, rows are grouped by
-that column and Get_df runs independently per group. Otherwise the
-whole TSV is treated as one sample.
-
-Other columns (clonotype-key axis, abundance, etc.) pass through.
+Input TSV is ONE sample's clonotypes (the per-sample fan-out slices the
+whole-dataset input by sampleId before this runs — see
+workflow/src/per-sample-neighbours.tpl.tengo). It must contain `aaSeqCDR3`
+and `nSeqCDR3` columns; other columns (clonotype-key axis, abundance, etc.)
+pass through.
 
 Output TSV is the input TSV with three columns appended:
     multiplicity  — nt-CDR3 count per aa CDR3 (informational)
     neighbours    — multiplicity-weighted Hamming-1 neighbour count
     Nb_freq       — neighbours / N_nt (continuous density)
 
-Per-group structured stdout per R44 — one event per line, prefixed
-``[sample <id>, chain <chain>]``.
+`--status-json` writes `{"nUniqueNt": <int>, "nMin": <int>}` — the
+unique-nt-CDR3 count for this sample (after dropping null/empty CDR3s) and
+the floor in effect. The model reads it per sample to decide the
+skipped-samples warning (below nMin vs no usable CDR3); it exists even when
+the sample is skipped and the output TSV is empty.
+
+Structured stdout, one event per line, prefixed ``[chain <chain>]``. The
+sample identity is supplied by the workflow (the result is keyed by the
+real sampleId), so logs intentionally carry no sampleId.
 """
 
 from __future__ import annotations
@@ -50,17 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nMin", required=True, type=int)
     parser.add_argument("--chain", required=True)
     parser.add_argument(
-        "--sample-column",
-        default="sampleId",
-        dest="sample_column",
-        help="Column to group rows by (pass empty string to disable grouping).",
-    )
-    parser.add_argument(
-        "--skipped-json",
+        "--status-json",
         type=Path,
         default=None,
-        help="Optional JSON sidecar listing samples skipped (below nMin). "
-        "Used by the UI to surface a warning above the main table.",
+        dest="status_json",
+        help="Optional JSON sidecar with this sample's unique-nt-CDR3 count "
+        "and nMin. The model reads it to surface the skipped-samples warning.",
     )
     return parser.parse_args()
 
@@ -69,40 +70,39 @@ def log(prefix: str, msg: str) -> None:
     print(f"{prefix} {msg}")
 
 
-def process_group(
-    group_df: pd.DataFrame,
-    sample_label: str,
+def process_sample(
+    sample_df: pd.DataFrame,
     chain: str,
     n_min: int,
 ):
-    """Run Get_df on one sample's rows. Returns annotated dataframe, or
-    None if the group fails the nMin floor. `sample_label` is a display-only
-    label for logs (a project-neutral counter like "3/12"): the heavy TSV
-    carries anonymized sampleIds, so logs must not reference project-local ids."""
-    prefix = f"[sample {sample_label}, chain {chain}]"
-    log(prefix, f"input rows: {len(group_df)}")
+    """Run Get_df on this sample's rows. Returns ``(annotated_df_or_None,
+    n_nt)`` — the dataframe is None when the sample's unique-nt-CDR3 count is
+    below the nMin floor; ``n_nt`` is always the post-drop unique-nt count so
+    the caller can report it regardless of the skip decision."""
+    prefix = f"[chain {chain}]"
+    log(prefix, f"input rows: {len(sample_df)}")
 
     # Drop rows with null / empty / NaN in either CDR3 column (R13).
-    before = len(group_df)
-    df = group_df[group_df["aaSeqCDR3"].notna() & group_df["nSeqCDR3"].notna()]
+    before = len(sample_df)
+    df = sample_df[sample_df["aaSeqCDR3"].notna() & sample_df["nSeqCDR3"].notna()]
     df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
     dropped = before - len(df)
     if dropped > 0:
         log(prefix, f"dropped {dropped} rows with null/empty aaSeqCDR3 or nSeqCDR3")
 
-    n_nt = df["nSeqCDR3"].nunique()
-    n_aa = df["aaSeqCDR3"].nunique()
+    n_nt = int(df["nSeqCDR3"].nunique())
+    n_aa = int(df["aaSeqCDR3"].nunique())
     log(prefix, f"unique nt CDR3: {n_nt}")
     log(prefix, f"unique aa CDR3: {n_aa}")
 
     if n_nt < n_min:
         log(
             prefix,
-            f"Error: sample unique nt CDR3 count ({n_nt}) below the defined "
-            f"minimum ({n_min}). This minimum defines the floor where neighbour "
-            "density is meaningful; group skipped",
+            f"unique nt CDR3 count ({n_nt}) below the defined minimum ({n_min}). "
+            "This minimum defines the floor where neighbour density is "
+            "meaningful; sample skipped",
         )
-        return None
+        return None, n_nt
 
     if n_nt < SAMPLE_SIZE_WARN:
         log(
@@ -123,7 +123,7 @@ def process_group(
     )[["aaSeqCDR3", "multiplicity", "neighbours", "Nb_freq"]]
     out = df.merge(stats, on="aaSeqCDR3", how="left")
     log(prefix, f"output rows: {len(out)}")
-    return out
+    return out, n_nt
 
 
 def main() -> int:
@@ -137,125 +137,43 @@ def main() -> int:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
-    sample_col = args.sample_column.strip() if args.sample_column else ""
-    grouping = bool(sample_col) and sample_col in df.columns
-
-    # Pre-grouping drop of rows with null/empty CDR3 fields. The
-    # workflow's TSV builder outer-joins by axis name, which can drag
-    # in spurious rows from project-wide siblings (e.g. the sampleLabel
-    # column carrying labels for samples that belong to a different
-    # MiXCR run with no clonotype-axis match). Those rows arrive with
-    # populated sampleId + sampleLabel but NULL CDR3s — they're not
-    # real per-sample groups for THIS anchor. Drop them before the
-    # per-sample iteration so they don't appear as fake "sample with
-    # 1 row" entries in the structured log (R13).
-    pre_drop_total = len(df)
-    df = df[df["aaSeqCDR3"].notna() & df["nSeqCDR3"].notna()]
-    df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
-    pre_dropped = pre_drop_total - len(df)
-    if pre_dropped > 0:
-        print(
-            f"[chain {args.chain}] dropped {pre_dropped} rows with null/empty "
-            "aaSeqCDR3 or nSeqCDR3 before per-sample grouping"
-        )
-
-    # Capture sample IDs from the POST-drop dataframe. Samples whose every
-    # row was null/empty CDR3 (join noise from project-wide sample columns
-    # matching a different MiXCR run's samples) are already gone — they never
-    # enter the iteration or the skipped list. Real samples that survived the
-    # drop are the universe we either process or report as "below minimum".
-    # These ids are anonymization fingerprints (the heavy TSV carries no real
-    # sampleId): the skipped list keeps them so the workflow can de-anonymize
-    # them back to human labels downstream, while logs use a neutral counter.
-    sample_ids: list[str] = []
-    if grouping:
-        sample_ids = sorted(df[sample_col].astype(str).unique().tolist())
-
-    outputs = []
-    # Single skip reason: sample had CDR3 data but unique-nt count
-    # < nMin. Lowering nMin in Advanced settings may include it. The
-    # "no rows after drop" case is unreachable because sample_ids
-    # was seeded only from samples with at least one valid CDR3 row;
-    # the chain-wide all-empty case is surfaced via the `allEmpty` flag
-    # below instead of as per-sample entries.
-    skipped: list[str] = []
-
-    if grouping:
-        total_samples = len(sample_ids)
-        for idx, sample_id in enumerate(sample_ids, start=1):
-            group = df[df[sample_col].astype(str) == sample_id]
-            result = process_group(group, str(idx) + "/" + str(total_samples), args.chain, args.nMin)
-            if result is None:
-                # Keep the anonymized sampleId — de-anonymized to a label downstream.
-                skipped.append(sample_id)
-                continue
-            outputs.append(result)
-    else:
-        result = process_group(df, "all", args.chain, args.nMin)
-        if result is not None:
-            outputs.append(result)
+    result, n_nt = process_sample(df, args.chain, args.nMin)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    # "All empty" — chain produced nothing usable AND no sample fell
-    # below the nMin floor to explain it. Happens when every input row
-    # had null/empty CDR3s (e.g. an LC anchor whose siblings are all
-    # heavy-only, or a chain that simply isn't represented in the
-    # picked input). The UI uses this to render a chain-attributed
-    # "no data" alert distinct from the per-sample skip list.
-    all_empty = len(outputs) == 0 and len(skipped) == 0
-
-    # Always write the skipped-samples JSON (empty list when nothing
-    # was skipped) so the workflow output exists regardless of input
-    # quality. `belowMin` carries the per-sample skips, `allEmpty`
-    # handles the chain-wide no-data case.
-    if args.skipped_json is not None:
-        args.skipped_json.parent.mkdir(parents=True, exist_ok=True)
-        args.skipped_json.write_text(
-            json.dumps(
-                {
-                    "belowMin": skipped,
-                    "allEmpty": all_empty,
-                    "nMin": args.nMin,
-                }
-            )
+    # Always write the per-sample status sidecar so the output exists
+    # regardless of input quality. The model reads `nUniqueNt` (vs `nMin`)
+    # per sample to distinguish "below nMin" (adjustable) from "no usable
+    # CDR3" (nUniqueNt == 0) in the skipped-samples warning.
+    if args.status_json is not None:
+        args.status_json.parent.mkdir(parents=True, exist_ok=True)
+        args.status_json.write_text(
+            json.dumps({"nUniqueNt": n_nt, "nMin": args.nMin})
         )
 
-    if not outputs:
-        # All groups below nMin — emit an empty (header-only) TSV and
-        # exit 0 so the downstream pipeline (Stage 2 + xsv.importFile)
-        # produces empty PColumns rather than the whole workflow
-        # aborting. The UI surfaces "no data" naturally via the empty
-        # histogram pframe / table rows.
-        # Report the count only — the skipped list holds anonymized
-        # fingerprints (de-anonymized to human labels downstream for the UI),
-        # so printing the raw ids here would leak meaningless hashes.
-        print(
-            f"[chain {args.chain}] warning: all {len(skipped)} group(s) below "
-            "nMin; emitting empty output"
-        )
+    if result is None:
+        # Below nMin — emit a header-only TSV and exit 0 so the downstream
+        # pipeline (threshold + xsv.importFile) produces empty PColumns
+        # rather than aborting. The model surfaces the skip via the status
+        # sidecar; the empty rows drop the sample from the assembled output.
         empty = pd.DataFrame(
             columns=list(df.columns) + ["multiplicity", "neighbours", "Nb_freq"]
         )
         empty.to_csv(args.output, sep="\t", index=False)
+        print(
+            f"[chain {args.chain}] unique nt CDR3 ({n_nt}) below nMin "
+            f"({args.nMin}); emitting empty output"
+        )
         return 0
 
-    if skipped:
-        # Count only — `skipped` holds anonymized fingerprints (de-anonymized
-        # to human labels downstream for the UI warning); don't leak raw ids.
-        print(
-            f"[chain {args.chain}] {len(skipped)} group(s) skipped (below nMin)"
-        )
+    result.to_csv(args.output, sep="\t", index=False)
 
-    out = pd.concat(outputs, ignore_index=True)
-    out.to_csv(args.output, sep="\t", index=False)
-
-    # Intentionally NO wall-clock log line here: this template is a pure
-    # template (cache key omits threshold per R56), so stdout content must
-    # be deterministic across re-runs with identical inputs. A wall-clock
+    # Intentionally NO wall-clock log line here: this exec is cache-pinned
+    # (cache key omits threshold per R56), so stdout content must be
+    # deterministic across re-runs with identical inputs. A wall-clock
     # elapsed value would mutate the captured stdout-stream resource and
     # break the cache (CID conflict when threshold-only changes attempt to
-    # reuse Stage 1's slot).
+    # reuse this slot).
     print(f"[chain {args.chain}] compute-neighbours done")
     return 0
 

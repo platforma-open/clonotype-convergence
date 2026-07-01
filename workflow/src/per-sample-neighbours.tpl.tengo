@@ -10,7 +10,7 @@
 // analysing a SUBSET of samples recover each shared sample from cache.
 //
 // Body: unpack the String column back into columns, write a per-sample TSV,
-// run compute-neighbours once (grouping disabled — it's already one sample).
+// run compute-neighbours once (it's already one sample).
 self := import("@platforma-sdk/workflow-tengo:tpl")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 exec := import("@platforma-sdk/workflow-tengo:exec")
@@ -18,8 +18,15 @@ xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pt := import("@platforma-sdk/workflow-tengo:pt")
 pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 
-// Must match the processColumn output descriptor path (path: ["outputTsv"]).
-self.defineOutputs("outputTsv")
+// outputTsv — the convergence columns for this sample (collected as an Xsv
+//             output and reassembled into the block's tables/histograms).
+// log       — this sample's compute-neighbours stdout (collected as a
+//             per-sample Log Resource; the model attaches the real sample
+//             label and the UI renders one PlLogView per sample).
+// status    — { nUniqueNt, nMin } for this sample (a Json Resource keyed by
+//             sampleId). Exists even when the sample is skipped (empty TSV),
+//             so the model can build the skipped-samples warning.
+self.defineOutputs("outputTsv", "log", "status")
 
 computeNeighboursSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:compute-neighbours")
 clusterFilterSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:cluster-filter")
@@ -52,12 +59,17 @@ self.body(func(inputs) {
 
 	// Unpack "abundance|aaSeqCDR3|nSeqCDR3" -> three columns; emit the TSV
 	// compute-neighbours expects (clonotypeKey, abundance, aaSeqCDR3, nSeqCDR3).
+	// One shared 3-group pattern + strExtract(groupIndex) — a single
+	// source-of-truth pattern instead of three positional look-around regexes
+	// (pt has no split-to-list). Fields never contain "|" (a number and
+	// amino-acid / nucleotide sequences), so "|" is an unambiguous delimiter.
+	packedPattern := "([^|]*)\\|([^|]*)\\|([^|]*)"
 	ptwf := pt.workflow().mem("4GiB").cpu(2)
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
 	df = df.withColumns(
-		pt.col("packed").extractEcmaRegex("([^|]*)\\|[^|]*\\|[^|]*").alias("abundance"),
-		pt.col("packed").extractEcmaRegex("[^|]*\\|([^|]*)\\|[^|]*").alias("aaSeqCDR3"),
-		pt.col("packed").extractEcmaRegex("[^|]*\\|[^|]*\\|([^|]*)").alias("nSeqCDR3")
+		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("abundance"),
+		pt.col("packed").strExtract(packedPattern, { groupIndex: 2 }).alias("aaSeqCDR3"),
+		pt.col("packed").strExtract(packedPattern, { groupIndex: 3 }).alias("nSeqCDR3")
 	).select(
 		pt.col("clonotypeKey"),
 		pt.col("abundance"),
@@ -70,7 +82,12 @@ self.body(func(inputs) {
 
 	// Stage 1 — neighbour density (the expensive STAR run). Pinned with
 	// cacheHours so a threshold-only change recovers it instead of recomputing
-	// (its CID excludes threshold), exactly like the whole-dataset stage did.
+	// (its CID excludes threshold). stdout is captured as CONTENT (not a live
+	// stream) so it survives cache and resolves atomically — the model shows a
+	// "Starting…" placeholder until the whole log is ready, then the text in one
+	// step (a live stream blinks empty between handle-resolve and first line).
+	// status.json carries the unique-nt-CDR3 count + nMin for the
+	// skipped-samples warning.
 	neighboursCmd := exec.builder().
 		software(computeNeighboursSw).
 		cpu(2).
@@ -79,14 +96,15 @@ self.body(func(inputs) {
 		arg("--output").arg("neighbours.tsv").
 		arg("--nMin").arg(string(inputs.nMin)).
 		arg("--chain").arg(inputs.chain).
-		arg("--sample-column").arg(""). // one sample per invocation — disable grouping
+		arg("--status-json").arg("status.json").
 		addFile("input.tsv", perSampleInputTsv).
 		saveFile("neighbours.tsv").
+		saveFileContent("status.json").
+		saveStdoutContent().
 		cacheHours(24).
 		run()
 
-	// Stage 2 — apply threshold, emit fastStar. Pure pt (mirrors the
-	// whole-dataset apply-threshold.tpl, which moved off the Python software):
+	// Stage 2 — apply threshold, emit fastStar. Pure pt:
 	// fastStar = "Hit" iff Nb_freq > threshold (strict, R32/R62). inferSchema
 	// false → cast Nb_freq to Float64 only for the comparison, so blank /
 	// non-numeric Nb_freq casts to null → "Not hit". One sample per body, so no
@@ -124,6 +142,8 @@ self.body(func(inputs) {
 	}
 
 	return {
-		outputTsv: finalTsv
+		outputTsv: finalTsv,
+		log: neighboursCmd.getStdoutContent(),
+		status: neighboursCmd.getFileContent("status.json")
 	}
 })

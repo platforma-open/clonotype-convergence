@@ -5,6 +5,7 @@ import {
   createPlDataTableV3,
   discoverTableColumnSnaphots,
   getUniquePartitionKeys,
+  parseResourceMap,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
@@ -297,28 +298,71 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return result;
   })
 
-  // Per-chain log handles from Stage 1 (R45). Retentive on log handles
-  // is safe (log handles tolerate retention; PFrame handles don't, R50).
-  // SC paired mode emits both — UI surfaces them as two stacked panels
-  // so the heavy/light per-sample prefixes (R44) stay readable.
-  .retentiveOutput("runLogsHeavy", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage1LogsHeavy",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+  // Per-sample run logs (R44/R45). The per-sample fan-out captures each
+  // sample's compute-neighbours stdout as String content, collected into a
+  // Resource keyed by sampleId. Read each partition's text and attach the real
+  // sample label (findLabels on the anchor's sampleId axis), sorted by label.
+  //
+  // `addEntriesWithNoData: true`: the ResourceMap is locked with all sampleId
+  // keys up front, but a sample's content only resolves once it finishes — so
+  // every sample appears immediately with `text: undefined` until then. The UI
+  // shows a "Starting…" placeholder for those and swaps in the full log once
+  // ready (one atomic step, no blink). `getDataAsString` returns undefined
+  // while computing (no throw) and registers readiness, so the lambda re-runs
+  // when each sample's content lands. Plain (NOT retentive) output so the swap
+  // re-renders. SC paired mode emits both chains — the UI stacks them.
+  .output("perSampleLogsHeavy", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "heavyPerSampleLogs",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    // getIsReadyOrError() registers the per-sample readiness dependency so the
+    // lambda re-runs (text undefined -> full log) when each sample's content
+    // lands; getDataAsString returns undefined while not ready (no throw).
+    const parsed = parseResourceMap(
+      acc,
+      (a) => (a.getIsReadyOrError() ? a.getDataAsString() : undefined),
+      true,
+    );
+    if (parsed.data.length === 0) return undefined;
+    const ref = (ctx.activeArgs as BlockArgs | undefined)?.chainH;
+    const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    return parsed.data
+      .map((e) => {
+        const sampleId = String(e.key[0]);
+        return { sampleId, label: labels?.[sampleId] ?? sampleId, text: e.value };
       })
-      ?.getLogHandle(),
-  )
-  .retentiveOutput("runLogsLight", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage1LogsLight",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+      .sort((a, b) => a.label.localeCompare(b.label));
+  })
+  .output("perSampleLogsLight", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "lightPerSampleLogs",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    // getIsReadyOrError() registers the per-sample readiness dependency so the
+    // lambda re-runs (text undefined -> full log) when each sample's content
+    // lands; getDataAsString returns undefined while not ready (no throw).
+    const parsed = parseResourceMap(
+      acc,
+      (a) => (a.getIsReadyOrError() ? a.getDataAsString() : undefined),
+      true,
+    );
+    if (parsed.data.length === 0) return undefined;
+    const ref = (ctx.activeArgs as BlockArgs | undefined)?.chainL;
+    const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    return parsed.data
+      .map((e) => {
+        const sampleId = String(e.key[0]);
+        return { sampleId, label: labels?.[sampleId] ?? sampleId, text: e.value };
       })
-      ?.getLogHandle(),
-  )
+      .sort((a, b) => a.label.localeCompare(b.label));
+  })
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
 
@@ -398,37 +442,79 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Skipped-samples warning sidecar from Stage 1 (R12). Reads the
-  // JSON written by compute_neighbours.py — list of sample labels
-  // whose unique-nt-CDR3 count fell below nMin, plus the nMin in
-  // effect at the time. UI surfaces a PlAlert above the main table
-  // when either chain has skipped samples.
-  .output("heavySkippedSamples", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "heavySkippedJson",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{
-        belowMin: string[];
-        allEmpty: boolean;
-        nMin: number;
-      }>(),
-  )
-  .output("lightSkippedSamples", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "lightSkippedJson",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{
-        belowMin: string[];
-        allEmpty: boolean;
-        nMin: number;
-      }>(),
-  )
+  // Skipped-samples warning (R12), derived model-side from the per-sample
+  // status sidecars (one { nUniqueNt, nMin } per sample, keyed by sampleId).
+  // A sample is absent from the convergence output iff its unique-nt-CDR3
+  // count is below nMin; this splits that into:
+  //   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
+  //   noCdr3   — nUniqueNt == 0: no usable CDR3; nMin won't help.
+  //   allEmpty — the whole chain produced nothing usable.
+  // Labels via findLabels on the anchor's sampleId axis; nMin from the run's
+  // status (falls back to activeArgs). Gated on parse completeness so the
+  // warning doesn't flicker on partial mid-run status. UI surfaces a PlAlert
+  // above the main table per case.
+  .output("heavySkippedSamples", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "heavyPerSampleStatus",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    const parsed = parseResourceMap(
+      acc,
+      (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
+      false,
+    );
+    if (!parsed.isComplete) return undefined;
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    const axis = args?.chainH
+      ? ctx.resultPool.getPColumnSpecByRef(args.chainH)?.axesSpec[0]
+      : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
+    const belowMin: string[] = [];
+    const noCdr3: string[] = [];
+    for (const e of parsed.data) {
+      const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
+      if (e.value.nUniqueNt === 0) noCdr3.push(label);
+      else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
+    }
+    belowMin.sort((a, b) => a.localeCompare(b));
+    noCdr3.sort((a, b) => a.localeCompare(b));
+    const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
+    return { belowMin, noCdr3, allEmpty, nMin };
+  })
+  .output("lightSkippedSamples", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "lightPerSampleStatus",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    const parsed = parseResourceMap(
+      acc,
+      (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
+      false,
+    );
+    if (!parsed.isComplete) return undefined;
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    const axis = args?.chainL
+      ? ctx.resultPool.getPColumnSpecByRef(args.chainL)?.axesSpec[0]
+      : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
+    const belowMin: string[] = [];
+    const noCdr3: string[] = [];
+    for (const e of parsed.data) {
+      const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
+      if (e.value.nUniqueNt === 0) noCdr3.push(label);
+      else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
+    }
+    belowMin.sort((a, b) => a.localeCompare(b));
+    noCdr3.sort((a, b) => a.localeCompare(b));
+    const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
+    return { belowMin, noCdr3, allEmpty, nMin };
+  })
 
   // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);

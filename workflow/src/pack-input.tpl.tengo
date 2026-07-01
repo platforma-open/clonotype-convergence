@@ -1,0 +1,72 @@
+// Preamble packer (MILAB-6413, spec/per-sample-dedup.md).
+//
+// Joins abundance + CDR3 into ONE packed String column per
+// (sampleId, clonotypeKey) — the input the per-sample fan-out slices. This is
+// the whole-dataset preamble (join -> pt encode -> partitioned import).
+//
+// It lives in its own PURE template so its output (the packed column data) can
+// be PINNED by the caller via `.output("packed", ttl)`. Without that, the
+// preamble intermediates are unreferenced once processColumn consumes them and
+// reference-counting GC drops them — so a second block / project copy would
+// rebuild the whole preamble before it could recover the (pinned) per-sample
+// results. Pinning the packed column lets those runs recover it instead.
+//
+// The packed column's SPEC is reconstructed identically by the caller (it's
+// static), because processColumn needs the spec as a concrete value at
+// graph-build time; only the data rides through this template's pinned output.
+self := import("@platforma-sdk/workflow-tengo:tpl")
+pframes := import("@platforma-sdk/workflow-tengo:pframes")
+xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
+pt := import("@platforma-sdk/workflow-tengo:pt")
+
+self.defineOutputs("packed")
+
+self.body(func(inputs) {
+	sampleAxisSpec := inputs.sampleAxisSpec
+	clonoAxisSpec := inputs.clonoAxisSpec
+
+	// Join the three per-clonotype columns into one TSV keyed by
+	// (sampleId, clonotypeKey). Clean axis headers so the pt decode below
+	// references fixed names.
+	rawTsvBuilder := pframes.tsvFileBuilder()
+	rawTsvBuilder.cpu(2)
+	rawTsvBuilder.mem("4GiB")
+	rawTsvBuilder.setAxisHeader(sampleAxisSpec.name, "sampleId")
+	rawTsvBuilder.setAxisHeader(clonoAxisSpec.name, "clonotypeKey")
+	rawTsvBuilder.add({ spec: inputs.aaSpec, data: inputs.aaData }, { header: "aaSeqCDR3" })
+	rawTsvBuilder.add({ spec: inputs.ntSpec, data: inputs.ntData }, { header: "nSeqCDR3" })
+	rawTsvBuilder.add({ spec: inputs.abundanceSpec, data: inputs.abundanceData }, { header: "abundance" })
+	rawInputTsv := rawTsvBuilder.build()
+
+	// Pack abundance|aaSeqCDR3|nSeqCDR3 into one String per row.
+	encWf := pt.workflow().mem("4GiB").cpu(2)
+	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
+	encDf = encDf.withColumns(
+		pt.concatStr([pt.col("abundance"), pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
+	).select(pt.col("sampleId"), pt.col("clonotypeKey"), pt.col("packed"))
+	encDf.save("encoded.tsv")
+	encodedTsv := encWf.run().getFile("encoded.tsv")
+
+	// Import as a Parquet-partitioned (by sampleId) String column — the fan-out
+	// input. Parquet (not Json) keeps this cheap on big projects.
+	encodedFrame := xsv.importFile(encodedTsv, "tsv", {
+		axes: [
+			{ column: "sampleId", spec: sampleAxisSpec },
+			{ column: "clonotypeKey", spec: clonoAxisSpec }
+		],
+		columns: [{
+			column: "packed",
+			spec: {
+				name: "pl7.app/vdj/convergence/perSampleInput",
+				valueType: "String",
+				annotations: { "pl7.app/label": "Per-sample convergence input (packed)" }
+			}
+		}],
+		storageFormat: "Parquet",
+		partitionKeyLength: 1
+	}, { splitDataAndSpec: true, mem: "4GiB", cpu: 2 })
+
+	return {
+		packed: encodedFrame["packed"].data
+	}
+})

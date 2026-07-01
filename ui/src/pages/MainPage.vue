@@ -68,6 +68,15 @@ const skippedNMin = computed<number | undefined>(
   () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
 );
 
+// Samples dropped because they have NO usable CDR3 (nUniqueNt == 0), distinct
+// from `belowMin` — lowering nMin won't recover these, so the message omits
+// the nMin advice. Union across chains.
+const skippedNoCdr3 = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.noCdr3 ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.noCdr3 ?? [];
+  return Array.from(new Set([...heavy, ...light]));
+});
+
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
 // empty CDR3s). Chain-attributed so the user knows which chain is
@@ -155,6 +164,16 @@ const customBlockLabel = computed({
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
       Adjust "Minimum unique CDR3 per sample" in Advanced settings to include
       {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+    </PlAlert>
+
+    <PlAlert v-if="skippedNoCdr3.length > 0" type="warn" icon>
+      <template #title>
+        {{ skippedNoCdr3.length }} sample{{ skippedNoCdr3.length === 1 ? "" : "s" }} with no usable
+        CDR3
+      </template>
+      {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
+      no usable CDR3 sequences and
+      {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
     </PlAlert>
 
     <PlAlert v-if="heavyAllEmpty" type="warn" icon>
