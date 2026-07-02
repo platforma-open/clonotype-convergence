@@ -22,7 +22,11 @@ const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 const factsFor = (ref: PlRef | undefined) => {
   if (!ref) return undefined;
   const key = canonicalize(ref as unknown as Record<string, unknown>);
-  return key === undefined ? undefined : app.model.outputs.factsByRef?.[key];
+  if (key === undefined) return undefined;
+  const facts = app.model.outputs.factsByRef?.[key];
+  // Return a copy so the persisted snapshot in `data` doesn't alias the
+  // reactive outputs object.
+  return facts ? { ...facts, chains: [...facts.chains] } : undefined;
 };
 
 // Look up the dataset label as shown in the dropdown for the picked ref.
@@ -30,9 +34,8 @@ const factsFor = (ref: PlRef | undefined) => {
 // having to re-resolve options later.
 const labelFor = (ref: PlRef | undefined): string | undefined => {
   if (!ref) return undefined;
-  const key = canonicalize(ref as unknown as Record<string, unknown>);
   return app.model.outputs.datasetOptions?.find(
-    (o) => canonicalize(o.ref as unknown as Record<string, unknown>) === key,
+    (o) => o.ref.blockId === ref.blockId && o.ref.name === ref.name,
   )?.label;
 };
 
@@ -51,6 +54,15 @@ function onPickMain(ref: PlRef | undefined) {
     app.model.data.lightRefFacts = undefined;
     return;
   }
+  // Re-selecting the current dataset is a no-op: the snapshot was written when
+  // it was first picked from a valid (gated) option, so there's nothing to
+  // update — and doing nothing can't downgrade a good snapshot to the partial
+  // facts that pool repopulation transiently exposes.
+  const currentRef = app.model.data.mainRef;
+  const sameRef =
+    currentRef !== undefined && currentRef.blockId === ref.blockId && currentRef.name === ref.name;
+  if (sameRef) return;
+
   app.model.data.mainRef = ref;
   app.model.data.mainRefFacts = factsFor(ref);
   app.model.data.mainRefLabel = labelFor(ref);
@@ -115,12 +127,6 @@ const alertMessage = computed<string | undefined>(() => {
   }
   if (!mainHasHeavy.value && !mainHasLight.value) {
     return `Selected input chains "${facts.chains.join(", ")}" are not BCR — re-select an input.`;
-  }
-  if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
-    return "Selected input is missing required CDR3 columns — re-select an input.";
-  }
-  if (!facts.hasAbundance) {
-    return "Selected input has no abundance column — re-select an input.";
   }
   return undefined;
 });

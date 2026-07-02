@@ -46,9 +46,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
         `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`,
       );
     }
-    if (!mainFacts.hasAaCDR3) throw new Error("Selected input is missing the aa CDR3 column.");
-    if (!mainFacts.hasNtCDR3) throw new Error("Selected input is missing the nt CDR3 column.");
-    if (!mainFacts.hasAbundance) throw new Error("Selected input is missing an abundance column.");
 
     // ---- Heavy slot (always from main when main has heavy) --------
     let chainH: PlRef | undefined;
@@ -80,14 +77,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
         chainLFacts = data.lightRefFacts;
       }
     }
-    if (chainL && chainLFacts) {
-      if (!chainLFacts.hasAaCDR3)
-        throw new Error("Light-chain input is missing the aa CDR3 column.");
-      if (!chainLFacts.hasNtCDR3)
-        throw new Error("Light-chain input is missing the nt CDR3 column.");
-      if (!chainLFacts.hasAbundance) throw new Error("Light-chain input has no abundance column.");
-    }
-
     if (!chainH && !chainL) {
       throw new Error(
         `Selected dataset chains are ${mainFacts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
@@ -169,9 +158,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
-    const selected = ctx.data.mainRef
-      ? canonicalize(ctx.data.mainRef as unknown as Record<string, unknown>)
-      : undefined;
+    const selectedRef = ctx.data.mainRef;
     return broad.filter((opt) => {
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
@@ -180,7 +167,11 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
       // alert, healing when the pool settles). The gate only needs to stop a
       // *new* pick of a not-ready dataset, not destabilise an existing one.
-      if (selected && canonicalize(opt.ref as unknown as Record<string, unknown>) === selected) {
+      if (
+        selectedRef &&
+        opt.ref.blockId === selectedRef.blockId &&
+        opt.ref.name === selectedRef.name
+      ) {
         return true;
       }
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
@@ -209,7 +200,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // so an offered dataset always has CDR3 facts ready at pick time;
       // during the window the dataset simply appears a moment later.
       const facts = discoverUpstreamFacts(ctx, opt.ref);
-      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3;
+      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3 && facts.hasAbundance;
     });
   })
 
