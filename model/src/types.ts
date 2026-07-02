@@ -11,8 +11,8 @@ import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
  * `chains` carries the verbatim VDJ chain DOMAIN values from MiXCR
  * (e.g. "IGHeavy", "IGLight", "IGKappa", "IGLambda", "TCRAlpha"). The
  * presence flags are aggregate across all detected chains for the
- * picked anchor. `axisName` carries the second-axis name from the
- * picked anchor's spec ("pl7.app/vdj/clonotypeKey" for bulk;
+ * picked anchor. `clonotypeKeyAxisName` carries the second-axis name
+ * from the picked anchor's spec ("pl7.app/vdj/clonotypeKey" for bulk;
  * "pl7.app/vdj/scClonotypeKey" for single-cell) — used by R61 mode
  * detection.
  */
@@ -21,7 +21,7 @@ export type UpstreamFacts = {
   hasAaCDR3: boolean;
   hasNtCDR3: boolean;
   hasAbundance: boolean;
-  axisName: string;
+  clonotypeKeyAxisName: string;
 };
 
 /** Args passed to the workflow — output shape of `.args(...)` (R15).
@@ -89,31 +89,26 @@ export type BlockArgs = {
 /** Unified V3 data model — block args inputs PLUS UI state. */
 export type BlockData = {
   // Workflow-bound fields (projected into args by the .args() lambda).
-  /** The user's main input pick (R18 — accepts any BCR-compatible
+  /** The user's input dataset pick (R18 — accepts any BCR-compatible
    *  anchor: heavy bulk, light bulk, or single-cell IG). Drives
    *  args.chainH or args.chainL depending on the picked chain's
    *  identity. */
-  mainRef?: PlRef;
-  /** Snapshot facts for `mainRef`. Written by the main-picker handler
-   *  in the same user-gesture as `mainRef` (R8, R24). */
-  mainRefFacts?: UpstreamFacts;
-  /** Snapshot label for `mainRef` — the exact dropdown text the user
+  datasetRef?: PlRef;
+  /** Snapshot facts for `datasetRef`. Written by the picker handler in
+   *  the same user-gesture as `datasetRef` (R8, R24). */
+  datasetFacts?: UpstreamFacts;
+  /** Snapshot label for `datasetRef` — the exact dropdown text the user
    *  saw when they picked. Used as the dataset prefix in the page
    *  subtitle so the subtitle reads e.g. "MyMixcrBulk 0.000961"
    *  (single chain) or "MyMixcrSc 0.000961 / Light 0.03" (SC paired). */
-  mainRefLabel?: string;
+  datasetLabel?: string;
 
-  /** Optional secondary light-chain pick. Visible when the main pick
-   *  CAN pair with a light chain:
-   *   - bulk-heavy main → LC options are bulk-LC anchors;
-   *   - SC main → LC options are the same SC anchor (heavy and light
-   *     hang off it as column-domain siblings; the picker is the
-   *     explicit opt-in for LC processing, R66).
-   *  When unset, only the main pick's chain is processed. */
-  lightRef?: PlRef;
-  /** Snapshot facts for `lightRef`. Written in the same user-gesture
-   *  as `lightRef`. */
-  lightRefFacts?: UpstreamFacts;
+  /** Whether to also process the light chain (SC paired mode, R66). The
+   *  light chain is a column-domain sibling on the SAME anchor as the
+   *  dataset pick, so no separate ref is needed — this is the explicit
+   *  opt-in for LC processing. Ignored in bulk mode (bulk is single-chain:
+   *  the light chain, when it is the pick, is processed as the main chain). */
+  processLightChain?: boolean;
 
   /** Heavy-chain threshold. Required iff main pick is heavy
    *  (bulk-heavy or SC-heavy). */
@@ -152,4 +147,22 @@ export type BlockData = {
    *  placeholder in the page header. Mirrors the pattern in
    *  immune-assay-data / clonotype-clustering. */
   customBlockLabel: string;
+};
+
+/** Legacy (v1) persisted facts shape — `axisName` was renamed to
+ *  `clonotypeKeyAxisName`. Used only by the data-model migration. */
+export type UpstreamFactsV1 = Omit<UpstreamFacts, "clonotypeKeyAxisName"> & { axisName: string };
+
+/** Legacy (v1) persisted block data — the pre-collapse main/light ref
+ *  snapshots (`lightRef`/`lightRefFacts` were always equal to the main
+ *  pick or undefined). Used only by the data-model migration. */
+export type BlockDataV1 = Omit<
+  BlockData,
+  "datasetRef" | "datasetFacts" | "datasetLabel" | "processLightChain"
+> & {
+  mainRef?: PlRef;
+  mainRefFacts?: UpstreamFactsV1;
+  mainRefLabel?: string;
+  lightRef?: PlRef;
+  lightRefFacts?: UpstreamFactsV1;
 };

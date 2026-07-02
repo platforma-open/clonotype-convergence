@@ -33,11 +33,11 @@ export { blockDataModel } from "./dataModel";
 
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
-    if (!data.mainRef || !data.mainRefFacts) {
+    if (!data.datasetRef || !data.datasetFacts) {
       throw new Error("Select a dataset");
     }
-    const mainFacts = data.mainRefFacts;
-    const mainIsSC = mainFacts.axisName === SC_AXIS;
+    const mainFacts = data.datasetFacts;
+    const mainIsSC = mainFacts.clonotypeKeyAxisName === SC_AXIS;
 
     // ---- R5 staleness checks on the main pick ---------------------
     const tcr = mainFacts.chains.filter((c) => c.startsWith("TCR"));
@@ -52,29 +52,29 @@ export const platforma = BlockModelV3.create(blockDataModel)
     let chainHName: string | undefined;
     const mainHeavy = mainFacts.chains.find(isHeavy);
     if (mainHeavy) {
-      chainH = data.mainRef;
+      chainH = data.datasetRef;
       chainHName = mainHeavy;
     }
 
     // ---- Light slot (explicit per R66) ----------------------------
-    // Two sources, mutually exclusive:
-    //  1. main is bulk-light  → chainL ← main pick;
-    //  2. secondary lightRef set → chainL ← lightRef (bulk-heavy main
-    //     + bulk-light secondary, OR SC main + SC secondary opt-in).
+    // Two sources, mutually exclusive — both on the SAME dataset anchor:
+    //  1. dataset is bulk-light        → chainL ← the dataset pick;
+    //  2. SC paired + processLightChain → chainL ← the same anchor (heavy
+    //     and light hang off it as column-domain siblings).
     let chainL: PlRef | undefined;
     let chainLName: string | undefined;
     let chainLFacts: UpstreamFacts | undefined;
     const mainLight = mainFacts.chains.find(isLight);
     if (mainLight && !mainHeavy) {
-      chainL = data.mainRef;
+      chainL = data.datasetRef;
       chainLName = mainLight;
       chainLFacts = mainFacts;
-    } else if (data.lightRef && data.lightRefFacts) {
-      const lightName = data.lightRefFacts.chains.find(isLight);
+    } else if (data.processLightChain) {
+      const lightName = mainFacts.chains.find(isLight);
       if (lightName) {
-        chainL = data.lightRef;
+        chainL = data.datasetRef;
         chainLName = lightName;
-        chainLFacts = data.lightRefFacts;
+        chainLFacts = mainFacts;
       }
     }
     if (!chainH && !chainL) {
@@ -107,11 +107,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     }
 
     // SC mode → workflow needs the scClonotypeChain LETTER ("A"/"B")
-    // to filter sibling columns to the right chain. Determined per
-    // slot: the H slot's SC mode follows the main pick; the L slot's
-    // SC mode follows the LC source's mode (which may be the same SC
-    // anchor as main, or — hypothetically — a separate SC anchor).
-    const lightIsSC = chainLFacts?.axisName === SC_AXIS;
+    // to filter sibling columns to the right chain. The light chain rides
+    // the same anchor as the heavy, so its SC mode matches the dataset's.
+    const lightIsSC = chainLFacts?.clonotypeKeyAxisName === SC_AXIS;
 
     const args: BlockArgs = {
       nMin: data.nMin,
@@ -158,12 +156,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
-    const selectedRef = ctx.data.mainRef;
+    const selectedRef = ctx.data.datasetRef;
     return broad.filter((opt) => {
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
       // it drops out of the options and the `required` dropdown reconciles to
-      // another dataset — firing onPickMain and clobbering the mainRef snapshot
+      // another dataset — firing onPickMain and clobbering the datasetRef snapshot
       // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
       // alert, healing when the pool settles). The gate only needs to stop a
       // *new* pick of a not-ready dataset, not destabilise an existing one.
@@ -193,7 +191,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // right after a block reload the result pool repopulates incrementally
       // and there is a window where the anchor column is present but its
       // CDR3 siblings are not yet. Without this gate a user could pick
-      // during that window and the args/alert snapshot (mainRefFacts) would
+      // during that window and the args/alert snapshot (datasetFacts) would
       // freeze a false "missing CDR3" until re-pick — and a published
       // version update reloads the same way, so this is user-facing.
       // discoverUpstreamFacts is the same check factsByRef/the snapshot use,
@@ -202,12 +200,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
       const facts = discoverUpstreamFacts(ctx, opt.ref);
       return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3 && facts.hasAbundance;
     });
-  })
-
-  // Live facts for the main pick — UI's PlAlert mirror (R9).
-  .output("mainRefFacts", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
-    return discoverUpstreamFacts(ctx, ctx.data.mainRef);
   })
 
   // Source identifier for the main table's per-source state cache.
@@ -248,9 +240,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // never appears. Returning undefined during a run keeps the table
   // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
   .output("mainTableSheets", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
+    if (!ctx.data.datasetRef) return undefined;
     if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
@@ -264,8 +256,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
   // mainTableSheets. Undefined until a dataset is picked.
   .output("exportSampleOptions", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    if (!ctx.data.datasetRef) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
@@ -644,7 +636,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   //                      heavy histogram + light histogram
   .sections((ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
-    const ready = ctx.data.mainRef !== undefined && args !== undefined;
+    const ready = ctx.data.datasetRef !== undefined && args !== undefined;
     const hasHeavy = ready && args?.chainH !== undefined;
     const hasLight = ready && args?.chainL !== undefined;
     const dualChain = hasHeavy && hasLight;

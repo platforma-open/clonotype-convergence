@@ -13,10 +13,10 @@ export function discoverUpstreamFacts<A, U>(
 ): UpstreamFacts | undefined {
   const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
   if (!refSpec) return undefined;
-  // Axis name of the second axis = clonotype-key axis. Drives R61
+  // Name of the second axis = clonotype-key axis. Drives R61
   // mode detection and the BULK-vs-SC handling below.
-  const axisName = refSpec.axesSpec[1]?.name ?? "";
-  const isSC = axisName === SC_AXIS;
+  const clonotypeKeyAxisName = refSpec.axesSpec[1]?.name ?? "";
+  const isSC = clonotypeKeyAxisName === SC_AXIS;
 
   // MiXCR partitions outputs across two axis frames: per-(sample,
   // clonotype) and per-clonotype. The anchored selector matches axes
@@ -90,6 +90,6 @@ export function discoverUpstreamFacts<A, U>(
     hasAaCDR3: anyTrue(hasAaCDR3),
     hasNtCDR3: anyTrue(hasNtCDR3),
     hasAbundance: anyTrue(hasAbundance),
-    axisName,
+    clonotypeKeyAxisName,
   };
 }

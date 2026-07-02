@@ -39,35 +39,32 @@ const labelFor = (ref: PlRef | undefined): string | undefined => {
   )?.label;
 };
 
-// Snapshot pattern (R8, R24): when the user picks the main input,
-// write `mainRef`, `mainRefFacts`, AND `mainRefLabel` in the same
+// Snapshot pattern (R8, R24): when the user picks the input dataset,
+// write `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
 // user-gesture handler. Reads from the model's factsByRef map +
-// datasetOptions, both keyed by canonical PlRef. Picking a new main
-// also clears the LC pick because the LC options depend on the main
-// pick (R66).
+// datasetOptions. Picking a new dataset also clears the LC opt-in
+// because it depends on the pick (R66).
 function onPickMain(ref: PlRef | undefined) {
   if (ref === undefined) {
-    app.model.data.mainRef = undefined;
-    app.model.data.mainRefFacts = undefined;
-    app.model.data.mainRefLabel = undefined;
-    app.model.data.lightRef = undefined;
-    app.model.data.lightRefFacts = undefined;
+    app.model.data.datasetRef = undefined;
+    app.model.data.datasetFacts = undefined;
+    app.model.data.datasetLabel = undefined;
+    app.model.data.processLightChain = false;
     return;
   }
   // Re-selecting the current dataset is a no-op: the snapshot was written when
   // it was first picked from a valid (gated) option, so there's nothing to
   // update — and doing nothing can't downgrade a good snapshot to the partial
   // facts that pool repopulation transiently exposes.
-  const currentRef = app.model.data.mainRef;
+  const currentRef = app.model.data.datasetRef;
   const sameRef =
     currentRef !== undefined && currentRef.blockId === ref.blockId && currentRef.name === ref.name;
   if (sameRef) return;
 
-  app.model.data.mainRef = ref;
-  app.model.data.mainRefFacts = factsFor(ref);
-  app.model.data.mainRefLabel = labelFor(ref);
-  app.model.data.lightRef = undefined;
-  app.model.data.lightRefFacts = undefined;
+  app.model.data.datasetRef = ref;
+  app.model.data.datasetFacts = factsFor(ref);
+  app.model.data.datasetLabel = labelFor(ref);
+  app.model.data.processLightChain = false;
   // NOTE: exportSampleId is NOT cleared here — a different dataset from the
   // same clonotyping run can share the exact sample list, and we want to
   // keep the pick in that case. Validity is reconciled reactively below
@@ -80,43 +77,39 @@ function onPickMain(ref: PlRef | undefined) {
 // the heavy slot from the main pick — LC opt-in goes through the SC
 // checkbox. Bulk mode processes whichever single chain the picked
 // anchor carries — no secondary LC dropdown.
-const mainChains = computed(() => app.model.data.mainRefFacts?.chains ?? []);
+const mainChains = computed(() => app.model.data.datasetFacts?.chains ?? []);
 const mainHasHeavy = computed(() => mainChains.value.includes(HEAVY_CHAIN));
 const mainHasLight = computed(() => mainChains.value.some((c) => LIGHT_CHAINS.has(c)));
 const mainIsBulkLight = computed(() => mainHasLight.value && !mainHasHeavy.value);
-const mainIsSC = computed(() => app.model.data.mainRefFacts?.axisName === SC_AXIS);
+const mainIsSC = computed(() => app.model.data.datasetFacts?.clonotypeKeyAxisName === SC_AXIS);
 
 // Heavy slot active iff the main pick has heavy.
 const heavyActive = computed(() => mainHasHeavy.value);
 
 // LC slot active iff:
 //   - main is bulk-light (LC IS the main), OR
-//   - SC main + LC checkbox ticked (lightRef set).
-const lightActive = computed(() => mainIsBulkLight.value || app.model.data.lightRef !== undefined);
+//   - SC main + LC checkbox ticked (processLightChain).
+const lightActive = computed(
+  () => mainIsBulkLight.value || app.model.data.processLightChain === true,
+);
 
 // LC opt-in only exists in SC paired mode (R66). Bulk mode is
 // strictly single-chain — no checkbox, no secondary dropdown.
 const showLightCheckbox = computed(
   () => mainIsSC.value && mainHasHeavy.value && mainHasLight.value,
 );
-const lightChecked = computed(() => app.model.data.lightRef !== undefined);
+const lightChecked = computed(() => app.model.data.processLightChain === true);
 
-// Checkbox toggle: writes lightRef ← mainRef (same anchor; LC siblings
-// hang off it as column-domain children). Cleared on uncheck.
+// Checkbox toggle: the light chain is a column-domain sibling on the same
+// anchor as the main pick, so this is just an opt-in flag.
 function onToggleLightCheckbox(v: boolean) {
-  if (v && app.model.data.mainRef) {
-    app.model.data.lightRef = app.model.data.mainRef;
-    app.model.data.lightRefFacts = app.model.data.mainRefFacts;
-  } else {
-    app.model.data.lightRef = undefined;
-    app.model.data.lightRefFacts = undefined;
-  }
+  app.model.data.processLightChain = v;
 }
 
 // Live PlAlert mirror (R9). Mirrors args lambda's checks.
 const alertMessage = computed<string | undefined>(() => {
-  const facts = app.model.data.mainRefFacts;
-  if (app.model.data.mainRef === undefined || facts === undefined) return undefined;
+  const facts = app.model.data.datasetFacts;
+  if (app.model.data.datasetRef === undefined || facts === undefined) return undefined;
 
   const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
   if (tcr.length > 0) {
@@ -160,7 +153,7 @@ watch(
 <template>
   <PlDropdownRef
     :options="app.model.outputs.datasetOptions"
-    :model-value="app.model.data.mainRef"
+    :model-value="app.model.data.datasetRef"
     label="Input dataset"
     clearable
     required
@@ -239,12 +232,12 @@ watch(
        Antibody Lead Selection. No default — unset exports nothing. Options
        come from the upstream dataset's samples, so the picker is usable
        before the first run. -->
-  <PlAlert v-if="app.model.data.mainRef" type="info">
+  <PlAlert v-if="app.model.data.datasetRef" type="info">
     Convergence is exported for one sample at a time, on a per-clonotype basis. Pick a sample to
     make its convergence available to downstream blocks.
   </PlAlert>
   <PlDropdown
-    v-if="app.model.data.mainRef"
+    v-if="app.model.data.datasetRef"
     v-model="app.model.data.exportSampleId"
     :options="app.model.outputs.exportSampleOptions ?? []"
     label="Sample to export"

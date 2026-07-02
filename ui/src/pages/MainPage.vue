@@ -24,7 +24,7 @@ type Panel = "settings" | "logs" | "stats" | null;
 // writing to server-stored data (hairpin.md). Auto-open on first
 // project add (no mainRef yet) is initialised here, per R53.
 const ui = reactive({
-  activePanel: (app.model.data.mainRef === undefined ? "settings" : null) as Panel,
+  activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
 });
 
 const settingsOpen = computed({

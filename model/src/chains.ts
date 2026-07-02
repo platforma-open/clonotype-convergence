@@ -78,13 +78,13 @@ export function friendlyChain(chain: string): string {
 export function getDefaultBlockLabel(data: BlockData): string {
   const parts: string[] = [];
 
-  const facts = data.mainRefFacts;
+  const facts = data.datasetFacts;
   if (facts) {
-    const isSC = facts.axisName === SC_AXIS;
+    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
     const mainThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
     if (mainThreshold !== undefined) {
       let thr = `thr ${mainThreshold}`;
-      if (isSC && data.lightRef !== undefined && data.thresholdL !== undefined) {
+      if (isSC && data.processLightChain && data.thresholdL !== undefined) {
         thr += ` / L thr ${data.thresholdL}`;
       }
       parts.push(thr);
@@ -112,7 +112,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
 // input is picked. A " - " separates the dataset from the settings so the
 // commas inside the settings part don't blur into the dataset name.
 export function formatSubtitle(data: BlockData): string | undefined {
-  if (!data.mainRefFacts || !data.mainRefLabel) return undefined;
+  if (!data.datasetFacts || !data.datasetLabel) return undefined;
   const settings = getDefaultBlockLabel(data);
-  return settings.length > 0 ? `${data.mainRefLabel} - ${settings}` : data.mainRefLabel;
+  return settings.length > 0 ? `${data.datasetLabel} - ${settings}` : data.datasetLabel;
 }
