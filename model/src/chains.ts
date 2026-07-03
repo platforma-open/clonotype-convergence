@@ -31,8 +31,8 @@ export const DEFAULT_NMIN = 100;
 // includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
 // surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
 // TCRGamma/TCRDelta — filtered out at R10.
-export const HEAVY_CHAIN = "IGHeavy";
-export const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
+const HEAVY_CHAIN = "IGHeavy";
+const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
 
 // SC anchors put receptor (not chain) in the axis domain. "IG" = BCR;
 // TCRAB / TCRGD = TCR families. Chain identity in SC lives on the
