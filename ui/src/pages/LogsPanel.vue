@@ -71,7 +71,7 @@ const setOpen = (sampleId: string, v: boolean) => {
 .logsPanel {
   display: flex;
   flex-direction: column;
-  padding: 12px 16px 16px;
+  padding: 0 16px 16px;
 }
 .tabs {
   margin-bottom: 16px;
