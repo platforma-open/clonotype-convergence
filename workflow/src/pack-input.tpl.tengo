@@ -1,8 +1,11 @@
 // Preamble packer (MILAB-6413, spec/per-sample-dedup.md).
 //
-// Joins abundance + CDR3 into ONE packed String column per
-// (sampleId, clonotypeKey) — the input the per-sample fan-out slices. This is
-// the whole-dataset preamble (join -> pt encode -> partitioned import).
+// Joins the CDR3 sequences into ONE packed String column per
+// (sampleId, clonotypeKey) — the input the per-sample fan-out slices. Abundance
+// takes part in the join only to supply the sampleId axis (it's the sole 2-axis
+// column; the CDR3 columns are clonotype-only), but its VALUE is NOT packed —
+// the convergence math uses only the CDR3 sequences. This is the whole-dataset
+// preamble (join -> pt encode -> partitioned import).
 //
 // It lives in its own PURE template so its output (the packed column data) can
 // be PINNED by the caller via `.output("packed", ttl)`. Without that, the
@@ -25,9 +28,12 @@ self.body(func(inputs) {
 	sampleAxisSpec := inputs.sampleAxisSpec
 	clonoAxisSpec := inputs.clonoAxisSpec
 
-	// Join the three per-clonotype columns into one TSV keyed by
-	// (sampleId, clonotypeKey). Clean axis headers so the pt decode below
-	// references fixed names.
+	// Build one TSV keyed by (sampleId, clonotypeKey). Clean axis headers so the
+	// pt encode below references fixed names. abundance is the only 2-axis
+	// (sampleId, clonotypeKey) column, so it supplies the sampleId dimension of
+	// the row set; the clonotype-only CDR3 columns broadcast onto it. Its value
+	// is unused downstream, so it's added here purely as the sampleId-axis
+	// carrier and left out of the packed string.
 	rawTsvBuilder := pframes.tsvFileBuilder()
 	rawTsvBuilder.cpu(2)
 	rawTsvBuilder.mem("4GiB")
@@ -38,11 +44,12 @@ self.body(func(inputs) {
 	rawTsvBuilder.add({ spec: inputs.abundanceSpec, data: inputs.abundanceData }, { header: "abundance" })
 	rawInputTsv := rawTsvBuilder.build()
 
-	// Pack abundance|aaSeqCDR3|nSeqCDR3 into one String per row.
+	// Pack aaSeqCDR3|nSeqCDR3 into one String per row (abundance is dropped by
+	// the select — it was only needed to establish the sampleId rows above).
 	encWf := pt.workflow().mem("4GiB").cpu(2)
 	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
 	encDf = encDf.withColumns(
-		pt.concatStr([pt.col("abundance"), pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
+		pt.concatStr([pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
 	).select(pt.col("sampleId"), pt.col("clonotypeKey"), pt.col("packed"))
 	encDf.save("encoded.tsv")
 	encodedTsv := encWf.run().getFile("encoded.tsv")

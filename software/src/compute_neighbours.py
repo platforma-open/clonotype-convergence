@@ -15,8 +15,9 @@ CLI:
 Input TSV is ONE sample's clonotypes (the per-sample fan-out slices the
 whole-dataset input by sampleId before this runs — see
 workflow/src/per-sample-neighbours.tpl.tengo). It must contain `aaSeqCDR3`
-and `nSeqCDR3` columns; other columns (clonotype-key axis, abundance, etc.)
-pass through.
+and `nSeqCDR3` columns; any other columns (e.g. the clonotype-key axis) pass
+through unused. Abundance is intentionally NOT provided — the neighbour count
+is weighted by nt-per-aa multiplicity, not read abundance.
 
 Output TSV is the input TSV with three columns appended:
     multiplicity  — nt-CDR3 count per aa CDR3 (informational)

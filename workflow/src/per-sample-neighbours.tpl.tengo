@@ -2,8 +2,8 @@
 //
 // processColumn body: receives ONE sample's slice of the packed convergence
 // input — a String PColumn keyed by clonotypeKey whose value is
-// "abundance|aaSeqCDR3|nSeqCDR3" (packed in main so the whole per-sample input
-// rides through the single sliced primary; see spec/per-sample-dedup.md, O1).
+// "aaSeqCDR3|nSeqCDR3" (packed in main so both CDR3 columns ride through the
+// single sliced primary; see spec/per-sample-dedup.md, O1).
 // The sampleId is the processColumn group key and is NOT present in this
 // slice's content, so the body node's input — and therefore its cache id —
 // depends only on the sample's clonotype data. That is what makes a project
@@ -57,22 +57,19 @@ self.body(func(inputs) {
 	}
 	packedTsv := xsv.exportFrame([{ spec: packedColSpec, data: packedData }], "tsv", {})
 
-	// Unpack "abundance|aaSeqCDR3|nSeqCDR3" -> three columns; emit the TSV
-	// compute-neighbours expects (clonotypeKey, abundance, aaSeqCDR3, nSeqCDR3).
-	// One shared 3-group pattern + strExtract(groupIndex) — a single
-	// source-of-truth pattern instead of three positional look-around regexes
-	// (pt has no split-to-list). Fields never contain "|" (a number and
-	// amino-acid / nucleotide sequences), so "|" is an unambiguous delimiter.
-	packedPattern := "([^|]*)\\|([^|]*)\\|([^|]*)"
+	// Unpack "aaSeqCDR3|nSeqCDR3" -> two columns; emit the TSV compute-neighbours
+	// expects (clonotypeKey, aaSeqCDR3, nSeqCDR3). One shared 2-group pattern +
+	// strExtract(groupIndex) — a single source-of-truth pattern instead of two
+	// positional look-around regexes (pt has no split-to-list). CDR3 sequences
+	// never contain "|", so it's an unambiguous delimiter.
+	packedPattern := "([^|]*)\\|([^|]*)"
 	ptwf := pt.workflow().mem("4GiB").cpu(2)
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
 	df = df.withColumns(
-		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("abundance"),
-		pt.col("packed").strExtract(packedPattern, { groupIndex: 2 }).alias("aaSeqCDR3"),
-		pt.col("packed").strExtract(packedPattern, { groupIndex: 3 }).alias("nSeqCDR3")
+		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("aaSeqCDR3"),
+		pt.col("packed").strExtract(packedPattern, { groupIndex: 2 }).alias("nSeqCDR3")
 	).select(
 		pt.col("clonotypeKey"),
-		pt.col("abundance"),
 		pt.col("aaSeqCDR3"),
 		pt.col("nSeqCDR3")
 	)
