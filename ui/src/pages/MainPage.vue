@@ -21,32 +21,33 @@ type Panel = "settings" | "logs" | "stats" | null;
 
 // Modal open state — kept in a local reactive (not in BlockData) so a
 // hairpin-free auto-close on Run state change is possible without
-// writing to server-stored data (hairpin.md). Auto-open on first
-// project add (no mainRef yet) is initialised here, per R53.
+// writing to server-stored data (hairpin.md). Auto-open Settings on first
+// project add (no dataset yet), per R53.
 const ui = reactive({
   activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
 });
 
-const settingsOpen = computed({
-  get: () => ui.activePanel === "settings",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "settings" : null;
-  },
-});
+// Single mutation path (only one panel is open at a time). Header buttons open
+// via setPanel(name); each modal's v-model closes via the factory below, which
+// routes back through setPanel(null).
+function setPanel(panel: Panel) {
+  ui.activePanel = panel;
+}
 
-const logsOpen = computed({
-  get: () => ui.activePanel === "logs",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "logs" : null;
-  },
-});
-
-const statsOpen = computed({
-  get: () => ui.activePanel === "stats",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "stats" : null;
-  },
-});
+// One v-model per modal, from a factory so the three stay identical. The setter
+// only CLOSES — panels are opened via setPanel from the header buttons; the
+// `name` guard stops a late close event from nulling a panel opened since.
+function panelModel(name: Exclude<Panel, null>) {
+  return computed({
+    get: () => ui.activePanel === name,
+    set: (open: boolean) => {
+      if (!open && ui.activePanel === name) setPanel(null);
+    },
+  });
+}
+const settingsOpen = panelModel("settings");
+const logsOpen = panelModel("logs");
+const statsOpen = panelModel("stats");
 
 // R68 — show the Stats button only when at least one chain produced
 // stats. Mirrors the badge's previous visibility gate (R49) but
@@ -94,7 +95,7 @@ watch(
   () => app.model.outputs.runArgsId,
   (id, prev) => {
     if (id && id !== prev && ui.activePanel === "settings") {
-      ui.activePanel = null;
+      setPanel(null);
     }
   },
 );
@@ -134,19 +135,19 @@ const customBlockLabel = computed({
     title="Clonotype Convergence"
   >
     <template #append>
-      <PlBtnGhost v-if="hasAnyStats" @click.stop="() => (ui.activePanel = 'stats')">
+      <PlBtnGhost v-if="hasAnyStats" @click.stop="() => setPanel('stats')">
         Stats
         <template #append>
           <PlMaskIcon24 name="statistics" />
         </template>
       </PlBtnGhost>
-      <PlBtnGhost @click.stop="() => (ui.activePanel = 'logs')">
+      <PlBtnGhost @click.stop="() => setPanel('logs')">
         Logs
         <template #append>
           <PlMaskIcon24 name="file-logs" />
         </template>
       </PlBtnGhost>
-      <PlBtnGhost @click.stop="() => (ui.activePanel = 'settings')">
+      <PlBtnGhost @click.stop="() => setPanel('settings')">
         Settings
         <template #append>
           <PlMaskIcon24 name="settings" />
