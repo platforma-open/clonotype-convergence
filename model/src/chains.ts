@@ -70,16 +70,6 @@ export function datasetFactsError(facts: UpstreamFacts): string | undefined {
   return undefined;
 }
 
-// Friendly chain name for user-facing strings (R64 — no raw IGHeavy /
-// IGLight in copy). Subtitle (R55), section labels, etc.
-export function friendlyChain(chain: string): string {
-  if (chain === "IGHeavy") return "Heavy";
-  if (chain === "IGLight") return "Light";
-  if (chain === "IGKappa") return "Light (κ)";
-  if (chain === "IGLambda") return "Light (λ)";
-  return chain;
-}
-
 // Settings portion of the block's identity label — threshold(s), nMin
 // (only when non-default), and the cluster filter. This is the single
 // source of truth shared by the page subtitle and the column trace, so
