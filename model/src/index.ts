@@ -69,7 +69,7 @@ function buildSkippedSamples<A, U>(
   const ref = args ? chainRef(args) : undefined;
   const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
   const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
-  const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
+  const nMin = parsed.data[0]?.value?.nMin ?? args?.nMin;
   const belowMin: string[] = [];
   const noCdr3: string[] = [];
   for (const e of parsed.data) {
