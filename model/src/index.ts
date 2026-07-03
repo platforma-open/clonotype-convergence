@@ -180,6 +180,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
         chainOk = !!chain && !chain.startsWith("TCR") && (isHeavy(chain) || isLight(chain));
       }
       if (!chainOk) return false;
+      // Exclude scFv constructs (engineered single-chain VH-linker-VL): out of
+      // scope for repertoire convergence (in-vivo only), and they'd otherwise
+      // pass here as SC-paired IG. `pl7.app/vdj/scFv-sequence` is the platform's
+      // scFv marker (clonotype-clustering / -space / sequence-embeddings key off
+      // it too); the scClonotypeKey/structure domain is an unfinished
+      // placeholder shared with paired SC, so it can't discriminate.
+      const scFv = ctx.resultPool.getAnchoredPColumns({ main: opt.ref }, [
+        { name: "pl7.app/vdj/scFv-sequence" },
+      ]);
+      if (scFv && scFv.length > 0) return false;
       // CDR3-readiness gate. Only offer a dataset once its CDR3 sibling
       // specs are present in the pool. This closes a snapshot-timing race:
       // right after a block reload the result pool repopulates incrementally
