@@ -1,4 +1,10 @@
-import type { InferOutputsType, PColumnSpec, PFrameHandle, PlRef } from "@platforma-sdk/model";
+import type {
+  InferOutputsType,
+  PColumnSpec,
+  PFrameHandle,
+  PlRef,
+  RenderCtx,
+} from "@platforma-sdk/model";
 import {
   BlockModelV3,
   createPlDataTableSheet,
@@ -32,6 +38,50 @@ export { isHeavy, isLight, SC_AXIS } from "./chains";
 //  - SC paired + processLightChain (chainL ← the same anchor).
 // SC paired data never auto-populates chainL even though both chains
 // hang off the same anchor — the user opts in via the LC checkbox.
+
+// Skipped-samples warning (R12), shared by both chains. Reads a per-sample
+// status sidecar (one { nUniqueNt, nMin } per sample, keyed by sampleId) and
+// splits samples into:
+//   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
+//   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
+//   allEmpty — the whole chain produced nothing usable.
+// Labels via findLabels on the chain anchor's sampleId axis; nMin from the run's
+// status (falls back to activeArgs). Gated on parse completeness so the warning
+// doesn't flicker on partial mid-run status.
+function buildSkippedSamples<A, U>(
+  ctx: RenderCtx<A, U>,
+  statusField: string,
+  chainRef: (args: BlockArgs) => PlRef | undefined,
+) {
+  const acc = ctx.outputs?.resolve({
+    field: statusField,
+    assertFieldType: "Input",
+    allowPermanentAbsence: true,
+  });
+  if (!acc) return undefined;
+  const parsed = parseResourceMap(
+    acc,
+    (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
+    false,
+  );
+  if (!parsed.isComplete) return undefined;
+  const args = ctx.activeArgs as BlockArgs | undefined;
+  const ref = args ? chainRef(args) : undefined;
+  const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+  const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+  const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
+  const belowMin: string[] = [];
+  const noCdr3: string[] = [];
+  for (const e of parsed.data) {
+    const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
+    if (e.value.nUniqueNt === 0) noCdr3.push(label);
+    else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
+  }
+  belowMin.sort((a, b) => a.localeCompare(b));
+  noCdr3.sort((a, b) => a.localeCompare(b));
+  const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
+  return { belowMin, noCdr3, allEmpty, nMin };
+}
 
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
@@ -429,79 +479,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Skipped-samples warning (R12), derived model-side from the per-sample
-  // status sidecars (one { nUniqueNt, nMin } per sample, keyed by sampleId).
-  // A sample is absent from the convergence output iff its unique-nt-CDR3
-  // count is below nMin; this splits that into:
-  //   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
-  //   noCdr3   — nUniqueNt == 0: no usable CDR3; nMin won't help.
-  //   allEmpty — the whole chain produced nothing usable.
-  // Labels via findLabels on the anchor's sampleId axis; nMin from the run's
-  // status (falls back to activeArgs). Gated on parse completeness so the
-  // warning doesn't flicker on partial mid-run status. UI surfaces a PlAlert
-  // above the main table per case.
-  .output("heavySkippedSamples", (ctx) => {
-    const acc = ctx.outputs?.resolve({
-      field: "heavyPerSampleStatus",
-      assertFieldType: "Input",
-      allowPermanentAbsence: true,
-    });
-    if (!acc) return undefined;
-    const parsed = parseResourceMap(
-      acc,
-      (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
-      false,
-    );
-    if (!parsed.isComplete) return undefined;
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    const axis = args?.chainH
-      ? ctx.resultPool.getPColumnSpecByRef(args.chainH)?.axesSpec[0]
-      : undefined;
-    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
-    const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
-    const belowMin: string[] = [];
-    const noCdr3: string[] = [];
-    for (const e of parsed.data) {
-      const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
-      if (e.value.nUniqueNt === 0) noCdr3.push(label);
-      else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
-    }
-    belowMin.sort((a, b) => a.localeCompare(b));
-    noCdr3.sort((a, b) => a.localeCompare(b));
-    const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
-    return { belowMin, noCdr3, allEmpty, nMin };
-  })
-  .output("lightSkippedSamples", (ctx) => {
-    const acc = ctx.outputs?.resolve({
-      field: "lightPerSampleStatus",
-      assertFieldType: "Input",
-      allowPermanentAbsence: true,
-    });
-    if (!acc) return undefined;
-    const parsed = parseResourceMap(
-      acc,
-      (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
-      false,
-    );
-    if (!parsed.isComplete) return undefined;
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    const axis = args?.chainL
-      ? ctx.resultPool.getPColumnSpecByRef(args.chainL)?.axesSpec[0]
-      : undefined;
-    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
-    const nMin = parsed.data[0]?.value.nMin ?? args?.nMin;
-    const belowMin: string[] = [];
-    const noCdr3: string[] = [];
-    for (const e of parsed.data) {
-      const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
-      if (e.value.nUniqueNt === 0) noCdr3.push(label);
-      else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
-    }
-    belowMin.sort((a, b) => a.localeCompare(b));
-    noCdr3.sort((a, b) => a.localeCompare(b));
-    const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
-    return { belowMin, noCdr3, allEmpty, nMin };
-  })
+  // Skipped-samples warning (R12) per chain — see buildSkippedSamples. UI
+  // surfaces a PlAlert above the main table per case.
+  .output("heavySkippedSamples", (ctx) =>
+    buildSkippedSamples(ctx, "heavyPerSampleStatus", (a) => a.chainH),
+  )
+  .output("lightSkippedSamples", (ctx) =>
+    buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
+  )
 
   // mainTable (R52). Anchored on the dataset's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);
