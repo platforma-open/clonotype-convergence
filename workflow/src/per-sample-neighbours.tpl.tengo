@@ -136,7 +136,6 @@ self.body(func(inputs) {
 			arg("--sample-column").arg("").
 			addFile("input.tsv", finalTsv).
 			saveFile("output.tsv").
-			saveFileContent("stats.json").
 			run()
 		finalTsv = clusterCmd.getFile("output.tsv")
 	}
