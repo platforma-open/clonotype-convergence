@@ -9,6 +9,7 @@ import {
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
+  datasetFactsError,
   formatSubtitle,
   getDefaultBlockLabel,
   inputAnchorSpecs,
@@ -24,6 +25,8 @@ import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
+// Shared chain constants/helpers, so the UI imports them instead of redefining.
+export { datasetFactsError, isHeavy, isLight, SC_AXIS } from "./chains";
 
 // R66 — chainL is only populated when the user makes it explicit:
 //  - bulk-light dataset (its only chain → chainL ← the dataset), or
@@ -39,13 +42,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const facts = data.datasetFacts;
     const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
 
-    // ---- R5 staleness checks on the dataset pick ------------------
-    const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
-    if (tcr.length > 0) {
-      throw new Error(
-        `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`,
-      );
-    }
+    // ---- R5 facts-level validation (shared with the UI alert) -----
+    const factsError = datasetFactsError(facts);
+    if (factsError) throw new Error(factsError);
 
     // ---- Heavy slot (always from the dataset when it has heavy) ---
     let chainH: PlRef | undefined;
@@ -77,11 +76,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
         chainLFacts = facts;
       }
     }
-    if (!chainH && !chainL) {
-      throw new Error(
-        `Selected dataset chains are ${facts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
-      );
-    }
+    // No `!chainH && !chainL` check needed: datasetFactsError above guarantees
+    // the dataset carries a BCR chain, so at least one slot is always filled.
 
     // ---- Thresholds (R16 / R17 / R19) -----------------------------
     if (chainH && data.thresholdH === undefined) {

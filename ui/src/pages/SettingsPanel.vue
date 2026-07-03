@@ -9,15 +9,17 @@ import {
   PlNumberField,
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
+import {
+  datasetFactsError,
+  isHeavy,
+  isLight,
+  SC_AXIS,
+} from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
 import { computed, watch } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
-
-const HEAVY_CHAIN = "IGHeavy";
-const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
-const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
 const factsFor = (ref: PlRef | undefined) => {
   if (!ref) return undefined;
@@ -77,8 +79,8 @@ function onPickDataset(ref: PlRef | undefined) {
 // the heavy slot — LC opt-in goes through the SC checkbox. Bulk mode
 // processes whichever single chain the picked anchor carries.
 const datasetChains = computed(() => app.model.data.datasetFacts?.chains ?? []);
-const datasetHasHeavy = computed(() => datasetChains.value.includes(HEAVY_CHAIN));
-const datasetHasLight = computed(() => datasetChains.value.some((c) => LIGHT_CHAINS.has(c)));
+const datasetHasHeavy = computed(() => datasetChains.value.some(isHeavy));
+const datasetHasLight = computed(() => datasetChains.value.some(isLight));
 const datasetIsBulkLight = computed(() => datasetHasLight.value && !datasetHasHeavy.value);
 const datasetIsSC = computed(() => app.model.data.datasetFacts?.clonotypeKeyAxisName === SC_AXIS);
 
@@ -105,22 +107,12 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Live PlAlert mirror (R9). Mirrors args lambda's checks.
+// Live PlAlert mirror (R9): the same facts-level check the args gate runs,
+// shared via datasetFactsError so the two never drift.
 const alertMessage = computed<string | undefined>(() => {
   const facts = app.model.data.datasetFacts;
   if (app.model.data.datasetRef === undefined || facts === undefined) return undefined;
-
-  const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
-  if (tcr.length > 0) {
-    return `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`;
-  }
-  if (facts.chains.length === 0) {
-    return "Selected input has no detectable BCR chain — re-select an input.";
-  }
-  if (!datasetHasHeavy.value && !datasetHasLight.value) {
-    return `Selected input chains "${facts.chains.join(", ")}" are not BCR — re-select an input.`;
-  }
-  return undefined;
+  return datasetFactsError(facts);
 });
 
 // Reconcile the exported-sample pick against the current dataset's sample

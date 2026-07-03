@@ -1,4 +1,4 @@
-import type { BlockData } from "./types";
+import type { BlockData, UpstreamFacts } from "./types";
 
 /**
  * Chain / axis / anchor constants and small helpers shared between the
@@ -52,6 +52,22 @@ export function isHeavy(chain: string | undefined): boolean {
 }
 export function isLight(chain: string | undefined): boolean {
   return !!chain && LIGHT_CHAINS.has(chain);
+}
+
+// Facts-level validation shared by the args gate (throws) and the UI alert
+// (displays), so the two never drift (R9). Returns an error message when the
+// dataset is unusable (TCR, or no BCR chain), else undefined.
+export function datasetFactsError(facts: UpstreamFacts): string | undefined {
+  const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
+  if (tcr.length > 0) {
+    return `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`;
+  }
+  if (!facts.chains.some((c) => isHeavy(c) || isLight(c))) {
+    return facts.chains.length === 0
+      ? "Selected input has no detectable BCR chain — re-select an input."
+      : `Selected input chains "${facts.chains.join(", ")}" are not BCR — re-select an input.`;
+  }
+  return undefined;
 }
 
 // Friendly chain name for user-facing strings (R64 — no raw IGHeavy /
