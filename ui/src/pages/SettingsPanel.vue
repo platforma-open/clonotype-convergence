@@ -44,7 +44,7 @@ const labelFor = (ref: PlRef | undefined): string | undefined => {
 // user-gesture handler. Reads from the model's factsByRef map +
 // datasetOptions. Picking a new dataset also clears the LC opt-in
 // because it depends on the pick (R66).
-function onPickMain(ref: PlRef | undefined) {
+function onPickDataset(ref: PlRef | undefined) {
   if (ref === undefined) {
     app.model.data.datasetRef = undefined;
     app.model.data.datasetFacts = undefined;
@@ -72,36 +72,35 @@ function onPickMain(ref: PlRef | undefined) {
   // list genuinely lacks it.
 }
 
-// Which chain(s) are detected on the main pick. The main itself may
-// carry both chains (SC IG anchor) but per R66 we only AUTO-process
-// the heavy slot from the main pick — LC opt-in goes through the SC
-// checkbox. Bulk mode processes whichever single chain the picked
-// anchor carries — no secondary LC dropdown.
-const mainChains = computed(() => app.model.data.datasetFacts?.chains ?? []);
-const mainHasHeavy = computed(() => mainChains.value.includes(HEAVY_CHAIN));
-const mainHasLight = computed(() => mainChains.value.some((c) => LIGHT_CHAINS.has(c)));
-const mainIsBulkLight = computed(() => mainHasLight.value && !mainHasHeavy.value);
-const mainIsSC = computed(() => app.model.data.datasetFacts?.clonotypeKeyAxisName === SC_AXIS);
+// Which chain(s) are detected on the dataset pick. The dataset itself
+// may carry both chains (SC IG anchor) but per R66 we only AUTO-process
+// the heavy slot — LC opt-in goes through the SC checkbox. Bulk mode
+// processes whichever single chain the picked anchor carries.
+const datasetChains = computed(() => app.model.data.datasetFacts?.chains ?? []);
+const datasetHasHeavy = computed(() => datasetChains.value.includes(HEAVY_CHAIN));
+const datasetHasLight = computed(() => datasetChains.value.some((c) => LIGHT_CHAINS.has(c)));
+const datasetIsBulkLight = computed(() => datasetHasLight.value && !datasetHasHeavy.value);
+const datasetIsSC = computed(() => app.model.data.datasetFacts?.clonotypeKeyAxisName === SC_AXIS);
 
-// Heavy slot active iff the main pick has heavy.
-const heavyActive = computed(() => mainHasHeavy.value);
+// Heavy slot active iff the dataset has heavy.
+const heavyActive = computed(() => datasetHasHeavy.value);
 
 // LC slot active iff:
-//   - main is bulk-light (LC IS the main), OR
-//   - SC main + LC checkbox ticked (processLightChain).
+//   - the dataset is bulk-light (LC IS the dataset), OR
+//   - SC dataset + LC checkbox ticked (processLightChain).
 const lightActive = computed(
-  () => mainIsBulkLight.value || app.model.data.processLightChain === true,
+  () => datasetIsBulkLight.value || app.model.data.processLightChain === true,
 );
 
 // LC opt-in only exists in SC paired mode (R66). Bulk mode is
 // strictly single-chain — no checkbox, no secondary dropdown.
 const showLightCheckbox = computed(
-  () => mainIsSC.value && mainHasHeavy.value && mainHasLight.value,
+  () => datasetIsSC.value && datasetHasHeavy.value && datasetHasLight.value,
 );
 const lightChecked = computed(() => app.model.data.processLightChain === true);
 
 // Checkbox toggle: the light chain is a column-domain sibling on the same
-// anchor as the main pick, so this is just an opt-in flag.
+// anchor as the dataset pick, so this is just an opt-in flag.
 function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
@@ -118,7 +117,7 @@ const alertMessage = computed<string | undefined>(() => {
   if (facts.chains.length === 0) {
     return "Selected input has no detectable BCR chain — re-select an input.";
   }
-  if (!mainHasHeavy.value && !mainHasLight.value) {
+  if (!datasetHasHeavy.value && !datasetHasLight.value) {
     return `Selected input chains "${facts.chains.join(", ")}" are not BCR — re-select an input.`;
   }
   return undefined;
@@ -133,7 +132,7 @@ const alertMessage = computed<string | undefined>(() => {
 // so a valid pick is never wiped during the not-ready window.
 //
 // This is NOT a hairpin: exportSampleOptions depends on the dataset
-// (mainRef), not on exportSampleId, so this write cannot feed back into the
+// (datasetRef), not on exportSampleId, so this write cannot feed back into the
 // watched output; and the write is deterministic, so it's idempotent across
 // clients.
 watch(
@@ -157,7 +156,7 @@ watch(
     label="Input dataset"
     clearable
     required
-    @update:model-value="onPickMain"
+    @update:model-value="onPickDataset"
   >
     <template #tooltip>
       VDJ output to analyze. Accepts any B-cell receptor — bulk Heavy/Light, or single-cell. T-cell
@@ -170,7 +169,7 @@ watch(
   </PlAlert>
 
   <!-- Heavy-chain threshold. Visible iff a heavy chain is present on
-       the main pick (bulk-heavy OR SC IG main). -->
+       the dataset (bulk-heavy or SC IG). -->
   <PlNumberField
     v-if="heavyActive"
     v-model="app.model.data.thresholdH"
@@ -188,9 +187,9 @@ watch(
     </template>
   </PlNumberField>
 
-  <!-- LC opt-in (R66). SC IG main → checkbox (same anchor carries
-       both chains as column-domain siblings). Bulk-heavy main →
-       dropdown of LC anchors. Bulk-light main → neither (LC is main). -->
+  <!-- LC opt-in (R66). SC IG dataset → checkbox (same anchor carries
+       both chains as column-domain siblings). Bulk mode → no LC control
+       (single-chain: a bulk-light dataset is processed as the primary chain). -->
   <PlCheckbox
     v-if="showLightCheckbox"
     :model-value="lightChecked"
@@ -207,7 +206,7 @@ watch(
   </PlCheckbox>
 
   <!-- Light-chain threshold. Visible iff LC processing is active:
-       bulk-light MAIN, or SC main + LC checkbox ticked. No default
+       bulk-light dataset, or SC + LC checkbox ticked. No default
        value (R17). -->
   <PlNumberField
     v-if="lightActive"

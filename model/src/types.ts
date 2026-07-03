@@ -27,9 +27,9 @@ export type UpstreamFacts = {
 /** Args passed to the workflow — output shape of `.args(...)` (R15).
  *  Per-chain slots; at least one of chainH/chainL must be populated
  *  (R6). The mode (bulk vs SC) is inferred from the chain facts'
- *  `axisName` (R61). */
+ *  `clonotypeKeyAxisName` (R61). */
 export type BlockArgs = {
-  /** Heavy-chain anchor; populated when the user's main pick has a
+  /** Heavy-chain anchor; populated when the user's dataset pick has a
    *  heavy chain (bulk-heavy OR SC paired — SC anchors carry both
    *  chains as column-domain siblings, so chainH and chainL hold
    *  the SAME ref in that case). */
@@ -46,7 +46,7 @@ export type BlockArgs = {
    *  axis-domain chain matching). */
   chainHScLetter?: string;
 
-  /** Light-chain anchor; populated when the main pick is bulk-light
+  /** Light-chain anchor; populated when the dataset pick is bulk-light
    *  OR when SC paired data carries an IGLight sibling. */
   chainL?: PlRef;
   /** Verbatim chain domain value of the light anchor (e.g.
@@ -107,14 +107,14 @@ export type BlockData = {
    *  light chain is a column-domain sibling on the SAME anchor as the
    *  dataset pick, so no separate ref is needed — this is the explicit
    *  opt-in for LC processing. Ignored in bulk mode (bulk is single-chain:
-   *  the light chain, when it is the pick, is processed as the main chain). */
+   *  the light chain, when it is the pick, is processed as the primary chain). */
   processLightChain?: boolean;
 
-  /** Heavy-chain threshold. Required iff main pick is heavy
+  /** Heavy-chain threshold. Required iff dataset pick is heavy
    *  (bulk-heavy or SC-heavy). */
   thresholdH?: number;
   /** Light-chain threshold. Required iff a light chain is processed
-   *  (bulk-light main pick OR SC-heavy main + secondary LC pick). */
+   *  (bulk-light dataset OR SC + light-chain opt-in). */
   thresholdL?: number;
   /** Sample-size floor (R12). */
   nMin?: number;

@@ -7,7 +7,7 @@ import MainPage from "./pages/MainPage.vue";
 export const sdkPlugin = defineAppV3(platforma, () => {
   return {
     routes: {
-      // "/" → main clonotype table. Anchored on the main pick (heavy
+      // "/" → main clonotype table. Anchored on the dataset pick (heavy
       // when populated, else light) — in SC paired mode both chains'
       // convergence columns join via the shared scClonotypeKey axis.
       "/": () => MainPage,

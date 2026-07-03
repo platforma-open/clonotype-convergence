@@ -26,34 +26,34 @@ export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
 
 // R66 — chainL is only populated when the user makes it explicit:
-//  - bulk-light MAIN pick (only chain → chainL ← main), or
-//  - any other main + secondary lightRef set (chainL ← lightRef).
-// SC main never auto-populates chainL even though both chains hang
-// off the same anchor — the user opts in via the LC picker.
+//  - bulk-light dataset (its only chain → chainL ← the dataset), or
+//  - SC paired + processLightChain (chainL ← the same anchor).
+// SC paired data never auto-populates chainL even though both chains
+// hang off the same anchor — the user opts in via the LC checkbox.
 
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
     if (!data.datasetRef || !data.datasetFacts) {
       throw new Error("Select a dataset");
     }
-    const mainFacts = data.datasetFacts;
-    const mainIsSC = mainFacts.clonotypeKeyAxisName === SC_AXIS;
+    const facts = data.datasetFacts;
+    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
 
-    // ---- R5 staleness checks on the main pick ---------------------
-    const tcr = mainFacts.chains.filter((c) => c.startsWith("TCR"));
+    // ---- R5 staleness checks on the dataset pick ------------------
+    const tcr = facts.chains.filter((c) => c.startsWith("TCR"));
     if (tcr.length > 0) {
       throw new Error(
         `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`,
       );
     }
 
-    // ---- Heavy slot (always from main when main has heavy) --------
+    // ---- Heavy slot (always from the dataset when it has heavy) ---
     let chainH: PlRef | undefined;
     let chainHName: string | undefined;
-    const mainHeavy = mainFacts.chains.find(isHeavy);
-    if (mainHeavy) {
+    const datasetHeavy = facts.chains.find(isHeavy);
+    if (datasetHeavy) {
       chainH = data.datasetRef;
-      chainHName = mainHeavy;
+      chainHName = datasetHeavy;
     }
 
     // ---- Light slot (explicit per R66) ----------------------------
@@ -64,22 +64,22 @@ export const platforma = BlockModelV3.create(blockDataModel)
     let chainL: PlRef | undefined;
     let chainLName: string | undefined;
     let chainLFacts: UpstreamFacts | undefined;
-    const mainLight = mainFacts.chains.find(isLight);
-    if (mainLight && !mainHeavy) {
+    const datasetLight = facts.chains.find(isLight);
+    if (datasetLight && !datasetHeavy) {
       chainL = data.datasetRef;
-      chainLName = mainLight;
-      chainLFacts = mainFacts;
+      chainLName = datasetLight;
+      chainLFacts = facts;
     } else if (data.processLightChain) {
-      const lightName = mainFacts.chains.find(isLight);
+      const lightName = facts.chains.find(isLight);
       if (lightName) {
         chainL = data.datasetRef;
         chainLName = lightName;
-        chainLFacts = mainFacts;
+        chainLFacts = facts;
       }
     }
     if (!chainH && !chainL) {
       throw new Error(
-        `Selected dataset chains are ${mainFacts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
+        `Selected dataset chains are ${facts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
       );
     }
 
@@ -121,7 +121,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       args.chainH = chainH;
       args.chainHName = chainHName;
       args.thresholdH = data.thresholdH;
-      if (mainIsSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
+      if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
     }
     if (chainL) {
       args.chainL = chainL;
@@ -161,7 +161,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
       // it drops out of the options and the `required` dropdown reconciles to
-      // another dataset — firing onPickMain and clobbering the datasetRef snapshot
+      // another dataset — firing onPickDataset and clobbering the datasetRef snapshot
       // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
       // alert, healing when the pool settles). The gate only needs to stop a
       // *new* pick of a not-ready dataset, not destabilise an existing one.
@@ -499,7 +499,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return { belowMin, noCdr3, allEmpty, nMin };
   })
 
-  // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
+  // mainTable (R52). Anchored on the dataset's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table

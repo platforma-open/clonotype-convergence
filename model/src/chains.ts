@@ -81,9 +81,9 @@ export function getDefaultBlockLabel(data: BlockData): string {
   const facts = data.datasetFacts;
   if (facts) {
     const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
-    const mainThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
-    if (mainThreshold !== undefined) {
-      let thr = `thr ${mainThreshold}`;
+    const primaryThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
+    if (primaryThreshold !== undefined) {
+      let thr = `thr ${primaryThreshold}`;
       if (isSC && data.processLightChain && data.thresholdL !== undefined) {
         thr += ` / L thr ${data.thresholdL}`;
       }
