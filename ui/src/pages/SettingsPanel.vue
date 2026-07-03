@@ -10,7 +10,6 @@ import {
   PlTooltip,
 } from "@platforma-sdk/ui-vue";
 import {
-  datasetFactsError,
   isHeavy,
   isLight,
   SC_AXIS,
@@ -107,14 +106,6 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Live PlAlert mirror (R9): the same facts-level check the args gate runs,
-// shared via datasetFactsError so the two never drift.
-const alertMessage = computed<string | undefined>(() => {
-  const facts = app.model.data.datasetFacts;
-  if (app.model.data.datasetRef === undefined || facts === undefined) return undefined;
-  return datasetFactsError(facts);
-});
-
 // Reconcile the exported-sample pick against the current dataset's sample
 // list. Drop it ONLY when the loaded list genuinely lacks it (e.g. the new
 // dataset has different samples); keep it when the new dataset shares the
@@ -155,10 +146,6 @@ watch(
       receptors aren't supported. For in-vivo (immunised) repertoires only.
     </template>
   </PlDropdownRef>
-
-  <PlAlert v-if="alertMessage" type="warn">
-    {{ alertMessage }}
-  </PlAlert>
 
   <!-- Heavy-chain threshold. Visible iff a heavy chain is present on
        the dataset (bulk-heavy or SC IG). -->
