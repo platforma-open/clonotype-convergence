@@ -127,10 +127,8 @@ self.body(func(inputs) {
 			mem("4GiB").
 			arg("--input").arg("input.tsv").
 			arg("--output").arg("output.tsv").
-			arg("--stats-json").arg("stats.json").
 			arg("--cluster-min").arg(string(inputs.clusterMin)).
 			arg("--chain").arg(inputs.chain).
-			arg("--sample-column").arg("").
 			addFile("input.tsv", finalTsv).
 			saveFile("output.tsv").
 			run()
