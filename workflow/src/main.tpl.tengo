@@ -168,10 +168,13 @@ wf.body(func(args) {
 		return sampleId
 	}
 
-	// runChainPipeline — closure that builds a TSV from (aa, nt, abundance,
-	// optional sampleLabel), runs Stage 1 then Stage 2, optionally Stage 3,
-	// and imports the final TSV back into a pframe of convergence
-	// PColumns chain-tagged with `chainName`. Returns the built pframe.
+	// runChainPipeline — closure for one chain. Packs the chain's aa+nt CDR3
+	// into a single String column per (sampleId, clonotypeKey) — abundance
+	// supplies the sampleId axis, its value isn't packed — then fans out per
+	// sample via processColumn: Stage 1 (neighbours) → Stage 2 (threshold) →
+	// optional Stage 3 (cluster filter) inside each per-sample body. Reassembles
+	// the per-sample outputs into a pframe of convergence PColumns chain-tagged
+	// with `chainName` (sample/clone labels attached here). Returns the pframe.
 	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, chainName, threshold) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
@@ -546,9 +549,7 @@ wf.body(func(args) {
 		// Multi-sample family stays INTERNAL (R71): it drives this block's own
 		// table + histograms only. It is not pooled downstream — consumers
 		// enrich by clonotype key, never by sampleId axis, so the per-sample
-		// columns have no downstream use. (Pooling it earlier was purely to keep
-		// the compute chain recoverable for cross-block dedup; under
-		// anonymization the import re-runs regardless, so that buys nothing.)
+		// columns have no downstream use.
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
