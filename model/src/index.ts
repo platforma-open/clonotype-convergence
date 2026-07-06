@@ -44,7 +44,10 @@ export { isHeavy, isLight, SC_AXIS } from "./chains";
 // splits samples into:
 //   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
 //   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
-//   allEmpty — the whole chain produced nothing usable.
+//   allEmpty — no per-sample status at all (no rows → no explanation). The
+//              every-sample-empty case is intentionally excluded: those samples
+//              are already listed in noCdr3, so folding them in here would
+//              double-alert ("no chain data" + "N with no usable CDR3").
 // Labels via findLabels on the chain anchor's sampleId axis; nMin from the run's
 // status (falls back to activeArgs). Gated on parse completeness so the warning
 // doesn't flicker on partial mid-run status.
@@ -79,7 +82,7 @@ function buildSkippedSamples<A, U>(
   }
   belowMin.sort((a, b) => a.localeCompare(b));
   noCdr3.sort((a, b) => a.localeCompare(b));
-  const allEmpty = parsed.data.length === 0 || parsed.data.every((e) => e.value.nUniqueNt === 0);
+  const allEmpty = parsed.data.length === 0;
   return { belowMin, noCdr3, allEmpty, nMin };
 }
 
