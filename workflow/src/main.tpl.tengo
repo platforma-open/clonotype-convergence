@@ -1,31 +1,29 @@
 // Clonotype convergence — main workflow template.
 //
-// Processes whichever chain(s) the user populated via the model's
-// pickers (R6 / R15):
+// Processes whichever chain(s) the user populated via the model's pickers:
 //   - args.chainH set → run heavy pipeline, emit IGHeavy PColumns
 //   - args.chainL set → run light pipeline, emit light PColumns
 //                       (chain domain from args.chainLName)
-// At least one must be populated (gated by the args lambda — R6).
+// At least one must be populated (gated by the args lambda).
 //
-// Per-chain pipeline (R34, R56, R60) — fully per-sample (MILAB-6413,
-// spec/per-sample-dedup.md). One `pframes.processColumn` fan-out per chain
-// runs all three stages inside the per-sample body
+// Per-chain pipeline — fully per-sample. One `pframes.processColumn` fan-out
+// per chain runs all three stages inside the per-sample body
 // (:per-sample-neighbours), so each sample is content-addressed and a
 // subset project recovers shared samples from cache:
 //   Stage 1 — expensive STAR neighbour-density run; cache survives
 //             threshold tweaks (cacheHours, CID excludes threshold).
-//   Stage 2 — strict-> threshold (pure pt), emits fastStar.
+//   Stage 2 — strict threshold (pure pt), emits fastStar.
 //   Stage 3 — paper's binder cluster filter, only when
-//             args.applyClusterFilter (R58); emits fastStarClusterFiltered
-//             + clusterSize (R25 / R62); fastStar is NOT modified.
+//             args.applyClusterFilter; emits fastStarClusterFiltered
+//             + clusterSize; fastStar is NOT modified.
 // The per-sample outputs (convergence columns + per-sample log + per-sample
-// status) are reassembled here, keyed by the real sampleId.
+// status) are reassembled here, keyed by the sampleId.
 //
 // Output channels:
 //   outputs.* — the multi-sample (sampleId, clonotypeKey) p-frames that
 //               feed this block's own table + histograms; never pooled.
 //   exports.* — when args.exportSampleId is set, the chosen sample's
-//               columns collapsed to a clonotype-only axis (R68–R76),
+//               columns collapsed to a clonotype-only axis,
 //               consumed by antibody lead selection. Empty until a
 //               sample is picked.
 
@@ -144,7 +142,7 @@ wf.body(func(args) {
 	dualChain := !is_undefined(args.chainH) && !is_undefined(args.chainL)
 
 	// resolveSampleName — best-effort sampleId → human label lookup for the
-	// single-sample export (R73). Reads the bundled pl7.app/label sample
+	// single-sample export. Reads the bundled pl7.app/label sample
 	// column (PColumnData/Json: key ["<sampleId>"] → label) into a map and
 	// returns the matching label; falls back to the raw sampleId when the
 	// column is absent, not JSON, or has no matching entry. The human name
@@ -188,17 +186,15 @@ wf.body(func(args) {
 		anchorSpec := columns.getSpec(anchorRef)
 		labelCols := columns.getColumns(labelKey)
 
-		// ---- Per-sample dedup (MILAB-6413, spec/per-sample-dedup.md) ----
+		// ---- Per-sample dedup ----
 		// Pack the CDR3 sequences into ONE String value per (sampleId,
 		// clonotypeKey), partition by sampleId, then processColumn collapses the
 		// clonotype axis so each group = one sample. The runner does NOT pass the
-		// group key (sampleId) into the body render (passKey is off,
-		// process-pcolumn-data.tpl.tengo) — so the per-sample body node's cache id
-		// depends only on its sample's clonotype data, independent of the
-		// project-local sampleId. That makes anonymization unnecessary: the join
-		// uses the RAW abundance (real sampleId) as the sampleId carrier, and the
-		// per-sample output
-		// comes back keyed by the real sampleId. A subset project recovers each
+		// group key (sampleId) into the body render (passKey is off) — so the
+		// per-sample body node's cache id depends only on its sample's clonotype
+		// data, independent of the project-local sampleId. The join uses the
+		// abundance column as the sampleId carrier, and the per-sample output
+		// comes back keyed by the sampleId. A subset project recovers each
 		// shared sample from cache; a sample reassigned a different sampleId in
 		// another project still recovers (its body input is sampleId-free).
 		//
@@ -231,9 +227,9 @@ wf.body(func(args) {
 			data: packedData
 		}
 
-		// Convergence output column specs (the real ones — descriptions, scores,
+		// Convergence output column specs (descriptions, scores,
 		// formats, table visibility). Used for the per-sample processColumn output
-		// AND, for now, the single-sample export below. Stage-3 cluster columns
+		// and the single-sample export below. Stage-3 cluster columns
 		// only when the filter is enabled — must match exactly what the body's TSV
 		// carries (xsv.importFile errors on declared-but-missing).
 		columnSpecs := [
@@ -366,7 +362,7 @@ wf.body(func(args) {
 		)
 		// ---- end per-sample fan-out setup; pf is built from perSampleResult below ----
 
-		// Combined per-sample convergence TSV (keyed by the real sampleId),
+		// Combined per-sample convergence TSV (keyed by the sampleId),
 		// reused for the hit-count badge and the single-sample export.
 		//
 		// xsv.exportFrame writes each column's pl7.app/label as the TSV header, so
@@ -391,7 +387,7 @@ wf.body(func(args) {
 		}
 		perSampleTsv := xsv.exportFrame(exportSrcBuilder.build(), "tsv", {})
 
-		// Hit-count stats badge (R65): {above, total, beforeCluster?}, counted over
+		// Hit-count stats badge: {above, total, beforeCluster?}, counted over
 		// the reassembled per-sample fastStar. In cluster mode `above` is the
 		// cluster-filtered hit count and `beforeCluster` the pre-cluster fastStar
 		// hit count; otherwise `above` is the fastStar hit count.
@@ -445,23 +441,23 @@ wf.body(func(args) {
 			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
 		}
 
-		// Single-sample export (R68–R76). When the user picked a sample,
+		// Single-sample export. When the user picked a sample,
 		// collapse this chain's final TSV to that one sample on a
 		// clonotype-only axis (sampleId dropped) and export it for antibody
 		// lead selection, which ranks/filters only on per-clonotype columns
 		// with no sample axis. The multi-sample pf above stays internal
-		// (outputs); only this collapsed family reaches the result pool (R71).
+		// (outputs); only this collapsed family reaches the result pool.
 		exportPf := undefined
 		// Defence-in-depth: the model only projects a non-empty exportSampleId
-		// (R69), but guard against an empty string here too — an empty filter
+		// but guard against an empty string here too — an empty filter
 		// would re-read the whole TSV and re-import an empty, block-specific
 		// frame on every run.
 		if !is_undefined(args.exportSampleId) && args.exportSampleId != "" {
-			// Human sample name for the export column labels + trace (R72, R73).
+			// Human sample name for the export column labels + trace.
 			sampleName := resolveSampleName(labelCols, args.exportSampleId)
 
-			// Filter the combined per-sample TSV (real sampleId) to the chosen
-			// sample via the :export-sample template (R74). The per-sample fan-out
+			// Filter the combined per-sample TSV to the chosen
+			// sample via the :export-sample template. The per-sample fan-out
 			// already dedups across projects; this small filter is block-specific.
 			// The block-specific import below reads only this filtered TSV;
 			// xsv.importFile takes only the declared columns, so the now-constant
@@ -474,7 +470,7 @@ wf.body(func(args) {
 
 			// Export column specs = the internal value-column specs with the
 			// sample appended to each label. Provenance lives in label + trace,
-			// never the domain (R72) — same names + {block, chain} domain give
+			// never the domain — same names + {block, chain} domain give
 			// a stable identity across sample changes, so a downstream block
 			// stays wired to one column whose data tracks the chosen sample.
 			exportColumnSpecs := []
@@ -524,9 +520,9 @@ wf.body(func(args) {
 			pf: pfBuilder.build(),
 			exportPf: exportPf,
 			statsJson: finalStatsJson,
-			// Per-sample fan-out sidecars, keyed by the real sampleId. The model
+			// Per-sample fan-out sidecars, keyed by the sampleId. The model
 			// attaches sample labels (logs) and builds the skipped-samples
-			// warning (status); neither needs de-anonymization.
+			// warning (status).
 			perSampleLogs: perSampleResult.outputData("log"),
 			perSampleStatus: perSampleResult.outputData("status")
 		}
@@ -546,7 +542,7 @@ wf.body(func(args) {
 			args.chainHName,
 			args.thresholdH
 		)
-		// Multi-sample family stays INTERNAL (R71): it drives this block's own
+		// Multi-sample family stays INTERNAL: it drives this block's own
 		// table + histograms only. It is not pooled downstream — consumers
 		// enrich by clonotype key, never by sampleId axis, so the per-sample
 		// columns have no downstream use.
@@ -554,7 +550,7 @@ wf.body(func(args) {
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
-		// Single-sample collapsed family for lead selection (R70), only when
+		// Single-sample collapsed family for lead selection, only when
 		// a sample is picked. Same column names, clonotype-only axis — the only
 		// convergence data the block exports downstream.
 		if !is_undefined(heavy.exportPf) {
@@ -573,7 +569,7 @@ wf.body(func(args) {
 			args.chainLName,
 			args.thresholdL
 		)
-		// Light multi-sample family also internal-only (R71) — see heavy above.
+		// Light multi-sample family also internal-only — see heavy above.
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
 		outputs.lightHitStats = light.statsJson
 		outputs.lightPerSampleLogs = light.perSampleLogs

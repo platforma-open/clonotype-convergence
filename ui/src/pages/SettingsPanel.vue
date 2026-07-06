@@ -31,8 +31,8 @@ const factsFor = (ref: PlRef | undefined) => {
 };
 
 // Look up the dataset label as shown in the dropdown for the picked ref.
-// Snapshotted at pick time so the page subtitle (R55) renders without
-// having to re-resolve options later.
+// Snapshotted at pick time so the page subtitle renders without having
+// to re-resolve options later.
 const labelFor = (ref: PlRef | undefined): string | undefined => {
   if (!ref) return undefined;
   return app.model.outputs.datasetOptions?.find(
@@ -40,11 +40,11 @@ const labelFor = (ref: PlRef | undefined): string | undefined => {
   )?.label;
 };
 
-// Snapshot pattern (R8, R24): when the user picks the input dataset,
-// write `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
+// Snapshot pattern: when the user picks the input dataset, write
+// `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
 // user-gesture handler. Reads from the model's factsByRef map +
 // datasetOptions. Picking a new dataset also clears the LC opt-in
-// because it depends on the pick (R66).
+// because it depends on the pick.
 function onPickDataset(ref: PlRef | undefined) {
   if (ref === undefined) {
     app.model.data.datasetRef = undefined;
@@ -74,8 +74,8 @@ function onPickDataset(ref: PlRef | undefined) {
 }
 
 // Which chain(s) are detected on the dataset pick. The dataset itself
-// may carry both chains (SC IG anchor) but per R66 we only AUTO-process
-// the heavy slot — LC opt-in goes through the SC checkbox. Bulk mode
+// may carry both chains (SC IG anchor) but we only AUTO-process the
+// heavy slot — LC opt-in goes through the SC checkbox. Bulk mode
 // processes whichever single chain the picked anchor carries.
 const datasetChains = computed(() => app.model.data.datasetFacts?.chains ?? []);
 const datasetHasHeavy = computed(() => datasetChains.value.some(isHeavy));
@@ -93,8 +93,8 @@ const lightActive = computed(
   () => datasetIsBulkLight.value || app.model.data.processLightChain === true,
 );
 
-// LC opt-in only exists in SC paired mode (R66). Bulk mode is
-// strictly single-chain — no checkbox, no secondary dropdown.
+// LC opt-in only exists in SC paired mode. Bulk mode is strictly
+// single-chain — no checkbox, no secondary dropdown.
 const showLightCheckbox = computed(
   () => datasetIsSC.value && datasetHasHeavy.value && datasetHasLight.value,
 );
@@ -166,8 +166,8 @@ watch(
     </template>
   </PlNumberField>
 
-  <!-- LC opt-in (R66). SC IG dataset → checkbox (same anchor carries
-       both chains as column-domain siblings). Bulk mode → no LC control
+  <!-- LC opt-in. SC IG dataset → checkbox (same anchor carries both
+       chains as column-domain siblings). Bulk mode → no LC control
        (single-chain: a bulk-light dataset is processed as the primary chain). -->
   <PlCheckbox
     v-if="showLightCheckbox"
@@ -186,7 +186,7 @@ watch(
 
   <!-- Light-chain threshold. Visible iff LC processing is active:
        bulk-light dataset, or SC + LC checkbox ticked. No default
-       value (R17). -->
+       value. -->
   <PlNumberField
     v-if="lightActive"
     v-model="app.model.data.thresholdL"
@@ -205,10 +205,10 @@ watch(
     </template>
   </PlNumberField>
 
-  <!-- Single-sample export (R69, R75). Picks which sample's convergence
-       columns get exported (collapsed to a clonotype-only axis) for
-       Antibody Lead Selection. No default — unset exports nothing. Options
-       come from the upstream dataset's samples, so the picker is usable
+  <!-- Single-sample export. Picks which sample's convergence columns
+       get exported (collapsed to a clonotype-only axis) for Antibody
+       Lead Selection. No default — unset exports nothing. Options come
+       from the upstream dataset's samples, so the picker is usable
        before the first run. -->
   <PlAlert v-if="app.model.data.datasetRef" type="info">
     Convergence is exported for one sample at a time, on a per-clonotype basis. Pick a sample to
@@ -223,7 +223,7 @@ watch(
   />
 
   <PlAccordionSection label="Advanced settings">
-    <!-- Cluster filter (R58). Off by default. When on, an additional
+    <!-- Cluster filter. Off by default. When on, an additional
          fastStarClusterFiltered column marks hits that ALSO lie in a
          Hamming/Levenshtein-1 cluster of size >= clusterMin
          (paper's binder definition). -->

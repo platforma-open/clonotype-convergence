@@ -12,7 +12,7 @@ export const sdkPlugin = defineAppV3(platforma, () => {
       // convergence columns join via the shared scClonotypeKey axis.
       "/": () => MainPage,
       // Per-chain frequency-distribution histograms. Each shown only
-      // when its chain is processed (see model.sections()).
+      // when its chain is processed.
       "/convergence/heavy": () => HeavyChainPage,
       "/convergence/light": () => LightChainPage,
     },

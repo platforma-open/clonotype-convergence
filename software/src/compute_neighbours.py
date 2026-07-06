@@ -2,7 +2,7 @@
 
 Wraps statbiophys/STAR's Get_df (vendored to ./get_df.py). Threshold is
 intentionally NOT consumed here so this stage's pure-template cache
-survives threshold tweaks (R56).
+survives threshold tweaks.
 
 CLI:
     compute_neighbours.py
@@ -83,7 +83,7 @@ def process_sample(
     prefix = f"[chain {chain}]"
     log(prefix, f"input rows: {len(sample_df)}")
 
-    # Drop rows with null / empty / NaN in either CDR3 column (R13).
+    # Drop rows with null / empty / NaN in either CDR3 column.
     before = len(sample_df)
     df = sample_df[sample_df["aaSeqCDR3"].notna() & sample_df["nSeqCDR3"].notna()]
     df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
@@ -170,7 +170,7 @@ def main() -> int:
     result.to_csv(args.output, sep="\t", index=False)
 
     # Intentionally NO wall-clock log line here: this exec is cache-pinned
-    # (cache key omits threshold per R56), so stdout content must be
+    # (cache key omits threshold), so stdout content must be
     # deterministic across re-runs with identical inputs. A wall-clock
     # elapsed value would mutate the captured stdout-stream resource and
     # break the cache (CID conflict when threshold-only changes attempt to

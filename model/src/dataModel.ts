@@ -4,13 +4,13 @@ import type { BlockData, BlockDataV1 } from "./types";
 
 export const blockDataModel = new DataModelBuilder()
   .from<BlockDataV1>("v1")
-  // v2 — collapse the vestigial dual-ref (mainRef/lightRef, where lightRef was
-  // always the main pick or undefined) into a single dataset snapshot plus a
-  // `processLightChain` boolean, and rename `axisName` → `clonotypeKeyAxisName`.
+  // v2 — collapse the v1 dual-ref (mainRef/lightRef) into a single dataset
+  // snapshot plus a `processLightChain` boolean, and map `axisName` →
+  // `clonotypeKeyAxisName`.
   .migrate<BlockData>(
     "v2",
     ({ mainRef, mainRefFacts, mainRefLabel, lightRef, lightRefFacts, ...rest }) => {
-      void lightRefFacts; // dropped — it was always equal to mainRefFacts
+      void lightRefFacts; // dropped — equal to mainRefFacts
       return {
         ...rest,
         datasetRef: mainRef,
@@ -33,17 +33,17 @@ export const blockDataModel = new DataModelBuilder()
     // Empty string = user hasn't customised the label; the derived
     // chain/threshold subtitle shows as a placeholder in the page header.
     customBlockLabel: "",
-    // R16 — heavy-chain threshold default 0.000961 (≈5% FDR target on
+    // Heavy-chain threshold default 0.000961 (≈5% FDR target on
     // Abbate et al. 2024 human IgH calibration).
-    // R17 — thresholdL deliberately has NO default; user must enter it
+    // thresholdL deliberately has NO default; user must enter it
     // explicitly so they don't ship an inappropriate value silently.
     thresholdH: 0.000961,
     nMin: DEFAULT_NMIN,
-    // Cluster filter (R58, Phase 7.5) — off by default to preserve v1
-    // semantics. Paper default 10 for cluster_min when the toggle is on.
+    // Cluster filter — off by default. Paper default 10 for cluster_min
+    // when the toggle is on.
     applyClusterFilter: false,
     clusterMin: 10,
-    // Heavy-chain histogram graph state (Phase 6). Initial settings:
+    // Heavy-chain histogram graph state. Initial settings:
     // bins template, log Y axis (long-tail signal — most clones have
     // small Nb_freq, a few have very large).
     graphStateHistogramHeavy: {
@@ -61,7 +61,7 @@ export const blockDataModel = new DataModelBuilder()
         other: { binsCount: 30 },
       },
     },
-    // Light-chain histogram graph state (Phase 7). Same shape as heavy;
+    // Light-chain histogram graph state. Same shape as heavy;
     // different fill colour to disambiguate at a glance.
     graphStateHistogramLight: {
       title: "Convergent neighbour frequency",

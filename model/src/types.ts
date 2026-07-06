@@ -3,17 +3,17 @@ import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
 
 /**
  * Facts about an upstream input ref, snapshotted into BlockData at
- * user-gesture time (R7, R8, R24). One snapshot per populated chain.
+ * user-gesture time. One snapshot per populated chain.
  * The args lambda validates from these snapshots — never from
- * ctx.resultPool — because args lambdas are `data`-only (model.md:
- * snapshot pattern).
+ * ctx.resultPool — because args lambdas are `data`-only (snapshot
+ * pattern).
  *
  * `chains` carries the verbatim VDJ chain DOMAIN values from MiXCR
  * (e.g. "IGHeavy", "IGLight", "IGKappa", "IGLambda", "TCRAlpha"). The
  * presence flags are aggregate across all detected chains for the
  * picked anchor. `clonotypeKeyAxisName` carries the second-axis name
  * from the picked anchor's spec ("pl7.app/vdj/clonotypeKey" for bulk;
- * "pl7.app/vdj/scClonotypeKey" for single-cell) — used by R61 mode
+ * "pl7.app/vdj/scClonotypeKey" for single-cell) — drives mode
  * detection.
  */
 export type UpstreamFacts = {
@@ -24,10 +24,10 @@ export type UpstreamFacts = {
   clonotypeKeyAxisName: string;
 };
 
-/** Args passed to the workflow — output shape of `.args(...)` (R15).
- *  Per-chain slots; at least one of chainH/chainL must be populated
- *  (R6). The mode (bulk vs SC) is inferred from the chain facts'
- *  `clonotypeKeyAxisName` (R61). */
+/** Args passed to the workflow — output shape of `.args(...)`.
+ *  Per-chain slots; at least one of chainH/chainL must be populated.
+ *  The mode (bulk vs SC) is inferred from the chain facts'
+ *  `clonotypeKeyAxisName`. */
 export type BlockArgs = {
   /** Heavy-chain anchor; populated when the user's dataset pick has a
    *  heavy chain (bulk-heavy OR SC paired — SC anchors carry both
@@ -38,7 +38,7 @@ export type BlockArgs = {
    *  "IGHeavy" when present). */
   chainHName?: string;
   /** Heavy-chain threshold (Nb_freq cutoff). Required iff chainH is
-   *  populated. Default per R16 is 0.000961. */
+   *  populated. Default is 0.000961. */
   thresholdH?: number;
   /** SC scClonotypeChain letter for heavy ("A"). Only set in SC
    *  mode — drives the workflow's chain-specific column-domain
@@ -52,16 +52,16 @@ export type BlockArgs = {
   /** Verbatim chain domain value of the light anchor (e.g.
    *  "IGLight", "IGKappa", "IGLambda"). */
   chainLName?: string;
-  /** Light-chain threshold (R17 — no default; user must enter
+  /** Light-chain threshold (no default; user must enter
    *  explicitly). Required iff chainL is populated. */
   thresholdL?: number;
   /** SC scClonotypeChain letter for light ("B"). See chainHScLetter. */
   chainLScLetter?: string;
 
-  /** Sample-size floor (R12). Default 100. */
+  /** Sample-size floor. Default 100. */
   nMin: number;
 
-  // Optional cluster filter (R58).
+  // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
    *  and emit the additional `fastStarClusterFiltered` column. Off
    *  by default. */
@@ -70,7 +70,7 @@ export type BlockArgs = {
    *  only when applyClusterFilter is true. */
   clusterMin?: number;
 
-  /** Single-sample export (R68–R76). Raw pl7.app/sampleId axis value of
+  /** Single-sample export. Raw pl7.app/sampleId axis value of
    *  the sample whose convergence columns are collapsed to a
    *  clonotype-only axis and exported for antibody lead selection. No
    *  default — when unset (key absent), nothing is exported. */
@@ -89,13 +89,13 @@ export type BlockArgs = {
 /** Unified V3 data model — block args inputs PLUS UI state. */
 export type BlockData = {
   // Workflow-bound fields (projected into args by the .args() lambda).
-  /** The user's input dataset pick (R18 — accepts any BCR-compatible
+  /** The user's input dataset pick (accepts any BCR-compatible
    *  anchor: heavy bulk, light bulk, or single-cell IG). Drives
    *  args.chainH or args.chainL depending on the picked chain's
    *  identity. */
   datasetRef?: PlRef;
   /** Snapshot facts for `datasetRef`. Written by the picker handler in
-   *  the same user-gesture as `datasetRef` (R8, R24). */
+   *  the same user-gesture as `datasetRef`. */
   datasetFacts?: UpstreamFacts;
   /** Snapshot label for `datasetRef` — the exact dropdown text the user
    *  saw when they picked. Used as the dataset prefix in the page
@@ -103,7 +103,7 @@ export type BlockData = {
    *  (single chain) or "MyMixcrSc 0.000961 / Light 0.03" (SC paired). */
   datasetLabel?: string;
 
-  /** Whether to also process the light chain (SC paired mode, R66). The
+  /** Whether to also process the light chain (SC paired mode). The
    *  light chain is a column-domain sibling on the SAME anchor as the
    *  dataset pick, so no separate ref is needed — this is the explicit
    *  opt-in for LC processing. Ignored in bulk mode (bulk is single-chain:
@@ -116,16 +116,16 @@ export type BlockData = {
   /** Light-chain threshold. Required iff a light chain is processed
    *  (bulk-light dataset OR SC + light-chain opt-in). */
   thresholdL?: number;
-  /** Sample-size floor (R12). */
+  /** Sample-size floor. */
   nMin?: number;
 
-  // Cluster filter (R58). Toggle + cluster-min. Toggle is required
+  // Cluster filter. Toggle + cluster-min. Toggle is required
   // (initialised to false by dataModel.init); the v-model binding on
   // the Advanced-settings PlCheckbox requires a strict boolean.
   applyClusterFilter: boolean;
   clusterMin?: number;
 
-  /** Sample to export downstream (R69). Raw sampleId value, picked from
+  /** Sample to export downstream. Raw sampleId value, picked from
    *  the `exportSampleOptions` output. No default — unset means no
    *  export. Projects into args (staling), so changing it requires Run. */
   exportSampleId?: string;
@@ -149,13 +149,12 @@ export type BlockData = {
   customBlockLabel: string;
 };
 
-/** Legacy (v1) persisted facts shape — `axisName` was renamed to
- *  `clonotypeKeyAxisName`. Used only by the data-model migration. */
+/** Legacy (v1) persisted facts shape — uses `axisName` where the current
+ *  shape uses `clonotypeKeyAxisName`. Used only by the data-model migration. */
 export type UpstreamFactsV1 = Omit<UpstreamFacts, "clonotypeKeyAxisName"> & { axisName: string };
 
-/** Legacy (v1) persisted block data — the pre-collapse main/light ref
- *  snapshots (`lightRef`/`lightRefFacts` were always equal to the main
- *  pick or undefined). Used only by the data-model migration. */
+/** Legacy (v1) persisted block data — carries separate main/light ref
+ *  snapshots. Used only by the data-model migration. */
 export type BlockDataV1 = Omit<
   BlockData,
   "datasetRef" | "datasetFacts" | "datasetLabel" | "processLightChain"

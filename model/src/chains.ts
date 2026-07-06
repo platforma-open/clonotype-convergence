@@ -6,8 +6,8 @@ import type { BlockData } from "./types";
  * from `index.ts` so the model builder stays readable.
  */
 
-// Datasets the dropdown offers — anchors on the clonotype-keyed axes
-// (R10). Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
+// Datasets the dropdown offers — anchors on the clonotype-keyed axes.
+// Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
 // pl7.app/vdj/scClonotypeKey.
 export const inputAnchorSpecs = [
   {
@@ -22,15 +22,15 @@ export const inputAnchorSpecs = [
 
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
-// Default sample-size floor (R12). Shared by the data model's init() and
+// Default sample-size floor. Shared by the data model's init() and
 // the trace-label builder, which omits nMin from the label when it's
 // left at this default.
 export const DEFAULT_NMIN = 100;
 
-// MiXCR chain DOMAIN values (R28). Heavy = "IGHeavy"; light family
+// MiXCR chain DOMAIN values. Heavy = "IGHeavy"; light family
 // includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
 // surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
-// TCRGamma/TCRDelta — filtered out at R10.
+// TCRGamma/TCRDelta — filtered out of the dropdown.
 const HEAVY_CHAIN = "IGHeavy";
 const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
 
@@ -93,7 +93,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
   return parts.join(", ");
 }
 
-// R55 subtitle — dataset label + settings (getDefaultBlockLabel), kept
+// Subtitle — dataset label + settings (getDefaultBlockLabel), kept
 // consistent with the column trace label which uses the same settings
 // string. Unlike most multi-setting blocks we DO keep the dataset here:
 // two convergence blocks on different inputs (e.g. different chains) is a

@@ -1,9 +1,9 @@
-// Per-sample neighbour computation (MILAB-6413, per-sample-dedup spike).
+// Per-sample neighbour computation.
 //
 // processColumn body: receives ONE sample's slice of the packed convergence
 // input — a String PColumn keyed by clonotypeKey whose value is
 // "aaSeqCDR3|nSeqCDR3" (packed in main so both CDR3 columns ride through the
-// single sliced primary; see spec/per-sample-dedup.md, O1).
+// single sliced primary).
 // The sampleId is the processColumn group key and is NOT present in this
 // slice's content, so the body node's input — and therefore its cache id —
 // depends only on the sample's clonotype data. That is what makes a project
@@ -59,9 +59,9 @@ self.body(func(inputs) {
 
 	// Unpack "aaSeqCDR3|nSeqCDR3" -> two columns; emit the TSV compute-neighbours
 	// expects (clonotypeKey, aaSeqCDR3, nSeqCDR3). One shared 2-group pattern +
-	// strExtract(groupIndex) — a single source-of-truth pattern instead of two
-	// positional look-around regexes (pt has no split-to-list). CDR3 sequences
-	// never contain "|", so it's an unambiguous delimiter.
+	// strExtract(groupIndex) — a single source-of-truth pattern (pt has no
+	// split-to-list). CDR3 sequences never contain "|", so it's an unambiguous
+	// delimiter.
 	packedPattern := "([^|]*)\\|([^|]*)"
 	ptwf := pt.workflow().mem("4GiB").cpu(2)
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
@@ -102,7 +102,7 @@ self.body(func(inputs) {
 		run()
 
 	// Stage 2 — apply threshold, emit fastStar. Pure pt:
-	// fastStar = "Hit" iff Nb_freq > threshold (strict, R32/R62). inferSchema
+	// fastStar = "Hit" iff Nb_freq > threshold (strict). inferSchema
 	// false → cast Nb_freq to Float64 only for the comparison, so blank /
 	// non-numeric Nb_freq casts to null → "Not hit". One sample per body, so no
 	// per-sample stats sidecar here (the badge aggregates downstream).

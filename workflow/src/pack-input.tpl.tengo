@@ -1,4 +1,4 @@
-// Preamble packer (MILAB-6413, spec/per-sample-dedup.md).
+// Preamble packer.
 //
 // Joins the CDR3 sequences into ONE packed String column per
 // (sampleId, clonotypeKey) — the input the per-sample fan-out slices. Abundance

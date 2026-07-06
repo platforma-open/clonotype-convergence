@@ -1,18 +1,18 @@
 """Stage 3 — paper's "binder" cluster filter (optional, gated by
-args.applyClusterFilter per R58).
+args.applyClusterFilter).
 
 Reads Stage 2's output (which has fastStar already set as String
 "Hit"/"Not hit" by threshold). Per sample, runs DBSCAN with the
 vendored Levenshtein-1 metric on the fastStar=="Hit" subset and
 identifies clones whose cluster reaches --cluster-min. Emits an
 **additive** new column `fastStarClusterFiltered` ("Hit" for survivors,
-"Not hit" for everyone else — strict subset of fastStar's "Hit" set per
-R32, R58, R60). Stage 2's `fastStar` is NOT modified. Surviving rows
-additionally get a `clusterSize` column populated with the size of
-their natural Levenshtein-1 cluster (non-hit rows get 0).
+"Not hit" for everyone else — strict subset of fastStar's "Hit" set).
+Stage 2's `fastStar` is NOT modified. Surviving rows additionally get a
+`clusterSize` column populated with the size of their natural
+Levenshtein-1 cluster (non-hit rows get 0).
 
 Output TSV has the input schema + `fastStarClusterFiltered` + `clusterSize`.
-Per R60 this template stays pure: caching is keyed on
+This template stays pure: caching is keyed on
 (stage2Output, clusterMin), independent of threshold.
 
 CLI:
@@ -23,7 +23,7 @@ CLI:
         --chain <str>
 
 Runs on ONE sample per invocation — the per-sample fan-out slices by
-sampleId upstream. Structured stdout per R44, one event per line,
+sampleId upstream. Structured stdout, one event per line,
 prefixed ``[chain <chain>]``.
 """
 
@@ -142,7 +142,7 @@ def main() -> int:
 
     # Initialise additive columns:
     #   fastStarClusterFiltered: "Not hit" by default; survivors flip to "Hit"
-    #     (R25 / R32 / R58: strict subset of fastStar's "Hit" set)
+    #     (strict subset of fastStar's "Hit" set)
     #   clusterSize: 0 by default; populated for ALL hits below
     df["fastStarClusterFiltered"] = NOT_HIT
     df["clusterSize"] = 0
@@ -172,10 +172,10 @@ def main() -> int:
     )
 
     # Mark survivors in the additive column. fastStar itself is untouched
-    # — R32 / R58 require the cluster filter to be additive, not
-    # replacement: downstream consumers comparing runs across toggle
-    # states see a consistent fastStar signal, with the filtered version
-    # surfaced explicitly when present.
+    # — the cluster filter is additive, not replacement: downstream
+    # consumers comparing runs across toggle states see a consistent
+    # fastStar signal, with the filtered version surfaced explicitly when
+    # present.
     survivor_mask = df.index.isin(survivors_idx)
     df.loc[survivor_mask, "fastStarClusterFiltered"] = HIT
 

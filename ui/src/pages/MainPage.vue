@@ -21,8 +21,8 @@ type Panel = "settings" | "logs" | "stats" | null;
 
 // Modal open state — kept in a local reactive (not in BlockData) so a
 // hairpin-free auto-close on Run state change is possible without
-// writing to server-stored data (hairpin.md). Auto-open Settings on first
-// project add (no dataset yet), per R53.
+// writing to server-stored data. Auto-open Settings on first project
+// add (no dataset yet).
 const ui = reactive({
   activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
 });
@@ -49,17 +49,15 @@ const settingsOpen = panelModel("settings");
 const logsOpen = panelModel("logs");
 const statsOpen = panelModel("stats");
 
-// R68 — show the Stats button only when at least one chain produced
-// stats. Mirrors the badge's previous visibility gate (R49) but
-// promoted from histogram-page corner to main-page header.
+// Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
   () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
 );
 
-// Skipped-samples warning (R12). `belowMin` lists samples that had
-// CDR3 data but fewer unique nts than the nMin floor — surfaced with
-// advice to adjust nMin. The chain-wide "no usable data" case is
-// surfaced separately via `allEmpty` (see below).
+// Skipped-samples warning. `belowMin` lists samples that had CDR3 data
+// but fewer unique nts than the nMin floor — surfaced with advice to
+// adjust nMin. The chain-wide "no usable data" case is surfaced
+// separately via `allEmpty` (see below).
 const skippedBelowMin = computed<string[]>(() => {
   const heavy = app.model.outputs.heavySkippedSamples?.belowMin ?? [];
   const light = app.model.outputs.lightSkippedSamples?.belowMin ?? [];
@@ -87,10 +85,9 @@ const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allE
 
 // Auto-close the Settings modal when a Run commits. `runArgsId` (model output
 // over activeArgs) changes only when a Run actually commits new args, so this
-// fires once per run regardless of duration, dedup, or SDK timing. It replaces
-// an earlier `isRunning` false→true watch, which raced on the running-state
-// sync and missed fast/cached recomputes (threshold, export sample). Logs stay
-// open since they're the relevant panel during a run.
+// fires once per run regardless of duration, dedup, or SDK timing — including
+// fast/cached recomputes (threshold, export sample). Logs stay open since
+// they're the relevant panel during a run.
 watch(
   () => app.model.outputs.runArgsId,
   (id, prev) => {
@@ -100,7 +97,7 @@ watch(
   },
 );
 
-// PlAgDataTableV2 settings — bound to the model's mainTable output (R52).
+// PlAgDataTableV2 settings — bound to the model's mainTable output.
 // `sheets` adds the sample picker above the table (one sample at a
 // time; SDK pins to a single value).
 // `sourceId` is keyed on `mainTableSourceId` — a model output that

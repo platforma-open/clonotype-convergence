@@ -33,13 +33,13 @@ export { blockDataModel } from "./dataModel";
 // Shared chain constants/helpers, so the UI imports them instead of redefining.
 export { isHeavy, isLight, SC_AXIS } from "./chains";
 
-// R66 — chainL is only populated when the user makes it explicit:
+// chainL is only populated when the user makes it explicit:
 //  - bulk-light dataset (its only chain → chainL ← the dataset), or
 //  - SC paired + processLightChain (chainL ← the same anchor).
 // SC paired data never auto-populates chainL even though both chains
 // hang off the same anchor — the user opts in via the LC checkbox.
 
-// Skipped-samples warning (R12), shared by both chains. Reads a per-sample
+// Skipped-samples warning, shared by both chains. Reads a per-sample
 // status sidecar (one { nUniqueNt, nMin } per sample, keyed by sampleId) and
 // splits samples into:
 //   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
@@ -106,7 +106,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       chainHName = datasetHeavy;
     }
 
-    // ---- Light slot (explicit per R66) ----------------------------
+    // ---- Light slot (explicit) ------------------------------------
     // Two sources, mutually exclusive — both on the SAME dataset anchor:
     //  1. dataset is bulk-light        → chainL ← the dataset pick;
     //  2. SC paired + processLightChain → chainL ← the same anchor (heavy
@@ -130,7 +130,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // No `!chainH && !chainL` check needed: the datasetOptions gate only offers
     // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
-    // ---- Thresholds (R16 / R17 / R19) -----------------------------
+    // ---- Thresholds -----------------------------------------------
     if (chainH && data.thresholdH === undefined) {
       throw new Error("Heavy-chain threshold is required");
     }
@@ -138,12 +138,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
       throw new Error("Light-chain threshold is required");
     }
 
-    // ---- nMin (R12) -----------------------------------------------
+    // ---- nMin -----------------------------------------------------
     if (data.nMin === undefined) {
       throw new Error("Minimum unique CDR3 per sample is required");
     }
 
-    // ---- Cluster filter (R58) -------------------------------------
+    // ---- Cluster filter -------------------------------------------
     const applyClusterFilter = data.applyClusterFilter ?? false;
     let clusterMin: number | undefined;
     if (applyClusterFilter) {
@@ -179,7 +179,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
-    // R69 — single-sample export. Not required (export is conditional on
+    // Single-sample export. Not required (export is conditional on
     // it being set); projected only when a non-empty sampleId is chosen.
     // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
     // empty string, which must count as "no selection" — otherwise the
@@ -191,7 +191,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return args;
   })
 
-  // R10 — dropdown offers any BCR-compatible anchor. Two shapes:
+  // Dropdown offers any BCR-compatible anchor. Two shapes:
   //   - Bulk anchors (clonotypeKey axis): chain identity lives on the
   //     axis domain. Accept IGHeavy / IGLight / IGKappa / IGLambda;
   //     reject TCR* and anything else.
@@ -285,7 +285,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return args ? canonicalize(args as unknown as Record<string, unknown>) : undefined;
   })
 
-  // R52 — sample picker above the mainTable. Extracts unique sampleId
+  // Sample picker above the mainTable. Extracts unique sampleId
   // partition keys from the picked anchor (which IS sample-partitioned
   // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
   // one sample at a time. SDK pins to a single sample — there is no
@@ -306,7 +306,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
   })
 
-  // R75 — options for the "Sample to export" picker. value = raw sampleId,
+  // Options for the "Sample to export" picker. value = raw sampleId,
   // label = human sample name (findLabels resolves the pl7.app/label column
   // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
   // from the UPSTREAM anchor's partition keys, so it's available before this
@@ -323,8 +323,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
-  // UI snapshot writer reads this to write ref + facts in one tick
-  // (R8, R24).
+  // UI snapshot writer reads this to write ref + facts in one tick.
   .output("factsByRef", (ctx) => {
     const options = ctx.resultPool.getOptions(inputAnchorSpecs);
     const result: Record<string, UpstreamFacts> = {};
@@ -338,7 +337,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return result;
   })
 
-  // Per-sample run logs (R44/R45). The per-sample fan-out captures each
+  // Per-sample run logs. The per-sample fan-out captures each
   // sample's compute-neighbours stdout as String content, collected into a
   // Resource keyed by sampleId. Read each partition's text and attach the real
   // sample label (findLabels on the anchor's sampleId axis), sorted by label.
@@ -406,7 +405,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
 
-  // R55 — page-header subtitle. Returns undefined when nothing
+  // Page-header subtitle. Returns undefined when nothing
   // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
@@ -482,7 +481,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Skipped-samples warning (R12) per chain — see buildSkippedSamples. UI
+  // Skipped-samples warning per chain — see buildSkippedSamples. UI
   // surfaces a PlAlert above the main table per case.
   .output("heavySkippedSamples", (ctx) =>
     buildSkippedSamples(ctx, "heavyPerSampleStatus", (a) => a.chainH),
@@ -491,7 +490,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
 
-  // mainTable (R52). Anchored on the dataset's fastStar column —
+  // mainTable. Anchored on the dataset's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
@@ -544,8 +543,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
         // optional via the visibility rules below.
         maxHops: 0,
         // Drop per-sample-only columns (Sample label, donor, dataset,
-        // metadata) — the sample sheet pins one sampleId at a time
-        // (R52), so these columns would just repeat the picked value
+        // metadata) — the sample sheet pins one sampleId at a time,
+        // so these columns would just repeat the picked value
         // on every row. `partialAxesMatch: false` excludes only
         // columns whose axes are *exactly* [sampleId] (multi-axis
         // columns that include sampleId stay).
@@ -567,7 +566,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
-      // Drop our single-sample EXPORT family (R70) from the block's own
+      // Drop our single-sample EXPORT family from the block's own
       // table — it's downstream-only. With a sample picked, those columns
       // are in the result pool, and enrichment broadcasts them across
       // samples (showing "— <sample>" labels). The internal multi-sample
@@ -584,11 +583,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // First rule wins. Hide per-sample-only columns (axes exactly
           // [sampleId]) — chiefly the Sample label that the table's
           // automatic axis-label discovery re-adds for the array-form
-          // `columns`. The sample sheet pins one sampleId at a time (R52),
+          // `columns`. The sample sheet pins one sampleId at a time,
           // so they'd just repeat the picked value on every row. Must come
           // before the `pl7.app/label` rule below, which would otherwise
-          // force the Sample label visible. (The object-form selector used
-          // to exclude these; the array form re-adds them, so we hide here.)
+          // force the Sample label visible.
           {
             match: (spec: PColumnSpec) =>
               spec.axesSpec.length === 1 && spec.axesSpec[0]?.name === "pl7.app/sampleId",
@@ -597,7 +595,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // Force `pl7.app/label` (clonotype-id label) to default-visible
           // — some MiXCR builds emit it with `visibility: "optional"` in
           // its own annotations, so without this rule the Clone ID column
-          // shows up hidden on server runs (R52). The Sample label is
+          // shows up hidden on server runs. The Sample label is
           // already caught by the rule above (first match wins).
           {
             match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
@@ -618,7 +616,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // R51 — sections adapt to input mode. In SC paired (heavy + LC),
+  // Sections adapt to input mode. In SC paired (heavy + LC),
   // heavy and LC share the scClonotypeKey axis so both chains' columns
   // surface in the SAME main table via enrichment — no separate LC
   // table page. Modes:

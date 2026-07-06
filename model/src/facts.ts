@@ -5,7 +5,7 @@ import type { UpstreamFacts } from "./types";
 /**
  * Walk the siblings of `ref` on its shared axes and aggregate facts:
  * which chains appear, whether the required CDR3 + abundance siblings
- * are present, and the axis name (drives R61 mode detection).
+ * are present, and the axis name (drives mode detection).
  */
 export function discoverUpstreamFacts<A, U>(
   ctx: RenderCtxBase<A, U>,
@@ -13,7 +13,7 @@ export function discoverUpstreamFacts<A, U>(
 ): UpstreamFacts | undefined {
   const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
   if (!refSpec) return undefined;
-  // Name of the second axis = clonotype-key axis. Drives R61
+  // Name of the second axis = clonotype-key axis. Drives
   // mode detection and the BULK-vs-SC handling below.
   const clonotypeKeyAxisName = refSpec.axesSpec[1]?.name ?? "";
   const isSC = clonotypeKeyAxisName === SC_AXIS;
@@ -51,8 +51,7 @@ export function discoverUpstreamFacts<A, U>(
     //   - Bulk: chain in axis domain or column domain via `pl7.app/vdj/chain`.
     //   - SC: chain in column domain via `pl7.app/vdj/scClonotypeChain`
     //         (letter "A"/"B"; map to IGHeavy/IGLight). Skip secondary
-    //         alleles — only the primary allele counts as a valid input
-    //         (matches sequence-properties' deviation A).
+    //         alleles — only the primary allele counts as a valid input.
     let chain: string | undefined;
     if (isSC) {
       const idx = spec.domain?.["pl7.app/vdj/scClonotypeChain/index"];
