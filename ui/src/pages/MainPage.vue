@@ -21,44 +21,43 @@ type Panel = "settings" | "logs" | "stats" | null;
 
 // Modal open state — kept in a local reactive (not in BlockData) so a
 // hairpin-free auto-close on Run state change is possible without
-// writing to server-stored data (hairpin.md). Auto-open on first
-// project add (no mainRef yet) is initialised here, per R53.
+// writing to server-stored data. Auto-open Settings on first project
+// add (no dataset yet).
 const ui = reactive({
-  activePanel: (app.model.data.mainRef === undefined ? "settings" : null) as Panel,
+  activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
 });
 
-const settingsOpen = computed({
-  get: () => ui.activePanel === "settings",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "settings" : null;
-  },
-});
+// Single mutation path (only one panel is open at a time). Header buttons open
+// via setPanel(name); each modal's v-model closes via the factory below, which
+// routes back through setPanel(null).
+function setPanel(panel: Panel) {
+  ui.activePanel = panel;
+}
 
-const logsOpen = computed({
-  get: () => ui.activePanel === "logs",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "logs" : null;
-  },
-});
+// One v-model per modal, from a factory so the three stay identical. The setter
+// only CLOSES — panels are opened via setPanel from the header buttons; the
+// `name` guard stops a late close event from nulling a panel opened since.
+function panelModel(name: Exclude<Panel, null>) {
+  return computed({
+    get: () => ui.activePanel === name,
+    set: (open: boolean) => {
+      if (!open && ui.activePanel === name) setPanel(null);
+    },
+  });
+}
+const settingsOpen = panelModel("settings");
+const logsOpen = panelModel("logs");
+const statsOpen = panelModel("stats");
 
-const statsOpen = computed({
-  get: () => ui.activePanel === "stats",
-  set: (v: boolean) => {
-    ui.activePanel = v ? "stats" : null;
-  },
-});
-
-// R68 — show the Stats button only when at least one chain produced
-// stats. Mirrors the badge's previous visibility gate (R49) but
-// promoted from histogram-page corner to main-page header.
+// Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
   () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
 );
 
-// Skipped-samples warning (R12). `belowMin` lists samples that had
-// CDR3 data but fewer unique nts than the nMin floor — surfaced with
-// advice to adjust nMin. The chain-wide "no usable data" case is
-// surfaced separately via `allEmpty` (see below).
+// Skipped-samples warning. `belowMin` lists samples that had CDR3 data
+// but fewer unique nts than the nMin floor — surfaced with advice to
+// adjust nMin. The chain-wide "no usable data" case is surfaced
+// separately via `allEmpty` (see below).
 const skippedBelowMin = computed<string[]>(() => {
   const heavy = app.model.outputs.heavySkippedSamples?.belowMin ?? [];
   const light = app.model.outputs.lightSkippedSamples?.belowMin ?? [];
@@ -67,6 +66,15 @@ const skippedBelowMin = computed<string[]>(() => {
 const skippedNMin = computed<number | undefined>(
   () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
 );
+
+// Samples dropped because they have NO usable CDR3 (nUniqueNt == 0), distinct
+// from `belowMin` — lowering nMin won't recover these, so the message omits
+// the nMin advice. Union across chains.
+const skippedNoCdr3 = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.noCdr3 ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.noCdr3 ?? [];
+  return Array.from(new Set([...heavy, ...light]));
+});
 
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
@@ -77,20 +85,19 @@ const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allE
 
 // Auto-close the Settings modal when a Run commits. `runArgsId` (model output
 // over activeArgs) changes only when a Run actually commits new args, so this
-// fires once per run regardless of duration, dedup, or SDK timing. It replaces
-// an earlier `isRunning` false→true watch, which raced on the running-state
-// sync and missed fast/cached recomputes (threshold, export sample). Logs stay
-// open since they're the relevant panel during a run.
+// fires once per run regardless of duration, dedup, or SDK timing — including
+// fast/cached recomputes (threshold, export sample). Logs stay open since
+// they're the relevant panel during a run.
 watch(
   () => app.model.outputs.runArgsId,
   (id, prev) => {
     if (id && id !== prev && ui.activePanel === "settings") {
-      ui.activePanel = null;
+      setPanel(null);
     }
   },
 );
 
-// PlAgDataTableV2 settings — bound to the model's mainTable output (R52).
+// PlAgDataTableV2 settings — bound to the model's mainTable output.
 // `sheets` adds the sample picker above the table (one sample at a
 // time; SDK pins to a single value).
 // `sourceId` is keyed on `mainTableSourceId` — a model output that
@@ -125,19 +132,19 @@ const customBlockLabel = computed({
     title="Clonotype Convergence"
   >
     <template #append>
-      <PlBtnGhost v-if="hasAnyStats" @click.stop="() => (ui.activePanel = 'stats')">
+      <PlBtnGhost v-if="hasAnyStats" @click.stop="() => setPanel('stats')">
         Stats
         <template #append>
           <PlMaskIcon24 name="statistics" />
         </template>
       </PlBtnGhost>
-      <PlBtnGhost @click.stop="() => (ui.activePanel = 'logs')">
+      <PlBtnGhost @click.stop="() => setPanel('logs')">
         Logs
         <template #append>
           <PlMaskIcon24 name="file-logs" />
         </template>
       </PlBtnGhost>
-      <PlBtnGhost @click.stop="() => (ui.activePanel = 'settings')">
+      <PlBtnGhost @click.stop="() => setPanel('settings')">
         Settings
         <template #append>
           <PlMaskIcon24 name="settings" />
@@ -155,6 +162,16 @@ const customBlockLabel = computed({
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
       Adjust "Minimum unique CDR3 per sample" in Advanced settings to include
       {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+    </PlAlert>
+
+    <PlAlert v-if="skippedNoCdr3.length > 0" type="warn" icon>
+      <template #title>
+        {{ skippedNoCdr3.length }} sample{{ skippedNoCdr3.length === 1 ? "" : "s" }} with no usable
+        CDR3
+      </template>
+      {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
+      no usable CDR3 sequences and
+      {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
     </PlAlert>
 
     <PlAlert v-if="heavyAllEmpty" type="warn" icon>

@@ -1,10 +1,17 @@
-import type { InferOutputsType, PColumnSpec, PFrameHandle, PlRef } from "@platforma-sdk/model";
+import type {
+  InferOutputsType,
+  PColumnSpec,
+  PFrameHandle,
+  PlRef,
+  RenderCtx,
+} from "@platforma-sdk/model";
 import {
   BlockModelV3,
   createPlDataTableSheet,
   createPlDataTableV3,
   discoverTableColumnSnaphots,
   getUniquePartitionKeys,
+  parseResourceMap,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
@@ -23,77 +30,107 @@ import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
+// Shared chain constants/helpers, so the UI imports them instead of redefining.
+export { isHeavy, isLight, SC_AXIS } from "./chains";
 
-// R66 — chainL is only populated when the user makes it explicit:
-//  - bulk-light MAIN pick (only chain → chainL ← main), or
-//  - any other main + secondary lightRef set (chainL ← lightRef).
-// SC main never auto-populates chainL even though both chains hang
-// off the same anchor — the user opts in via the LC picker.
+// chainL is only populated when the user makes it explicit:
+//  - bulk-light dataset (its only chain → chainL ← the dataset), or
+//  - SC paired + processLightChain (chainL ← the same anchor).
+// SC paired data never auto-populates chainL even though both chains
+// hang off the same anchor — the user opts in via the LC checkbox.
+
+// Skipped-samples warning, shared by both chains. Reads a per-sample
+// status sidecar (one { nUniqueNt, nMin } per sample, keyed by sampleId) and
+// splits samples into:
+//   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
+//   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
+//   allEmpty — no per-sample status at all (no rows → no explanation). The
+//              every-sample-empty case is intentionally excluded: those samples
+//              are already listed in noCdr3, so folding them in here would
+//              double-alert ("no chain data" + "N with no usable CDR3").
+// Labels via findLabels on the chain anchor's sampleId axis; nMin from the run's
+// status (falls back to activeArgs). Gated on parse completeness so the warning
+// doesn't flicker on partial mid-run status.
+function buildSkippedSamples<A, U>(
+  ctx: RenderCtx<A, U>,
+  statusField: string,
+  chainRef: (args: BlockArgs) => PlRef | undefined,
+) {
+  const acc = ctx.outputs?.resolve({
+    field: statusField,
+    assertFieldType: "Input",
+    allowPermanentAbsence: true,
+  });
+  if (!acc) return undefined;
+  const parsed = parseResourceMap(
+    acc,
+    (a) => a.getDataAsJson<{ nUniqueNt: number; nMin: number }>(),
+    false,
+  );
+  if (!parsed.isComplete) return undefined;
+  const args = ctx.activeArgs as BlockArgs | undefined;
+  const ref = args ? chainRef(args) : undefined;
+  const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+  const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+  const nMin = parsed.data[0]?.value?.nMin ?? args?.nMin;
+  const belowMin: string[] = [];
+  const noCdr3: string[] = [];
+  for (const e of parsed.data) {
+    const label = labels?.[String(e.key[0])] ?? String(e.key[0]);
+    if (e.value.nUniqueNt === 0) noCdr3.push(label);
+    else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
+  }
+  belowMin.sort((a, b) => a.localeCompare(b));
+  noCdr3.sort((a, b) => a.localeCompare(b));
+  const allEmpty = parsed.data.length === 0;
+  return { belowMin, noCdr3, allEmpty, nMin };
+}
 
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
-    if (!data.mainRef || !data.mainRefFacts) {
+    if (!data.datasetRef || !data.datasetFacts) {
       throw new Error("Select a dataset");
     }
-    const mainFacts = data.mainRefFacts;
-    const mainIsSC = mainFacts.axisName === SC_AXIS;
+    const facts = data.datasetFacts;
+    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
+    // No BCR/TCR or CDR3/abundance re-check here: the datasetOptions gate only
+    // offers BCR datasets with those columns present, and the workflow asserts
+    // them at run time — so re-validating a gated pick would be dead code.
 
-    // ---- R5 staleness checks on the main pick ---------------------
-    const tcr = mainFacts.chains.filter((c) => c.startsWith("TCR"));
-    if (tcr.length > 0) {
-      throw new Error(
-        `Selected input contains TCR chains (${tcr.join(", ")}); this block is BCR-only.`,
-      );
-    }
-    if (!mainFacts.hasAaCDR3) throw new Error("Selected input is missing the aa CDR3 column.");
-    if (!mainFacts.hasNtCDR3) throw new Error("Selected input is missing the nt CDR3 column.");
-    if (!mainFacts.hasAbundance) throw new Error("Selected input is missing an abundance column.");
-
-    // ---- Heavy slot (always from main when main has heavy) --------
+    // ---- Heavy slot (always from the dataset when it has heavy) ---
     let chainH: PlRef | undefined;
     let chainHName: string | undefined;
-    const mainHeavy = mainFacts.chains.find(isHeavy);
-    if (mainHeavy) {
-      chainH = data.mainRef;
-      chainHName = mainHeavy;
+    const datasetHeavy = facts.chains.find(isHeavy);
+    if (datasetHeavy) {
+      chainH = data.datasetRef;
+      chainHName = datasetHeavy;
     }
 
-    // ---- Light slot (explicit per R66) ----------------------------
-    // Two sources, mutually exclusive:
-    //  1. main is bulk-light  → chainL ← main pick;
-    //  2. secondary lightRef set → chainL ← lightRef (bulk-heavy main
-    //     + bulk-light secondary, OR SC main + SC secondary opt-in).
+    // ---- Light slot (explicit) ------------------------------------
+    // Two sources, mutually exclusive — both on the SAME dataset anchor:
+    //  1. dataset is bulk-light        → chainL ← the dataset pick;
+    //  2. SC paired + processLightChain → chainL ← the same anchor (heavy
+    //     and light hang off it as column-domain siblings).
     let chainL: PlRef | undefined;
     let chainLName: string | undefined;
     let chainLFacts: UpstreamFacts | undefined;
-    const mainLight = mainFacts.chains.find(isLight);
-    if (mainLight && !mainHeavy) {
-      chainL = data.mainRef;
-      chainLName = mainLight;
-      chainLFacts = mainFacts;
-    } else if (data.lightRef && data.lightRefFacts) {
-      const lightName = data.lightRefFacts.chains.find(isLight);
+    const datasetLight = facts.chains.find(isLight);
+    if (datasetLight && !datasetHeavy) {
+      chainL = data.datasetRef;
+      chainLName = datasetLight;
+      chainLFacts = facts;
+    } else if (data.processLightChain) {
+      const lightName = facts.chains.find(isLight);
       if (lightName) {
-        chainL = data.lightRef;
+        chainL = data.datasetRef;
         chainLName = lightName;
-        chainLFacts = data.lightRefFacts;
+        chainLFacts = facts;
       }
     }
-    if (chainL && chainLFacts) {
-      if (!chainLFacts.hasAaCDR3)
-        throw new Error("Light-chain input is missing the aa CDR3 column.");
-      if (!chainLFacts.hasNtCDR3)
-        throw new Error("Light-chain input is missing the nt CDR3 column.");
-      if (!chainLFacts.hasAbundance) throw new Error("Light-chain input has no abundance column.");
-    }
+    // No `!chainH && !chainL` check needed: the datasetOptions gate only offers
+    // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
-    if (!chainH && !chainL) {
-      throw new Error(
-        `Selected dataset chains are ${mainFacts.chains.join(", ") || "unknown"} — expected a BCR anchor.`,
-      );
-    }
-
-    // ---- Thresholds (R16 / R17 / R19) -----------------------------
+    // ---- Thresholds -----------------------------------------------
     if (chainH && data.thresholdH === undefined) {
       throw new Error("Heavy-chain threshold is required");
     }
@@ -101,12 +138,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
       throw new Error("Light-chain threshold is required");
     }
 
-    // ---- nMin (R12) -----------------------------------------------
+    // ---- nMin -----------------------------------------------------
     if (data.nMin === undefined) {
       throw new Error("Minimum unique CDR3 per sample is required");
     }
 
-    // ---- Cluster filter (R58) -------------------------------------
+    // ---- Cluster filter -------------------------------------------
     const applyClusterFilter = data.applyClusterFilter ?? false;
     let clusterMin: number | undefined;
     if (applyClusterFilter) {
@@ -117,11 +154,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     }
 
     // SC mode → workflow needs the scClonotypeChain LETTER ("A"/"B")
-    // to filter sibling columns to the right chain. Determined per
-    // slot: the H slot's SC mode follows the main pick; the L slot's
-    // SC mode follows the LC source's mode (which may be the same SC
-    // anchor as main, or — hypothetically — a separate SC anchor).
-    const lightIsSC = chainLFacts?.axisName === SC_AXIS;
+    // to filter sibling columns to the right chain. The light chain rides
+    // the same anchor as the heavy, so its SC mode matches the dataset's.
+    const lightIsSC = chainLFacts?.clonotypeKeyAxisName === SC_AXIS;
 
     const args: BlockArgs = {
       nMin: data.nMin,
@@ -133,7 +168,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       args.chainH = chainH;
       args.chainHName = chainHName;
       args.thresholdH = data.thresholdH;
-      if (mainIsSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
+      if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
     }
     if (chainL) {
       args.chainL = chainL;
@@ -144,7 +179,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
-    // R69 — single-sample export. Not required (export is conditional on
+    // Single-sample export. Not required (export is conditional on
     // it being set); projected only when a non-empty sampleId is chosen.
     // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
     // empty string, which must count as "no selection" — otherwise the
@@ -156,7 +191,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return args;
   })
 
-  // R10 — dropdown offers any BCR-compatible anchor. Two shapes:
+  // Dropdown offers any BCR-compatible anchor. Two shapes:
   //   - Bulk anchors (clonotypeKey axis): chain identity lives on the
   //     axis domain. Accept IGHeavy / IGLight / IGKappa / IGLambda;
   //     reject TCR* and anything else.
@@ -168,18 +203,20 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // axis name on the picked spec.
   .output("datasetOptions", (ctx) => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
-    const selected = ctx.data.mainRef
-      ? canonicalize(ctx.data.mainRef as unknown as Record<string, unknown>)
-      : undefined;
+    const selectedRef = ctx.data.datasetRef;
     return broad.filter((opt) => {
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
       // it drops out of the options and the `required` dropdown reconciles to
-      // another dataset — firing onPickMain and clobbering the mainRef snapshot
+      // another dataset — firing onPickDataset and clobbering the datasetRef snapshot
       // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
       // alert, healing when the pool settles). The gate only needs to stop a
       // *new* pick of a not-ready dataset, not destabilise an existing one.
-      if (selected && canonicalize(opt.ref as unknown as Record<string, unknown>) === selected) {
+      if (
+        selectedRef &&
+        opt.ref.blockId === selectedRef.blockId &&
+        opt.ref.name === selectedRef.name
+      ) {
         return true;
       }
       const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
@@ -196,26 +233,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
         chainOk = !!chain && !chain.startsWith("TCR") && (isHeavy(chain) || isLight(chain));
       }
       if (!chainOk) return false;
+      // Exclude scFv constructs (engineered single-chain VH-linker-VL): out of
+      // scope for repertoire convergence (in-vivo only), and they'd otherwise
+      // pass here as SC-paired IG. `pl7.app/vdj/scFv-sequence` is the platform's
+      // scFv marker (clonotype-clustering / -space / sequence-embeddings key off
+      // it too); the scClonotypeKey/structure domain is an unfinished
+      // placeholder shared with paired SC, so it can't discriminate.
+      const scFv = ctx.resultPool.getAnchoredPColumns({ main: opt.ref }, [
+        { name: "pl7.app/vdj/scFv-sequence" },
+      ]);
+      if (scFv && scFv.length > 0) return false;
       // CDR3-readiness gate. Only offer a dataset once its CDR3 sibling
       // specs are present in the pool. This closes a snapshot-timing race:
       // right after a block reload the result pool repopulates incrementally
       // and there is a window where the anchor column is present but its
       // CDR3 siblings are not yet. Without this gate a user could pick
-      // during that window and the args/alert snapshot (mainRefFacts) would
+      // during that window and the args/alert snapshot (datasetFacts) would
       // freeze a false "missing CDR3" until re-pick — and a published
       // version update reloads the same way, so this is user-facing.
       // discoverUpstreamFacts is the same check factsByRef/the snapshot use,
       // so an offered dataset always has CDR3 facts ready at pick time;
       // during the window the dataset simply appears a moment later.
       const facts = discoverUpstreamFacts(ctx, opt.ref);
-      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3;
+      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3 && facts.hasAbundance;
     });
-  })
-
-  // Live facts for the main pick — UI's PlAlert mirror (R9).
-  .output("mainRefFacts", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
-    return discoverUpstreamFacts(ctx, ctx.data.mainRef);
   })
 
   // Source identifier for the main table's per-source state cache.
@@ -244,7 +285,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return args ? canonicalize(args as unknown as Record<string, unknown>) : undefined;
   })
 
-  // R52 — sample picker above the mainTable. Extracts unique sampleId
+  // Sample picker above the mainTable. Extracts unique sampleId
   // partition keys from the picked anchor (which IS sample-partitioned
   // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
   // one sample at a time. SDK pins to a single sample — there is no
@@ -256,24 +297,24 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // never appears. Returning undefined during a run keeps the table
   // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
   .output("mainTableSheets", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
+    if (!ctx.data.datasetRef) return undefined;
     if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
   })
 
-  // R75 — options for the "Sample to export" picker. value = raw sampleId,
+  // Options for the "Sample to export" picker. value = raw sampleId,
   // label = human sample name (findLabels resolves the pl7.app/label column
   // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
   // from the UPSTREAM anchor's partition keys, so it's available before this
   // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
   // mainTableSheets. Undefined until a dataset is picked.
   .output("exportSampleOptions", (ctx) => {
-    if (!ctx.data.mainRef) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.mainRef);
+    if (!ctx.data.datasetRef) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
@@ -282,8 +323,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
-  // UI snapshot writer reads this to write ref + facts in one tick
-  // (R8, R24).
+  // UI snapshot writer reads this to write ref + facts in one tick.
   .output("factsByRef", (ctx) => {
     const options = ctx.resultPool.getOptions(inputAnchorSpecs);
     const result: Record<string, UpstreamFacts> = {};
@@ -297,32 +337,75 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return result;
   })
 
-  // Per-chain log handles from Stage 1 (R45). Retentive on log handles
-  // is safe (log handles tolerate retention; PFrame handles don't, R50).
-  // SC paired mode emits both — UI surfaces them as two stacked panels
-  // so the heavy/light per-sample prefixes (R44) stay readable.
-  .retentiveOutput("runLogsHeavy", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage1LogsHeavy",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+  // Per-sample run logs. The per-sample fan-out captures each
+  // sample's compute-neighbours stdout as String content, collected into a
+  // Resource keyed by sampleId. Read each partition's text and attach the real
+  // sample label (findLabels on the anchor's sampleId axis), sorted by label.
+  //
+  // `addEntriesWithNoData: true`: the ResourceMap is locked with all sampleId
+  // keys up front, but a sample's content only resolves once it finishes — so
+  // every sample appears immediately with `text: undefined` until then. The UI
+  // shows a "Starting…" placeholder for those and swaps in the full log once
+  // ready (one atomic step, no blink). `getDataAsString` returns undefined
+  // while computing (no throw) and registers readiness, so the lambda re-runs
+  // when each sample's content lands. Plain (NOT retentive) output so the swap
+  // re-renders. SC paired mode emits both chains — the UI stacks them.
+  .output("perSampleLogsHeavy", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "heavyPerSampleLogs",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    // getIsReadyOrError() registers the per-sample readiness dependency so the
+    // lambda re-runs (text undefined -> full log) when each sample's content
+    // lands; getDataAsString returns undefined while not ready (no throw).
+    const parsed = parseResourceMap(
+      acc,
+      (a) => (a.getIsReadyOrError() ? a.getDataAsString() : undefined),
+      true,
+    );
+    if (parsed.data.length === 0) return undefined;
+    const ref = (ctx.activeArgs as BlockArgs | undefined)?.chainH;
+    const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    return parsed.data
+      .map((e) => {
+        const sampleId = String(e.key[0]);
+        return { sampleId, label: labels?.[sampleId] ?? sampleId, text: e.value };
       })
-      ?.getLogHandle(),
-  )
-  .retentiveOutput("runLogsLight", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "stage1LogsLight",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+      .sort((a, b) => a.label.localeCompare(b.label));
+  })
+  .output("perSampleLogsLight", (ctx) => {
+    const acc = ctx.outputs?.resolve({
+      field: "lightPerSampleLogs",
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!acc) return undefined;
+    // getIsReadyOrError() registers the per-sample readiness dependency so the
+    // lambda re-runs (text undefined -> full log) when each sample's content
+    // lands; getDataAsString returns undefined while not ready (no throw).
+    const parsed = parseResourceMap(
+      acc,
+      (a) => (a.getIsReadyOrError() ? a.getDataAsString() : undefined),
+      true,
+    );
+    if (parsed.data.length === 0) return undefined;
+    const ref = (ctx.activeArgs as BlockArgs | undefined)?.chainL;
+    const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
+    const labels = axis ? ctx.resultPool.findLabels(axis) : undefined;
+    return parsed.data
+      .map((e) => {
+        const sampleId = String(e.key[0]);
+        return { sampleId, label: labels?.[sampleId] ?? sampleId, text: e.value };
       })
-      ?.getLogHandle(),
-  )
+      .sort((a, b) => a.label.localeCompare(b.label));
+  })
 
   .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
 
-  // R55 — page-header subtitle. Returns undefined when nothing
+  // Page-header subtitle. Returns undefined when nothing
   // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
@@ -398,39 +481,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
       ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
   )
 
-  // Skipped-samples warning sidecar from Stage 1 (R12). Reads the
-  // JSON written by compute_neighbours.py — list of sample labels
-  // whose unique-nt-CDR3 count fell below nMin, plus the nMin in
-  // effect at the time. UI surfaces a PlAlert above the main table
-  // when either chain has skipped samples.
+  // Skipped-samples warning per chain — see buildSkippedSamples. UI
+  // surfaces a PlAlert above the main table per case.
   .output("heavySkippedSamples", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "heavySkippedJson",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{
-        belowMin: string[];
-        allEmpty: boolean;
-        nMin: number;
-      }>(),
+    buildSkippedSamples(ctx, "heavyPerSampleStatus", (a) => a.chainH),
   )
   .output("lightSkippedSamples", (ctx) =>
-    ctx.outputs
-      ?.resolve({
-        field: "lightSkippedJson",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{
-        belowMin: string[];
-        allEmpty: boolean;
-        nMin: number;
-      }>(),
+    buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
 
-  // mainTable (R52). Anchored on the MAIN PICK's fastStar column —
+  // mainTable. Anchored on the dataset's fastStar column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
@@ -483,8 +543,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
         // optional via the visibility rules below.
         maxHops: 0,
         // Drop per-sample-only columns (Sample label, donor, dataset,
-        // metadata) — the sample sheet pins one sampleId at a time
-        // (R52), so these columns would just repeat the picked value
+        // metadata) — the sample sheet pins one sampleId at a time,
+        // so these columns would just repeat the picked value
         // on every row. `partialAxesMatch: false` excludes only
         // columns whose axes are *exactly* [sampleId] (multi-axis
         // columns that include sampleId stay).
@@ -506,7 +566,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
-      // Drop our single-sample EXPORT family (R70) from the block's own
+      // Drop our single-sample EXPORT family from the block's own
       // table — it's downstream-only. With a sample picked, those columns
       // are in the result pool, and enrichment broadcasts them across
       // samples (showing "— <sample>" labels). The internal multi-sample
@@ -523,11 +583,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // First rule wins. Hide per-sample-only columns (axes exactly
           // [sampleId]) — chiefly the Sample label that the table's
           // automatic axis-label discovery re-adds for the array-form
-          // `columns`. The sample sheet pins one sampleId at a time (R52),
+          // `columns`. The sample sheet pins one sampleId at a time,
           // so they'd just repeat the picked value on every row. Must come
           // before the `pl7.app/label` rule below, which would otherwise
-          // force the Sample label visible. (The object-form selector used
-          // to exclude these; the array form re-adds them, so we hide here.)
+          // force the Sample label visible.
           {
             match: (spec: PColumnSpec) =>
               spec.axesSpec.length === 1 && spec.axesSpec[0]?.name === "pl7.app/sampleId",
@@ -536,7 +595,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // Force `pl7.app/label` (clonotype-id label) to default-visible
           // — some MiXCR builds emit it with `visibility: "optional"` in
           // its own annotations, so without this rule the Clone ID column
-          // shows up hidden on server runs (R52). The Sample label is
+          // shows up hidden on server runs. The Sample label is
           // already caught by the rule above (first match wins).
           {
             match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
@@ -557,7 +616,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // R51 — sections adapt to input mode. In SC paired (heavy + LC),
+  // Sections adapt to input mode. In SC paired (heavy + LC),
   // heavy and LC share the scClonotypeKey axis so both chains' columns
   // surface in the SAME main table via enrichment — no separate LC
   // table page. Modes:
@@ -567,7 +626,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   //                      heavy histogram + light histogram
   .sections((ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
-    const ready = ctx.data.mainRef !== undefined && args !== undefined;
+    const ready = ctx.data.datasetRef !== undefined && args !== undefined;
     const hasHeavy = ready && args?.chainH !== undefined;
     const hasLight = ready && args?.chainL !== undefined;
     const dualChain = hasHeavy && hasLight;

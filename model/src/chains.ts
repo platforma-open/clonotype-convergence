@@ -6,8 +6,8 @@ import type { BlockData } from "./types";
  * from `index.ts` so the model builder stays readable.
  */
 
-// Datasets the dropdown offers — anchors on the clonotype-keyed axes
-// (R10). Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
+// Datasets the dropdown offers — anchors on the clonotype-keyed axes.
+// Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
 // pl7.app/vdj/scClonotypeKey.
 export const inputAnchorSpecs = [
   {
@@ -22,17 +22,17 @@ export const inputAnchorSpecs = [
 
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
-// Default sample-size floor (R12). Shared by the data model's init() and
+// Default sample-size floor. Shared by the data model's init() and
 // the trace-label builder, which omits nMin from the label when it's
 // left at this default.
 export const DEFAULT_NMIN = 100;
 
-// MiXCR chain DOMAIN values (R28). Heavy = "IGHeavy"; light family
+// MiXCR chain DOMAIN values. Heavy = "IGHeavy"; light family
 // includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
 // surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
-// TCRGamma/TCRDelta — filtered out at R10.
-export const HEAVY_CHAIN = "IGHeavy";
-export const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
+// TCRGamma/TCRDelta — filtered out of the dropdown.
+const HEAVY_CHAIN = "IGHeavy";
+const LIGHT_CHAINS = new Set(["IGLight", "IGKappa", "IGLambda"]);
 
 // SC anchors put receptor (not chain) in the axis domain. "IG" = BCR;
 // TCRAB / TCRGD = TCR families. Chain identity in SC lives on the
@@ -54,16 +54,6 @@ export function isLight(chain: string | undefined): boolean {
   return !!chain && LIGHT_CHAINS.has(chain);
 }
 
-// Friendly chain name for user-facing strings (R64 — no raw IGHeavy /
-// IGLight in copy). Subtitle (R55), section labels, etc.
-export function friendlyChain(chain: string): string {
-  if (chain === "IGHeavy") return "Heavy";
-  if (chain === "IGLight") return "Light";
-  if (chain === "IGKappa") return "Light (κ)";
-  if (chain === "IGLambda") return "Light (λ)";
-  return chain;
-}
-
 // Settings portion of the block's identity label — threshold(s), nMin
 // (only when non-default), and the cluster filter. This is the single
 // source of truth shared by the page subtitle and the column trace, so
@@ -78,13 +68,13 @@ export function friendlyChain(chain: string): string {
 export function getDefaultBlockLabel(data: BlockData): string {
   const parts: string[] = [];
 
-  const facts = data.mainRefFacts;
+  const facts = data.datasetFacts;
   if (facts) {
-    const isSC = facts.axisName === SC_AXIS;
-    const mainThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
-    if (mainThreshold !== undefined) {
-      let thr = `thr ${mainThreshold}`;
-      if (isSC && data.lightRef !== undefined && data.thresholdL !== undefined) {
+    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
+    const primaryThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
+    if (primaryThreshold !== undefined) {
+      let thr = `thr ${primaryThreshold}`;
+      if (isSC && data.processLightChain && data.thresholdL !== undefined) {
         thr += ` / L thr ${data.thresholdL}`;
       }
       parts.push(thr);
@@ -103,7 +93,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
   return parts.join(", ");
 }
 
-// R55 subtitle — dataset label + settings (getDefaultBlockLabel), kept
+// Subtitle — dataset label + settings (getDefaultBlockLabel), kept
 // consistent with the column trace label which uses the same settings
 // string. Unlike most multi-setting blocks we DO keep the dataset here:
 // two convergence blocks on different inputs (e.g. different chains) is a
@@ -112,7 +102,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
 // input is picked. A " - " separates the dataset from the settings so the
 // commas inside the settings part don't blur into the dataset name.
 export function formatSubtitle(data: BlockData): string | undefined {
-  if (!data.mainRefFacts || !data.mainRefLabel) return undefined;
+  if (!data.datasetFacts || !data.datasetLabel) return undefined;
   const settings = getDefaultBlockLabel(data);
-  return settings.length > 0 ? `${data.mainRefLabel} - ${settings}` : data.mainRefLabel;
+  return settings.length > 0 ? `${data.datasetLabel} - ${settings}` : data.datasetLabel;
 }

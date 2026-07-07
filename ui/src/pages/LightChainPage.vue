@@ -8,7 +8,7 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// R67 — restrict GraphMaker's value picker to nbFreq only.
+// Restrict GraphMaker's value picker to nbFreq only.
 const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
 
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
