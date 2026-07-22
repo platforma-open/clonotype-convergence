@@ -16,10 +16,10 @@ type Row = { label: string; value: string };
 function rowsFor(s: HitStats): Row[] {
   const rows: Row[] = [];
   if (s.beforeCluster !== undefined) {
-    rows.push({ label: "Above threshold", value: fmt(s.beforeCluster) });
+    rows.push({ label: "Convergent hits", value: fmt(s.beforeCluster) });
     rows.push({ label: "Passed cluster filter", value: fmt(s.above) });
   } else {
-    rows.push({ label: "Above threshold", value: fmt(s.above) });
+    rows.push({ label: "Convergent hits", value: fmt(s.above) });
   }
   // "Total records" rather than "Total clonotypes": the underlying
   // counts come from the long-format (sampleId, clonotypeKey) frame,

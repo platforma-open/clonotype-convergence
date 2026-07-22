@@ -15,6 +15,7 @@ import {
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
+  DEFAULT_ALPHA,
   formatSubtitle,
   getDefaultBlockLabel,
   inputAnchorSpecs,
@@ -130,12 +131,25 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // No `!chainH && !chainL` check needed: the datasetOptions gate only offers
     // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
-    // ---- Thresholds -----------------------------------------------
-    if (chainH && data.thresholdH === undefined) {
-      throw new Error("Heavy-chain threshold is required");
+    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
+    // Method per chain comes from the Pgen-availability snapshot (facts):
+    // Pgen present → full-STAR (uses alpha); absent → fast-STAR fallback
+    // (uses the per-chain threshold). Mixing the two in one run is designed
+    // out (A-0003): both processed chains must share a method. The UI disables
+    // the light opt-in in the mixed case; this gates a stale/forced state.
+    if (chainH && chainL && facts.hasPgenHeavy !== facts.hasPgenLight) {
+      throw new Error(
+        "Heavy and light chains differ in Pgen availability — full-STAR and fast-STAR can't be " +
+          "combined in one run. Process a single chain, or run Generation Probability for both.",
+      );
     }
-    if (chainL && data.thresholdL === undefined) {
-      throw new Error("Light-chain threshold is required");
+    // The fast-STAR threshold is required only for a chain running in fallback
+    // (no Pgen). full-STAR needs no threshold.
+    if (chainH && !facts.hasPgenHeavy && data.thresholdH === undefined) {
+      throw new Error("Heavy-chain threshold is required (fast-STAR fallback)");
+    }
+    if (chainL && !facts.hasPgenLight && data.thresholdL === undefined) {
+      throw new Error("Light-chain threshold is required (fast-STAR fallback)");
     }
 
     // ---- nMin -----------------------------------------------------
@@ -160,6 +174,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
     const args: BlockArgs = {
       nMin: data.nMin,
+      alpha: data.alpha ?? DEFAULT_ALPHA,
       applyClusterFilter,
       customBlockLabel: data.customBlockLabel,
       defaultBlockLabel: getDefaultBlockLabel(data),
@@ -167,26 +182,25 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (chainH) {
       args.chainH = chainH;
       args.chainHName = chainHName;
-      args.thresholdH = data.thresholdH;
+      args.hasPgenHeavy = facts.hasPgenHeavy;
+      // The Pgen ref establishes convergence's dependency on gen-prob so the
+      // workflow can resolve Pgen data by ref. Projected only for full-STAR.
+      if (facts.hasPgenHeavy) args.pgenRefHeavy = facts.pgenRefHeavy;
+      // Threshold projected only in fallback — keeps it out of the full-STAR
+      // args so editing an (irrelevant, hidden) threshold can't stale the run.
+      if (!facts.hasPgenHeavy) args.thresholdH = data.thresholdH;
       if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
     }
     if (chainL) {
       args.chainL = chainL;
       args.chainLName = chainLName;
-      args.thresholdL = data.thresholdL;
+      args.hasPgenLight = facts.hasPgenLight;
+      if (facts.hasPgenLight) args.pgenRefLight = facts.pgenRefLight;
+      if (!facts.hasPgenLight) args.thresholdL = data.thresholdL;
       if (lightIsSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[chainLName!];
     }
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
-    }
-    // Single-sample export. Not required (export is conditional on
-    // it being set); projected only when a non-empty sampleId is chosen.
-    // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
-    // empty string, which must count as "no selection" — otherwise the
-    // workflow would run the export collapse with a filter matching no
-    // rows (re-reading the whole TSV + re-importing per block every run).
-    if (data.exportSampleId) {
-      args.exportSampleId = data.exportSampleId;
     }
     return args;
   })
@@ -306,20 +320,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
   })
 
-  // Options for the "Sample to export" picker. value = raw sampleId,
-  // label = human sample name (findLabels resolves the pl7.app/label column
-  // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
-  // from the UPSTREAM anchor's partition keys, so it's available before this
-  // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
-  // mainTableSheets. Undefined until a dataset is picked.
-  .output("exportSampleOptions", (ctx) => {
-    if (!ctx.data.datasetRef) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
-    if (!anchor) return undefined;
-    const samples = getUniquePartitionKeys(anchor.data)?.[0];
-    if (!samples) return undefined;
-    const labels = ctx.resultPool.findLabels(anchor.spec.axesSpec[0]);
-    return samples.map((v) => ({ value: String(v), label: labels?.[v] ?? String(v) }));
+  // Whether the LAST RUN fell back to fast-STAR for any processed chain —
+  // read from activeArgs (what actually ran), so the MainPage banner reflects
+  // the current results, not the pending edit state. Config-time method (for
+  // the Settings panel) comes from the datasetFacts snapshot in `data`.
+  .output("ranFallback", (ctx) => {
+    const a = ctx.activeArgs as BlockArgs | undefined;
+    if (!a) return false;
+    return (
+      (a.chainH !== undefined && a.hasPgenHeavy === false) ||
+      (a.chainL !== undefined && a.hasPgenLight === false)
+    );
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
@@ -490,7 +501,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
 
-  // mainTable. Anchored on the dataset's fastStar column —
+  // mainTable. Anchored on the dataset's starHit column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
@@ -516,10 +527,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const fastStarSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!fastStarSpec) return undefined;
+    const starHitSpec = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/starHit")?.spec;
+    if (!starHitSpec) return undefined;
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -528,9 +537,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // runs in wasm/Rust, which has no negative lookahead), so we filter by
     // the block domain here. This block's id sits on the anchor's own
     // domain (pl7.app/block).
-    const thisBlockId = fastStarSpec.domain?.["pl7.app/block"];
+    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
     const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: fastStarSpec },
+      anchors: { main: starHitSpec },
       selector: {
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment

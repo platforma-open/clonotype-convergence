@@ -1,11 +1,21 @@
 // Preamble packer.
 //
-// Joins the CDR3 sequences into ONE packed String column per
-// (sampleId, clonotypeKey) — the input the per-sample fan-out slices. Abundance
-// takes part in the join only to supply the sampleId axis (it's the sole 2-axis
-// column; the CDR3 columns are clonotype-only), but its VALUE is NOT packed —
-// the convergence math uses only the CDR3 sequences. This is the whole-dataset
-// preamble (join -> pt encode -> partitioned import).
+// Joins the CDR3 sequences (and, for full-STAR, the per-clonotype Pgen) into
+// ONE packed String column per (sampleId, clonotypeKey) — the input the
+// per-sample fan-out slices. Abundance takes part in the join only to supply
+// the sampleId axis (it's the sole 2-axis column; the CDR3 + Pgen columns are
+// clonotype-only), but its VALUE is NOT packed — the convergence math uses only
+// the CDR3 sequences (+ Pgen). This is the whole-dataset preamble
+// (join -> pt encode -> partitioned import).
+//
+// Packed format is "aaSeqCDR3|nSeqCDR3" in the fast-STAR (no-Pgen) case and
+// "aaSeqCDR3|nSeqCDR3|Pgen" when Pgen is supplied (full-STAR). Pgen is
+// allowNA upstream, so null Pgen is filled to "" BEFORE the concat — otherwise
+// concatStr would null the whole packed value and the clone's CDR3s would be
+// lost from neighbour counting. An empty Pgen field unpacks to a non-numeric
+// value downstream, which full-STAR treats as untestable ("Not hit"), while the
+// clone still participates in neighbour counting. The per-sample body picks the
+// 2- vs 3-field unpack from the `hasPgen` flag threaded through processColumn.
 //
 // It lives in its own PURE template so its output (the packed column data) can
 // be PINNED by the caller via `.output("packed", ttl)`. Without that, the
@@ -42,14 +52,32 @@ self.body(func(inputs) {
 	rawTsvBuilder.add({ spec: inputs.aaSpec, data: inputs.aaData }, { header: "aaSeqCDR3" })
 	rawTsvBuilder.add({ spec: inputs.ntSpec, data: inputs.ntData }, { header: "nSeqCDR3" })
 	rawTsvBuilder.add({ spec: inputs.abundanceSpec, data: inputs.abundanceData }, { header: "abundance" })
+	// full-STAR path is driven by the EXPLICIT hasPgen flag from the caller
+	// (NOT inferred from pgenData presence) — the per-sample body uses the same
+	// flag for the unpack pattern, so pack/unpack field counts always agree
+	// (a mismatch silently nulled every CDR3 before). pgenData may still be
+	// undefined if the Pgen column resolved spec-only; the packed Pgen field is
+	// then empty so the CDR3s always survive.
+	hasPgen := inputs.hasPgen == true
+	pgenPresent := hasPgen && !is_undefined(inputs.pgenData)
+	if pgenPresent {
+		rawTsvBuilder.add({ spec: inputs.pgenSpec, data: inputs.pgenData }, { header: "Pgen" })
+	}
 	rawInputTsv := rawTsvBuilder.build()
 
-	// Pack aaSeqCDR3|nSeqCDR3 into one String per row (abundance is dropped by
-	// the select — it was only needed to establish the sampleId rows above).
+	// Pack aaSeqCDR3|nSeqCDR3(|Pgen) into one String per row (abundance is
+	// dropped by the select — it was only needed to establish the sampleId rows
+	// above). Null Pgen -> "" first, so concatStr keeps the row (a null element
+	// would null the whole packed value and drop the clone's CDR3s).
 	encWf := pt.workflow().mem("4GiB").cpu(2)
 	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
+	packFields := [pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")]
+	if hasPgen {
+		pgenField := pgenPresent ? pt.col("Pgen").cast("String").fillNull(pt.lit("")) : pt.lit("")
+		packFields = append(packFields, pgenField)
+	}
 	encDf = encDf.withColumns(
-		pt.concatStr([pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")], { delimiter: "|" }).alias("packed")
+		pt.concatStr(packFields, { delimiter: "|" }).alias("packed")
 	).select(pt.col("sampleId"), pt.col("clonotypeKey"), pt.col("packed"))
 	encDf.save("encoded.tsv")
 	encodedTsv := encWf.run().getFile("encoded.tsv")

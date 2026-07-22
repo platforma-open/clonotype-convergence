@@ -79,9 +79,16 @@ const skippedNoCdr3 = computed<string[]>(() => {
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
 // empty CDR3s). Chain-attributed so the user knows which chain is
-// the problem in dual-chain mode.
+// the problem in dual-chain mode. This warns about missing CDR3 DATA (a
+// real input problem), NOT about empty Pgen — an empty Pgen with good CDR3
+// just yields an empty full-STAR table, no special warning.
 const heavyAllEmpty = computed(() => app.model.outputs.heavySkippedSamples?.allEmpty === true);
 const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allEmpty === true);
+
+// fast-STAR fallback: the last run used the threshold-based call for a
+// processed chain (no Pgen) instead of FDR-controlled full-STAR (A-0010).
+// From activeArgs (what actually ran), so it matches the shown results.
+const inFallback = computed(() => app.model.outputs.ranFallback === true);
 
 // Auto-close the Settings modal when a Run commits. `runArgsId` (model output
 // over activeArgs) changes only when a Run actually commits new args, so this
@@ -152,6 +159,13 @@ const customBlockLabel = computed({
       </PlBtnGhost>
     </template>
 
+    <PlAlert v-if="inFallback" type="warn" icon>
+      <template #title>Pgen not available — showing fast-STAR</template>
+      Generation Probability wasn't found for this input, so convergence is called by the
+      threshold-based fast-STAR method (<b>not</b> FDR-controlled). Run the Generation Probability
+      block on this dataset to enable full-STAR.
+    </PlAlert>
+
     <PlAlert v-if="skippedBelowMin.length > 0" type="warn" icon>
       <template #title>
         {{ skippedBelowMin.length }} sample{{ skippedBelowMin.length === 1 ? "" : "s" }} below
@@ -209,7 +223,7 @@ const customBlockLabel = computed({
       <div>
         <div>Hit statistics</div>
         <div :class="$style.statsSubtitle">
-          Aggregated across all samples for the configured threshold(s).
+          Aggregated across all samples for the current settings.
         </div>
       </div>
     </template>

@@ -4,7 +4,6 @@ import {
   PlAccordionSection,
   PlAlert,
   PlCheckbox,
-  PlDropdown,
   PlDropdownRef,
   PlNumberField,
   PlTooltip,
@@ -15,7 +14,7 @@ import {
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
-import { computed, watch } from "vue";
+import { computed } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
@@ -66,11 +65,6 @@ function onPickDataset(ref: PlRef | undefined) {
   app.model.data.datasetFacts = factsFor(ref);
   app.model.data.datasetLabel = labelFor(ref);
   app.model.data.processLightChain = false;
-  // NOTE: exportSampleId is NOT cleared here — a different dataset from the
-  // same clonotyping run can share the exact sample list, and we want to
-  // keep the pick in that case. Validity is reconciled reactively below
-  // (watch on exportSampleOptions), which only drops the pick when the new
-  // list genuinely lacks it.
 }
 
 // Which chain(s) are detected on the dataset pick. The dataset itself
@@ -106,30 +100,25 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Reconcile the exported-sample pick against the current dataset's sample
-// list. Drop it ONLY when the loaded list genuinely lacks it (e.g. the new
-// dataset has different samples); keep it when the new dataset shares the
-// same samples (heavy vs light from one clonotyping run). The readiness
-// guard is essential: while the list is undefined/empty (startup, or the
-// gap right after a dataset change before options recompute) we do nothing,
-// so a valid pick is never wiped during the not-ready window.
-//
-// This is NOT a hairpin: exportSampleOptions depends on the dataset
-// (datasetRef), not on exportSampleId, so this write cannot feed back into the
-// watched output; and the write is deterministic, so it's idempotent across
-// clients.
-watch(
-  () => app.model.outputs.exportSampleOptions,
-  (options) => {
-    if (!options || options.length === 0) return; // not ready — leave the pick alone
-    const current = app.model.data.exportSampleId;
-    if (current === undefined) return;
-    if (!options.some((o) => o.value === current)) {
-      app.model.data.exportSampleId = undefined;
-    }
-  },
-  { immediate: true },
+// Method per chain comes from the dataset-facts snapshot (data.datasetFacts),
+// captured at pick time — same source the args lambda gates on. A chain runs
+// in the fast-STAR fallback when its Pgen is absent (`hasPgen* === false`); the
+// per-chain fast-STAR threshold is shown (and required) only then. `undefined`
+// facts (no pick yet) show nothing.
+const heavyFast = computed(
+  () => heavyActive.value && app.model.data.datasetFacts?.hasPgenHeavy === false,
 );
+const lightFast = computed(
+  () => lightActive.value && app.model.data.datasetFacts?.hasPgenLight === false,
+);
+// SC light opt-in is disabled only when enabling it would MIX methods — heavy
+// and light differ in Pgen availability (A-0003/A-0010). When both chains agree
+// (both full, or both fast) the light chain is selectable; in the both-fast
+// case the light threshold below becomes required.
+const lightCheckboxDisabled = computed(() => {
+  const f = app.model.data.datasetFacts;
+  return f !== undefined && f.hasPgenHeavy !== f.hasPgenLight;
+});
 </script>
 
 <template>
@@ -147,22 +136,33 @@ watch(
     </template>
   </PlDropdownRef>
 
-  <!-- Heavy-chain threshold. Visible iff a heavy chain is present on
-       the dataset (bulk-heavy or SC IG). -->
+  <!-- fast-STAR fallback notice. Shown when a processed chain has no Pgen
+       available, so the block uses the threshold-based call instead of the
+       FDR-controlled full-STAR (A-0010). -->
+  <PlAlert v-if="heavyFast || lightFast" type="warn" icon>
+    <template #title>Pgen not available — fast-STAR fallback</template>
+    Generation Probability wasn't found for this input, so the block falls back to the
+    threshold-based fast-STAR call — <b>not</b> FDR-controlled. Run the Generation Probability block
+    on this dataset (an OLGA-supported species) and re-pick it here to enable full-STAR. The
+    per-chain thresholds below are the fast-STAR parameters.
+  </PlAlert>
+
+  <!-- Heavy-chain fast-STAR threshold. Only shown in fallback (no Pgen) —
+       full-STAR uses the FDR target (alpha) in Advanced instead. -->
   <PlNumberField
-    v-if="heavyActive"
+    v-if="heavyFast"
     v-model="app.model.data.thresholdH"
-    label="Heavy-chain threshold"
+    label="Heavy-chain threshold (fast-STAR)"
     :min="0"
     :max="1"
     :step="0.0001"
     required
   >
     <template #tooltip>
-      Frequency cutoff for the convergence call. Clonotypes with a neighbour-frequency above this
-      value are flagged as convergent. Default 0.000961 corresponds to ≈5% false-discovery rate on
-      human IgH (Abbate et al. 2024). Recalibrate visually on the histogram for non-human or non-IgH
-      data.
+      fast-STAR frequency cutoff (used only when Pgen is unavailable). Clonotypes with a
+      neighbour-frequency above this value are flagged as convergent. Default 0.000961 corresponds
+      to ≈5% false-discovery rate on human IgH (Abbate et al. 2024). Recalibrate visually on the
+      histogram for non-human or non-IgH data.
     </template>
   </PlNumberField>
 
@@ -172,6 +172,7 @@ watch(
   <PlCheckbox
     v-if="showLightCheckbox"
     :model-value="lightChecked"
+    :disabled="lightCheckboxDisabled"
     @update:model-value="onToggleLightCheckbox"
   >
     Process light chain
@@ -180,17 +181,22 @@ watch(
         The selected single-cell input contains both heavy and light chains. Check to also analyze
         the light chain — emits a parallel light-chain hit column and histogram. Unchecked = heavy
         only.
+        <template v-if="lightCheckboxDisabled">
+          <br /><br />Disabled: the heavy and light chains differ in Pgen availability, so one would
+          run full-STAR and the other fast-STAR. Mixing the two methods in a single run isn't
+          supported — run Generation Probability for both chains (or neither) to process the light
+          chain.
+        </template>
       </template>
     </PlTooltip>
   </PlCheckbox>
 
-  <!-- Light-chain threshold. Visible iff LC processing is active:
-       bulk-light dataset, or SC + LC checkbox ticked. No default
-       value. -->
+  <!-- Light-chain fast-STAR threshold. Only shown when the light chain is
+       processed AND in fallback (no Pgen). No default — required in fallback. -->
   <PlNumberField
-    v-if="lightActive"
+    v-if="lightFast"
     v-model="app.model.data.thresholdL"
-    label="Light-chain threshold"
+    label="Light-chain threshold (fast-STAR)"
     :min="0"
     :max="1"
     :step="0.0001"
@@ -198,31 +204,31 @@ watch(
     required
   >
     <template #tooltip>
-      Frequency cutoff for the light-chain convergence call. No default — light-chain diversity is
-      lower (no D segment, shorter CDR3) and has no published FDR calibration, so the
-      heavy-calibrated value (0.000961) typically over-flags. Set explicitly and recalibrate
+      fast-STAR frequency cutoff for the light chain (used only when Pgen is unavailable).
+      Light-chain diversity is lower (no D segment, shorter CDR3) and has no published FDR
+      calibration, so the heavy-calibrated value (0.000961) typically over-flags. Recalibrate
       visually on the light-chain histogram.
     </template>
   </PlNumberField>
 
-  <!-- Single-sample export. Picks which sample's convergence columns
-       get exported (collapsed to a clonotype-only axis) for Antibody
-       Lead Selection. No default — unset exports nothing. Options come
-       from the upstream dataset's samples, so the picker is usable
-       before the first run. -->
-  <PlAlert v-if="app.model.data.datasetRef" type="info">
-    Convergence is exported for one sample at a time, on a per-clonotype basis. Pick a sample to
-    make its convergence available to downstream blocks.
-  </PlAlert>
-  <PlDropdown
-    v-if="app.model.data.datasetRef"
-    v-model="app.model.data.exportSampleId"
-    :options="app.model.outputs.exportSampleOptions ?? []"
-    label="Sample to export"
-    clearable
-  />
-
   <PlAccordionSection label="Advanced settings">
+    <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced
+         so full-STAR runs on the default without prompting for a statistical
+         parameter (A-0015). Ignored in the fast-STAR fallback. -->
+    <PlNumberField
+      v-model="app.model.data.alpha"
+      label="FDR target (alpha)"
+      :min="0"
+      :max="1"
+      :step="0.001"
+    >
+      <template #tooltip>
+        full-STAR false-discovery-rate target for the Benjamini–Hochberg call across each sample's
+        clonotypes. Lower = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies
+        only when Pgen is available (full-STAR); ignored in the fast-STAR fallback.
+      </template>
+    </PlNumberField>
+
     <!-- Cluster filter. Off by default. When on, an additional
          fastStarClusterFiltered column marks hits that ALSO lie in a
          Hamming/Levenshtein-1 cluster of size >= clusterMin

@@ -8,33 +8,33 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// Restrict GraphMaker's value picker to nbFreq only.
-const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
+// Restrict GraphMaker's value picker to starScore only.
+const starScoreOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/starScore";
 
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
   const pcols = app.model.outputs.lightHistogramPfPcols;
   if (!pcols) return undefined;
-  const nbFreq = pcols.find(
-    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/nbFreq",
+  const starScore = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/starScore",
   );
-  if (!nbFreq) return undefined;
-  const fastStar = pcols.find(
-    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/fastStar",
+  if (!starScore) return undefined;
+  const starHit = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/starHit",
   );
   const defaults: PredefinedGraphOption<"histogram">[] = [
     {
       inputName: "value",
-      selectedSource: nbFreq.spec,
+      selectedSource: starScore.spec,
     },
     {
       inputName: "tabBy",
-      selectedSource: nbFreq.spec.axesSpec[0],
+      selectedSource: starScore.spec.axesSpec[0],
     },
   ];
-  if (fastStar) {
+  if (starHit) {
     defaults.push({
       inputName: "grouping",
-      selectedSource: fastStar.spec,
+      selectedSource: starHit.spec,
     });
   }
   return defaults;
@@ -48,7 +48,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       chartType="histogram"
       :p-frame="app.model.outputs.lightHistogramPf"
       :default-options="defaultOptions"
-      :data-column-predicate="nbFreqOnly"
+      :data-column-predicate="starScoreOnly"
     />
   </PlBlockPage>
 </template>

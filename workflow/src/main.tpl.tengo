@@ -7,25 +7,30 @@
 // At least one must be populated (gated by the args lambda).
 //
 // Per-chain pipeline — fully per-sample. One `pframes.processColumn` fan-out
-// per chain runs all three stages inside the per-sample body
+// per chain runs all stages inside the per-sample body
 // (:per-sample-neighbours), so each sample is content-addressed and a
 // subset project recovers shared samples from cache:
 //   Stage 1 — expensive STAR neighbour-density run; cache survives
-//             threshold tweaks (cacheHours, CID excludes threshold).
-//   Stage 2 — strict threshold (pure pt), emits fastStar.
+//             hit-call tweaks (cacheHours, CID excludes threshold/alpha/Pgen).
+//   Stage 2 — hit calling. full-STAR (FDR-controlled Poisson test vs the Pgen
+//             null, Benjamini-Hochberg at alpha) is PRIMARY when a Pgen column
+//             resolved for the chain; fast-STAR (threshold) is the FALLBACK
+//             when Pgen is absent (A-0010). Both emit unified starHit +
+//             starScore; the `method` domain records which ran (A-0012).
 //   Stage 3 — paper's binder cluster filter, only when
-//             args.applyClusterFilter; emits fastStarClusterFiltered
-//             + clusterSize; fastStar is NOT modified.
+//             args.applyClusterFilter; method-agnostic (refines whichever
+//             starHit set exists); emits starHitClusterFiltered + clusterSize;
+//             starHit is NOT modified.
 // The per-sample outputs (convergence columns + per-sample log + per-sample
 // status) are reassembled here, keyed by the sampleId.
 //
 // Output channels:
 //   outputs.* — the multi-sample (sampleId, clonotypeKey) p-frames that
 //               feed this block's own table + histograms; never pooled.
-//   exports.* — when args.exportSampleId is set, the chosen sample's
-//               columns collapsed to a clonotype-only axis,
-//               consumed by antibody lead selection. Empty until a
-//               sample is picked.
+//   exports.* — the clonotype-only aggregated convergence family for the
+//               in-vivo score / lead selection (A-0006). NOT YET EMITTED —
+//               the aggregation function is an open question (Q-0002); v1's
+//               single-sample export is removed.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
@@ -33,14 +38,11 @@ render := import("@platforma-sdk/workflow-tengo:render")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
-maps := import("@platforma-sdk/workflow-tengo:maps")
-pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 pt := import("@platforma-sdk/workflow-tengo:pt")
 json := import("json")
 times := import("times")
 
 packInputTpl := assets.importTemplate(":pack-input")
-exportSampleTpl := assets.importTemplate(":export-sample")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 
 wf.prepare(func(args) {
@@ -94,6 +96,16 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "heavy", idx: 1 }],
 			name: "pl7.app/label"
 		}, "heavyCloneLabel")
+		// Raw Pgen — resolved BY REF from args (gen-prob's Pgen column, which the
+		// model matched by name + this dataset's clonotype axis). The ref's
+		// presence in args is what makes convergence DEPEND on gen-prob, so its
+		// Pgen export is in THIS workflow's context pool. An anchored query can't
+		// reach it: gen-prob is a sibling under MiXCR, not an upstream, so it's
+		// absent from the workflow pool and the query would silently find nothing
+		// (→ full-STAR degrades to 0 hits). By-ref resolution lands the data.
+		if !is_undefined(args.pgenRefHeavy) {
+			bb.addSingle(args.pgenRefHeavy, "heavyPgen")
+		}
 	}
 
 	if !is_undefined(args.chainL) {
@@ -119,6 +131,9 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "light", idx: 1 }],
 			name: "pl7.app/label"
 		}, "lightCloneLabel")
+		if !is_undefined(args.pgenRefLight) {
+			bb.addSingle(args.pgenRefLight, "lightPgen")
+		}
 	}
 
 	return { columns: bb.build() }
@@ -141,39 +156,19 @@ wf.body(func(args) {
 	}
 	dualChain := !is_undefined(args.chainH) && !is_undefined(args.chainL)
 
-	// resolveSampleName — best-effort sampleId → human label lookup for the
-	// single-sample export. Reads the bundled pl7.app/label sample
-	// column (PColumnData/Json: key ["<sampleId>"] → label) into a map and
-	// returns the matching label; falls back to the raw sampleId when the
-	// column is absent, not JSON, or has no matching entry. The human name
-	// is never stored in args/data, so it cannot desync from exportSampleId.
-	resolveSampleName := func(labelCols, sampleId) {
-		if len(labelCols) == 0 { return sampleId }
-		res := labelCols[0].data
-		if is_undefined(res) || !res.checkResourceType(pConstants.RTYPE_P_COLUMN_DATA_JSON) {
-			return sampleId
-		}
-		decoded := res.getDataAsJson()
-		m := decoded
-		if !is_undefined(decoded.data) { m = decoded.data }
-		if !is_map(m) { return sampleId }
-		for encodedKey, v in m {
-			keyArr := json.decode(encodedKey)
-			if is_array(keyArr) && len(keyArr) >= 1 && string(keyArr[0]) == sampleId {
-				return string(v)
-			}
-		}
-		return sampleId
-	}
+	// full-STAR FDR target. Defaulted here so the workflow runs on the STAR
+	// default even before the model projects `alpha` into args.
+	alpha := is_undefined(args.alpha) ? 0.005 : args.alpha
 
 	// runChainPipeline — closure for one chain. Packs the chain's aa+nt CDR3
-	// into a single String column per (sampleId, clonotypeKey) — abundance
-	// supplies the sampleId axis, its value isn't packed — then fans out per
-	// sample via processColumn: Stage 1 (neighbours) → Stage 2 (threshold) →
-	// optional Stage 3 (cluster filter) inside each per-sample body. Reassembles
-	// the per-sample outputs into a pframe of convergence PColumns chain-tagged
-	// with `chainName` (sample/clone labels attached here). Returns the pframe.
-	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, chainName, threshold) {
+	// (and, when a Pgen sibling resolved, the per-clonotype Pgen) into a single
+	// String column per (sampleId, clonotypeKey), then fans out per sample via
+	// processColumn: Stage 1 (neighbours) → Stage 2 (full-STAR when Pgen is
+	// present, else fast-STAR fallback) → optional Stage 3 (cluster filter)
+	// inside each per-sample body. Reassembles the per-sample outputs into a
+	// pframe of convergence PColumns chain-tagged with `chainName` and
+	// method-tagged. Returns the pframe.
+	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, pgenKey, hasPgen, chainName, threshold) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
 		// untouched in single-chain mode. Uniform shape across all
@@ -185,6 +180,11 @@ wf.body(func(args) {
 		}
 		anchorSpec := columns.getSpec(anchorRef)
 		labelCols := columns.getColumns(labelKey)
+
+		// full-STAR vs fast-STAR is decided by the dataset-facts snapshot
+		// (hasPgen, threaded from args via the caller), not by live pool state —
+		// so UI, args, and workflow agree on the method (A-0009/A-0010).
+		method := hasPgen ? "full-STAR" : "fast-STAR"
 
 		// ---- Per-sample dedup ----
 		// Pack the CDR3 sequences into ONE String value per (sampleId,
@@ -205,7 +205,7 @@ wf.body(func(args) {
 		// recover the (pinned) per-sample results. `packedData` is the pinned
 		// packed-column data; its spec is reconstructed here (static) because
 		// processColumn needs the spec as a concrete value at graph-build time.
-		packRender := render.create(packInputTpl, {
+		packInputs := {
 			aaData: columns.getColumn(aaKey).data,
 			aaSpec: columns.getColumn(aaKey).spec,
 			ntData: columns.getColumn(ntKey).data,
@@ -213,8 +213,21 @@ wf.body(func(args) {
 			abundanceData: columns.getColumn(anchorRef).data,
 			abundanceSpec: columns.getColumn(anchorRef).spec,
 			sampleAxisSpec: anchorSpec.axesSpec[0],
-			clonoAxisSpec: anchorSpec.axesSpec[1]
-		})
+			clonoAxisSpec: anchorSpec.axesSpec[1],
+			// Explicit flag drives the packed FORMAT (2- vs 3-field) in
+			// :pack-input, and the SAME flag drives the unpack pattern in the
+			// per-sample body (via processColumn extra) — so pack and unpack can
+			// never disagree on field count.
+			hasPgen: hasPgen
+		}
+		// full-STAR: pack the per-clonotype Pgen alongside the CDR3s so it rides
+		// the per-sample slice (it's clonotype-only, broadcasts onto sampleId).
+		if hasPgen {
+			pgenCol := columns.getColumn(pgenKey)
+			packInputs.pgenData = pgenCol.data
+			packInputs.pgenSpec = pgenCol.spec
+		}
+		packRender := render.create(packInputTpl, packInputs)
 		packedData := packRender.output("packed", 24 * times.hour)
 		packedColumn := {
 			spec: {
@@ -227,60 +240,73 @@ wf.body(func(args) {
 			data: packedData
 		}
 
-		// Convergence output column specs (descriptions, scores,
-		// formats, table visibility). Used for the per-sample processColumn output
-		// and the single-sample export below. Stage-3 cluster columns
-		// only when the filter is enabled — must match exactly what the body's TSV
-		// carries (xsv.importFile errors on declared-but-missing).
+		// Convergence output column specs (A-0012). One stable name across
+		// methods; full-STAR vs fast-STAR distinguished by the `method` domain
+		// (like heavy/light via `chain`). starScore's value semantics + non-
+		// identity annotations differ by method: full-STAR = -log10(p) (no fixed
+		// threshold); fast-STAR = nbFreq frequency (keeps .3~% + threshold line).
+		// Stage-3 cluster columns only when the filter is enabled — must match
+		// exactly what the body's TSV carries (xsv.importFile errors on
+		// declared-but-missing).
+		convDomain := {
+			"pl7.app/block": blockId,
+			"pl7.app/vdj/chain": chainName,
+			"pl7.app/vdj/convergence/method": method
+		}
+		starScoreAnn := {
+			"pl7.app/label": withChain("Convergence score"),
+			"pl7.app/table/visibility": "default",
+			"pl7.app/isScore": "true",
+			"pl7.app/score/rankingOrder": "decreasing"
+		}
+		if hasPgen {
+			starScoreAnn["pl7.app/description"] = "full-STAR convergence score: -log10 of the Benjamini-Hochberg-tested Poisson-tail p-value against the clone's generation-probability null. Higher = more convergent (less probable under recombination alone). Per sample."
+		} else {
+			starScoreAnn["pl7.app/description"] = "fast-STAR convergence score: convergent neighbour frequency (same-length aa CDR3s differing by one aa, over unique nucleotide CDR3s). Higher = denser one-mutation neighbourhood. Per sample; the fast-STAR threshold is applied to this value."
+			starScoreAnn["pl7.app/format"] = ".3~%"
+			starScoreAnn["pl7.app/graph/thresholds"] = string(json.encode([{ value: threshold, label: "Threshold" }]))
+		}
 		columnSpecs := [
 			{ column: "neighbours", spec: {
 				name: "pl7.app/vdj/convergence/neighbours",
 				valueType: "Int",
-				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+				domain: convDomain,
 				annotations: {
 					"pl7.app/label": withChain("Convergent neighbours"),
 					"pl7.app/table/visibility": "default",
-					"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted). The numerator of Convergent neighbour frequency."
+					"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted)."
 				}
 			}},
-			{ column: "Nb_freq", spec: {
-				name: "pl7.app/vdj/convergence/nbFreq",
-				valueType: "Double",
-				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
-				annotations: {
-					"pl7.app/label": withChain("Convergent neighbour frequency"),
-					"pl7.app/description": "Count of same-length amino-acid CDR3s in the sample that differ from this clone's CDR3 by exactly one amino acid, divided by the total number of unique nucleotide CDR3s in the sample. Per sample. The Convergent hit threshold is applied to this value. Higher values indicate denser one-mutation neighbourhoods — the signal fast-STAR uses to detect convergent selection.",
-					"pl7.app/table/visibility": "default",
-					"pl7.app/format": ".3~%",
-					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
-					"pl7.app/isScore": "true",
-					"pl7.app/score/rankingOrder": "decreasing"
-				}
-			}},
-			{ column: "fastStar", spec: {
-				name: "pl7.app/vdj/convergence/fastStar",
+			{ column: "starHit", spec: {
+				name: "pl7.app/vdj/convergence/starHit",
 				valueType: "String",
-				domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+				domain: convDomain,
 				annotations: {
-					"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
-					"pl7.app/description": "Hit when this clone's convergent neighbour frequency exceeds the configured threshold for this chain — meaning the clone has unusually many same-length CDR3s that differ by exactly one amino acid, suggesting convergent evolution under antigen-driven selection. Not hit otherwise. Computed independently per sample.",
+					"pl7.app/label": withChain("Convergent hit"),
+					"pl7.app/description": "Whether this clone is called convergent. full-STAR: an FDR-controlled Poisson test of the neighbour count against the generation-probability null (Benjamini-Hochberg at the FDR target alpha). fast-STAR (fallback): convergent neighbour frequency above the configured threshold. Per sample.",
 					"pl7.app/table/visibility": "default",
 					"pl7.app/isDiscreteFilter": "true",
 					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
 					"pl7.app/isScore": "true",
 					"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
 				}
+			}},
+			{ column: "starScore", spec: {
+				name: "pl7.app/vdj/convergence/starScore",
+				valueType: "Double",
+				domain: convDomain,
+				annotations: starScoreAnn
 			}}
 		]
 		if args.applyClusterFilter {
 			columnSpecs = append(columnSpecs,
-				{ column: "fastStarClusterFiltered", spec: {
-					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
+				{ column: "starHitClusterFiltered", spec: {
+					name: "pl7.app/vdj/convergence/starHitClusterFiltered",
 					valueType: "String",
-					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "The paper's stricter binder signal. Hit when the clone is already a convergent hit AND its CDR3 belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses sequencing-error noise. Strictly a subset of Convergent hit (fast-STAR).",
+						"pl7.app/description": "Stricter binder signal: a convergent hit whose CDR3 also belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses noise; a strict subset of Convergent hit. Per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
@@ -289,10 +315,10 @@ wf.body(func(args) {
 				{ column: "clusterSize", spec: {
 					name: "pl7.app/vdj/convergence/clusterSize",
 					valueType: "Int",
-					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName },
+					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Used by the cluster filter — clones in clusters smaller than the configured minimum are not flagged as cluster-filtered hits. Per sample.",
+						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
 				}}
@@ -354,6 +380,8 @@ wf.body(func(args) {
 					clonoAxisSpec: anchorSpec.axesSpec[1],
 					nMin: args.nMin,
 					threshold: threshold,
+					alpha: alpha,
+					hasPgen: hasPgen,
 					applyClusterFilter: args.applyClusterFilter,
 					clusterMin: args.clusterMin,
 					chain: chainName
@@ -363,13 +391,13 @@ wf.body(func(args) {
 		// ---- end per-sample fan-out setup; pf is built from perSampleResult below ----
 
 		// Combined per-sample convergence TSV (keyed by the sampleId),
-		// reused for the hit-count badge and the single-sample export.
+		// reused for the hit-count badge.
 		//
 		// xsv.exportFrame writes each column's pl7.app/label as the TSV header, so
 		// build a header-stable pframe (field-name labels on the value columns and
 		// "sampleId"/"clonotypeKey" on the axes) — otherwise the rich table labels
-		// would become the headers and the stats pt / export filter couldn't find
-		// "fastStar" / "sampleId".
+		// would become the headers and the stats pt couldn't find
+		// "starHit" / "sampleId".
 		exportSrcBuilder := pframes.pFrameBuilder()
 		for columnName in perSampleResult.listXsvColumns("neighbours") {
 			origSpec := perSampleResult.outputSpec("neighbours", columnName)
@@ -388,19 +416,19 @@ wf.body(func(args) {
 		perSampleTsv := xsv.exportFrame(exportSrcBuilder.build(), "tsv", {})
 
 		// Hit-count stats badge: {above, total, beforeCluster?}, counted over
-		// the reassembled per-sample fastStar. In cluster mode `above` is the
-		// cluster-filtered hit count and `beforeCluster` the pre-cluster fastStar
-		// hit count; otherwise `above` is the fastStar hit count.
-		hitCol := args.applyClusterFilter ? "fastStarClusterFiltered" : "fastStar"
+		// the reassembled per-sample starHit (full- or fast-STAR). In cluster
+		// mode `above` is the cluster-filtered hit count and `beforeCluster` the
+		// pre-cluster starHit count; otherwise `above` is the starHit count.
+		hitCol := args.applyClusterFilter ? "starHitClusterFiltered" : "starHit"
 		statsWf := pt.workflow().mem("2GiB").cpu(1)
 		statsDf := statsWf.frame(perSampleTsv, { xsvType: "tsv", inferSchema: false })
 		statsAggs := [
-			pt.col("fastStar").count().alias("total"),
+			pt.col("starHit").count().alias("total"),
 			pt.when(pt.col(hitCol).eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
 		]
 		if args.applyClusterFilter {
 			statsAggs = append(statsAggs,
-				pt.when(pt.col("fastStar").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("beforeCluster"))
+				pt.when(pt.col("starHit").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("beforeCluster"))
 		}
 		statsDf.select(statsAggs...).saveContent("stats.ndjson")
 		finalStatsJson := statsWf.run().getFileContent("stats.ndjson")
@@ -410,7 +438,7 @@ wf.body(func(args) {
 		// apart columns from multiple convergence blocks reading the same
 		// dataset. customBlockLabel (user override) wins; else the
 		// parameter-encoding defaultBlockLabel; static name as last resort.
-		traceLabel := args.customBlockLabel || args.defaultBlockLabel || "Clonotype convergence (fast-STAR)"
+		traceLabel := args.customBlockLabel || args.defaultBlockLabel || ("Clonotype convergence (" + method + ")")
 		trace := pSpec.makeTrace(anchorSpec, {
 			type: "milaboratories.clonotype-convergence",
 			id: blockId,
@@ -441,84 +469,15 @@ wf.body(func(args) {
 			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
 		}
 
-		// Single-sample export. When the user picked a sample,
-		// collapse this chain's final TSV to that one sample on a
-		// clonotype-only axis (sampleId dropped) and export it for antibody
-		// lead selection, which ranks/filters only on per-clonotype columns
-		// with no sample axis. The multi-sample pf above stays internal
-		// (outputs); only this collapsed family reaches the result pool.
-		exportPf := undefined
-		// Defence-in-depth: the model only projects a non-empty exportSampleId
-		// but guard against an empty string here too — an empty filter
-		// would re-read the whole TSV and re-import an empty, block-specific
-		// frame on every run.
-		if !is_undefined(args.exportSampleId) && args.exportSampleId != "" {
-			// Human sample name for the export column labels + trace.
-			sampleName := resolveSampleName(labelCols, args.exportSampleId)
-
-			// Filter the combined per-sample TSV to the chosen
-			// sample via the :export-sample template. The per-sample fan-out
-			// already dedups across projects; this small filter is block-specific.
-			// The block-specific import below reads only this filtered TSV;
-			// xsv.importFile takes only the declared columns, so the now-constant
-			// sampleId column is dropped by importing on the clonotype axis alone.
-			exportStage := render.create(exportSampleTpl, {
-				inputTsv: perSampleTsv,
-				sampleId: args.exportSampleId
-			})
-			exportTsv := exportStage.output("outputTsv")
-
-			// Export column specs = the internal value-column specs with the
-			// sample appended to each label. Provenance lives in label + trace,
-			// never the domain — same names + {block, chain} domain give
-			// a stable identity across sample changes, so a downstream block
-			// stays wired to one column whose data tracks the chosen sample.
-			exportColumnSpecs := []
-			for cs in columnSpecs {
-				ann := {}
-				for ak in maps.getKeys(cs.spec.annotations) {
-					ann[ak] = cs.spec.annotations[ak]
-				}
-				ann["pl7.app/label"] = cs.spec.annotations["pl7.app/label"] + " — " + sampleName
-				exportColumnSpecs = append(exportColumnSpecs, {
-					column: cs.column,
-					spec: {
-						name: cs.spec.name,
-						valueType: cs.spec.valueType,
-						domain: cs.spec.domain,
-						annotations: ann
-					}
-				})
-			}
-
-			exportImported := xsv.importFile(exportTsv, "tsv", {
-				axes: [{ column: "clonotypeKey", spec: anchorSpec.axesSpec[1] }],
-				columns: exportColumnSpecs,
-				storageFormat: "Parquet",
-				partitionKeyLength: 0
-			}, {
-				splitDataAndSpec: true,
-				mem: "4GiB",
-				cpu: 2
-			})
-
-			exportTrace := pSpec.makeTrace(anchorSpec, {
-				type: "milaboratories.clonotype-convergence",
-				id: blockId,
-				importance: 50,
-				label: traceLabel + " — " + sampleName
-			})
-			exportPfBuilder := pframes.pFrameBuilder()
-			for k in maps.getKeys(exportImported) {
-				v := exportImported[k]
-				exportPfBuilder.add(k, exportTrace.inject(v.spec), v.data)
-			}
-			exportPf = exportPfBuilder.build()
-		}
+		// NOTE (Q-0002, blocked): v1's single-sample export is removed. v2
+		// exports the convergence signal aggregated to the clonotype-only axis
+		// (A-0006), but the aggregation function is still an open question, so
+		// nothing is exported to the result pool yet — the per-sample `pf` below
+		// stays internal (drives this block's own table + histograms). The
+		// aggregated `exports.*` family is added once Q-0002 resolves.
 
 		return {
 			pf: pfBuilder.build(),
-			exportPf: exportPf,
 			statsJson: finalStatsJson,
 			// Per-sample fan-out sidecars, keyed by the sampleId. The model
 			// attaches sample labels (logs) and builds the skipped-samples
@@ -539,23 +498,20 @@ wf.body(func(args) {
 			"heavyNtCDR3",
 			"heavySampleLabel",
 			"heavyCloneLabel",
+			"heavyPgen",
+			args.hasPgenHeavy == true,
 			args.chainHName,
 			args.thresholdH
 		)
 		// Multi-sample family stays INTERNAL: it drives this block's own
 		// table + histograms only. It is not pooled downstream — consumers
 		// enrich by clonotype key, never by sampleId axis, so the per-sample
-		// columns have no downstream use.
+		// columns have no downstream use. (The clonotype-only aggregated export
+		// is deferred to Q-0002.)
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
-		// Single-sample collapsed family for lead selection, only when
-		// a sample is picked. Same column names, clonotype-only axis — the only
-		// convergence data the block exports downstream.
-		if !is_undefined(heavy.exportPf) {
-			exports.convergenceSingleSample = heavy.exportPf
-		}
 	}
 
 	// Light pipeline — runs when chainL is populated.
@@ -566,6 +522,8 @@ wf.body(func(args) {
 			"lightNtCDR3",
 			"lightSampleLabel",
 			"lightCloneLabel",
+			"lightPgen",
+			args.hasPgenLight == true,
 			args.chainLName,
 			args.thresholdL
 		)
@@ -574,9 +532,6 @@ wf.body(func(args) {
 		outputs.lightHitStats = light.statsJson
 		outputs.lightPerSampleLogs = light.perSampleLogs
 		outputs.lightPerSampleStatus = light.perSampleStatus
-		if !is_undefined(light.exportPf) {
-			exports.lightConvergenceSingleSample = light.exportPf
-		}
 	}
 
 	return {

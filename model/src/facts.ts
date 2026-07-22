@@ -1,5 +1,6 @@
 import type { PlRef, RenderCtxBase } from "@platforma-sdk/model";
-import { SC_AXIS, SC_CHAIN_FROM_LETTER } from "./chains";
+import canonicalize from "canonicalize";
+import { isHeavy, isLight, PGEN_NAME, SC_AXIS, SC_CHAIN_FROM_LETTER } from "./chains";
 import type { UpstreamFacts } from "./types";
 
 /**
@@ -74,11 +75,57 @@ export function discoverUpstreamFacts<A, U>(
     if (spec.annotations?.["pl7.app/isAbundance"] === "true") hasAbundance = true;
   }
 
+  // Pgen refs — resolve gen-prob's per-clonotype Pgen column(s) for THIS
+  // dataset and attribute each to a chain. Uses getOptions (which returns
+  // PlRefs — the dependency handle the args lambda needs to make convergence
+  // depend on gen-prob) rather than getAnchoredPColumns (specs, no ref).
+  // Matched by name + the dataset's OWN clonotype axis, so a Pgen from a
+  // different clonotyping run in the same project can't be grabbed. hasPgen*
+  // is derived purely from ref presence (single source of truth) so args and
+  // the workflow can never disagree — a stale "has Pgen but no ref" would make
+  // full-STAR silently produce 0 hits.
+  let pgenRefHeavy: PlRef | undefined;
+  let pgenRefLight: PlRef | undefined;
+  const cloneAxis = refSpec.axesSpec[1];
+  if (cloneAxis) {
+    const axisKey = (a: { name: string; type: string; domain?: Record<string, string> }) =>
+      canonicalize({ name: a.name, type: a.type, domain: a.domain ?? {} } as unknown as Record<
+        string,
+        unknown
+      >);
+    const cloneAxisKey = axisKey(cloneAxis);
+    // Bulk is single-chain — the (chain-less) Pgen is attributed to whichever
+    // chain the dataset carries.
+    const bulkChain = isSC ? undefined : Array.from(chains).find((c) => isHeavy(c) || isLight(c));
+    for (const opt of ctx.resultPool.getOptions({ name: PGEN_NAME })) {
+      const s = ctx.resultPool.getPColumnSpecByRef(opt.ref);
+      const a = s?.axesSpec[0];
+      if (!s || !a) continue;
+      // Same clonotype axis as the dataset ⇒ same clonotyping run.
+      if (axisKey(a) !== cloneAxisKey) continue;
+      if (isSC) {
+        const idx = s.domain?.["pl7.app/vdj/scClonotypeChain/index"];
+        if (idx !== undefined && idx !== "primary") continue;
+        const letter = s.domain?.["pl7.app/vdj/scClonotypeChain"];
+        if (letter === "A") pgenRefHeavy = opt.ref;
+        else if (letter === "B") pgenRefLight = opt.ref;
+      } else if (isHeavy(bulkChain)) {
+        pgenRefHeavy = opt.ref;
+      } else if (isLight(bulkChain)) {
+        pgenRefLight = opt.ref;
+      }
+    }
+  }
+
   return {
     chains: Array.from(chains).sort(),
     hasAaCDR3,
     hasNtCDR3,
     hasAbundance,
     clonotypeKeyAxisName,
+    hasPgenHeavy: pgenRefHeavy !== undefined,
+    hasPgenLight: pgenRefLight !== undefined,
+    pgenRefHeavy,
+    pgenRefLight,
   };
 }

@@ -8,45 +8,45 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// Pre-fill GraphMaker with the heavy-chain nbFreq column as `value`
-// and the sampleId axis (axesSpec[0]) as `tabBy` so the user gets
-// a per-sample histogram tab out of the box. The threshold dashed
-// line is auto-rendered by GraphMaker from the
-// `pl7.app/graph/thresholds` annotation that workflow already emits
-// on this column.
+// Pre-fill GraphMaker with the heavy-chain starScore column as `value`
+// and the sampleId axis (axesSpec[0]) as `tabBy` so the user gets a
+// per-sample histogram tab out of the box. In fast-STAR fallback the
+// value is nbFreq and GraphMaker auto-renders the threshold dashed line
+// from the `pl7.app/graph/thresholds` annotation the workflow emits; in
+// full-STAR the value is -log10(p) and that annotation is absent, so no
+// threshold line appears (the cutoff is the per-sample FDR call).
 
-// Restrict GraphMaker's value picker to nbFreq only. The default
-// predicate would surface fastStar/neighbours/upstream cols which
-// aren't meaningful as the chart's continuous value.
-const nbFreqOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/nbFreq";
+// Restrict GraphMaker's value picker to starScore only. The default
+// predicate would surface starHit/neighbours/upstream cols which aren't
+// meaningful as the chart's continuous value.
+const starScoreOnly = (spec: { name: string }) => spec.name === "pl7.app/vdj/convergence/starScore";
 
 const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undefined => {
   const pcols = app.model.outputs.histogramPfPcols;
   if (!pcols) return undefined;
-  const nbFreq = pcols.find(
-    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/nbFreq",
+  const starScore = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/starScore",
   );
-  if (!nbFreq) return undefined;
-  // Group bars by fastStar (Hit / Not hit) when the column is
-  // available — makes the threshold line's role visually explicit
-  // (all bars to the right of it are coloured as Hit).
-  const fastStar = pcols.find(
-    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/fastStar",
+  if (!starScore) return undefined;
+  // Group bars by starHit (Hit / Not hit) when the column is available —
+  // makes the convergence call visually explicit.
+  const starHit = pcols.find(
+    (p: PColumnIdAndSpec) => p.spec.name === "pl7.app/vdj/convergence/starHit",
   );
   const defaults: PredefinedGraphOption<"histogram">[] = [
     {
       inputName: "value",
-      selectedSource: nbFreq.spec,
+      selectedSource: starScore.spec,
     },
     {
       inputName: "tabBy",
-      selectedSource: nbFreq.spec.axesSpec[0],
+      selectedSource: starScore.spec.axesSpec[0],
     },
   ];
-  if (fastStar) {
+  if (starHit) {
     defaults.push({
       inputName: "grouping",
-      selectedSource: fastStar.spec,
+      selectedSource: starHit.spec,
     });
   }
   return defaults;
@@ -63,7 +63,7 @@ const defaultOptions = computed((): PredefinedGraphOption<"histogram">[] | undef
       chartType="histogram"
       :p-frame="app.model.outputs.histogramPf"
       :default-options="defaultOptions"
-      :data-column-predicate="nbFreqOnly"
+      :data-column-predicate="starScoreOnly"
     />
   </PlBlockPage>
 </template>

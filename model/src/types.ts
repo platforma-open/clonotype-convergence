@@ -22,6 +22,23 @@ export type UpstreamFacts = {
   hasNtCDR3: boolean;
   hasAbundance: boolean;
   clonotypeKeyAxisName: string;
+  /** Whether a per-clonotype Pgen column (from the Generation Probability
+   *  block) is available for the heavy / light chain. Decides full-STAR
+   *  (present) vs the fast-STAR fallback (absent), and gates the per-chain
+   *  fast-STAR threshold. Captured at pick time (snapshot). Derived from the
+   *  presence of the matching Pgen ref below (single source of truth). */
+  hasPgenHeavy: boolean;
+  hasPgenLight: boolean;
+  /** PlRef to the Generation Probability block's per-clonotype Pgen column
+   *  for the heavy / light chain, matched by name + this dataset's clonotype
+   *  axis (so it can't grab a Pgen from another run). Carried into args so the
+   *  platform records convergence's DEPENDENCY on gen-prob — that edge is what
+   *  pulls gen-prob's Pgen export into the WORKFLOW's context pool (the model's
+   *  full-project pool sees it regardless; the workflow only sees upstreams).
+   *  Without it the workflow's anchored query finds no Pgen and full-STAR
+   *  silently degrades to 0 hits. Snapshotted at pick time. */
+  pgenRefHeavy?: PlRef;
+  pgenRefLight?: PlRef;
 };
 
 /** Args passed to the workflow — output shape of `.args(...)`.
@@ -58,8 +75,24 @@ export type BlockArgs = {
   /** SC scClonotypeChain letter for light ("B"). See chainHScLetter. */
   chainLScLetter?: string;
 
+  /** Whether the heavy / light chain runs full-STAR (Pgen available) — from
+   *  the dataset-facts snapshot. Drives the workflow's method per chain and
+   *  whether it consumes the Pgen sibling. Set only for a processed chain. */
+  hasPgenHeavy?: boolean;
+  hasPgenLight?: boolean;
+  /** PlRef to gen-prob's per-clonotype Pgen column for the heavy / light
+   *  chain. Projected ONLY for a full-STAR chain (hasPgen*). Its presence in
+   *  args establishes the cross-block dependency on gen-prob so the workflow
+   *  can resolve the Pgen data by ref (bb.addSingle). */
+  pgenRefHeavy?: PlRef;
+  pgenRefLight?: PlRef;
+
   /** Sample-size floor. Default 100. */
   nMin: number;
+
+  /** full-STAR FDR target (Benjamini–Hochberg alpha). Default 0.005. The
+   *  full-STAR knob; the workflow also defaults it if absent. */
+  alpha: number;
 
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
@@ -69,12 +102,6 @@ export type BlockArgs = {
   /** DBSCAN min_samples for the binder cluster filter. Projected
    *  only when applyClusterFilter is true. */
   clusterMin?: number;
-
-  /** Single-sample export. Raw pl7.app/sampleId axis value of
-   *  the sample whose convergence columns are collapsed to a
-   *  clonotype-only axis and exported for antibody lead selection. No
-   *  default — when unset (key absent), nothing is exported. */
-  exportSampleId?: string;
 
   // Labels projected into the workflow trace step so downstream blocks
   // can disambiguate columns from multiple convergence blocks.
@@ -118,17 +145,15 @@ export type BlockData = {
   thresholdL?: number;
   /** Sample-size floor. */
   nMin?: number;
+  /** full-STAR FDR target (Benjamini–Hochberg alpha). Advanced setting;
+   *  initialised to 0.005. */
+  alpha?: number;
 
   // Cluster filter. Toggle + cluster-min. Toggle is required
   // (initialised to false by dataModel.init); the v-model binding on
   // the Advanced-settings PlCheckbox requires a strict boolean.
   applyClusterFilter: boolean;
   clusterMin?: number;
-
-  /** Sample to export downstream. Raw sampleId value, picked from
-   *  the `exportSampleOptions` output. No default — unset means no
-   *  export. Projects into args (staling), so changing it requires Run. */
-  exportSampleId?: string;
 
   // UI-only state (never projects to args).
   settingsOpen?: boolean;
@@ -151,7 +176,10 @@ export type BlockData = {
 
 /** Legacy (v1) persisted facts shape — uses `axisName` where the current
  *  shape uses `clonotypeKeyAxisName`. Used only by the data-model migration. */
-export type UpstreamFactsV1 = Omit<UpstreamFacts, "clonotypeKeyAxisName"> & { axisName: string };
+export type UpstreamFactsV1 = Omit<
+  UpstreamFacts,
+  "clonotypeKeyAxisName" | "hasPgenHeavy" | "hasPgenLight" | "pgenRefHeavy" | "pgenRefLight"
+> & { axisName: string };
 
 /** Legacy (v1) persisted block data — carries separate main/light ref
  *  snapshots. Used only by the data-model migration. */
