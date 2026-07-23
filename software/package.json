@@ -57,6 +57,16 @@
             "{pkg}/full_star.py"
           ]
         }
+      },
+      "aggregate": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/aggregate.py"
+          ]
+        }
       }
     }
   }

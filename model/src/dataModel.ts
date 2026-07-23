@@ -34,6 +34,7 @@ export const blockDataModel = new DataModelBuilder()
     settingsOpen: true,
     logsOpen: false,
     mainTableState: createPlDataTableStateV2(),
+    aggregatedTableState: createPlDataTableStateV2(),
     // Empty string = user hasn't customised the label; the derived
     // chain/threshold subtitle shows as a placeholder in the page header.
     customBlockLabel: "",
@@ -52,6 +53,12 @@ export const blockDataModel = new DataModelBuilder()
     // when the toggle is on.
     applyClusterFilter: false,
     clusterMin: 10,
+    // Clonotype-only aggregation (A-0011). Defaults = the default path: no
+    // metadata refs, every sample an independent eligible unit, k = 1. The
+    // expected-values multiselect + the starScore weight are initialised so
+    // their v-model bindings are well-typed. `w` default 0.5 (50/50).
+    expectedValues: [],
+    scoreWeight: 0.5,
     // Heavy-chain histogram graph state. Initial settings:
     // bins template, log Y axis (long-tail signal — most clones have
     // small Nb_freq, a few have very large).

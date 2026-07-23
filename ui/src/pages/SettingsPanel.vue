@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import type { PlRef } from "@platforma-sdk/model";
+import { PFrameImpl } from "@platforma-sdk/model";
 import {
   PlAccordionSection,
   PlAlert,
   PlCheckbox,
+  PlDropdown,
+  PlDropdownMulti,
   PlDropdownRef,
   PlNumberField,
   PlTooltip,
+  useWatchFetch,
 } from "@platforma-sdk/ui-vue";
 import {
   isHeavy,
@@ -18,6 +22,43 @@ import { computed } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
+
+// ---- Clonotype-only aggregation controls (A-0011) ------------------------
+// Sample-metadata columns offered for the expected-sample filter and the
+// independence grouping (both sampleId-keyed `pl7.app/metadata`).
+const metadataColumnOptions = computed(
+  () => app.model.outputs.metadataOptions?.map((o) => ({ value: o.ref, label: o.label })) ?? [],
+);
+// Unique values of the picked expected-filter column, for the value multiselect
+// (fetched from the PFrame the model exposes — same idiom as DCA's numerators).
+const expectedValueOptions = useWatchFetch(
+  () => app.model.outputs.expectedValueSource,
+  async (pframeHandle) => {
+    if (!pframeHandle) return [];
+    const pframe = new PFrameImpl(pframeHandle);
+    const list = await pframe.listColumns();
+    const id = list?.[0]?.columnId;
+    if (!id) return [];
+    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000_000 });
+    return [...(response?.values.data ?? [])].map((v) => ({ value: String(v), label: String(v) }));
+  },
+);
+// Computed get/set wrappers so the v-models stay well-typed over the optional
+// BlockData fields (undefined on legacy data → the default), mirroring the
+// customBlockLabel pattern. `k` and replicability are NOT exposed (A-0011): the
+// grouping dropdown alone turns on k=2; the only score knob is the weight `w`.
+const expectedValuesModel = computed<string[]>({
+  get: () => app.model.data.expectedValues ?? [],
+  set: (v) => {
+    app.model.data.expectedValues = v;
+  },
+});
+const scoreWeightModel = computed<number>({
+  get: () => app.model.data.scoreWeight ?? 0.5,
+  set: (v) => {
+    app.model.data.scoreWeight = v;
+  },
+});
 
 const factsFor = (ref: PlRef | undefined) => {
   if (!ref) return undefined;
@@ -211,6 +252,44 @@ const lightCheckboxDisabled = computed(() => {
     </template>
   </PlNumberField>
 
+  <!-- Clonotype-only aggregation (A-0011): how the per-sample signal collapses
+       to the one exported value per clonotype that the in-vivo score / lead
+       selection consume. Defaults (all controls empty) = every sample an
+       independent, eligible unit, convergent in >= 1. -->
+  <PlAccordionSection label="Repertoire aggregation (export)">
+    <PlDropdown
+      v-model="app.model.data.expectedFilterRef"
+      :options="metadataColumnOptions"
+      label="Expected-sample filter (metadata)"
+      clearable
+    >
+      <template #tooltip>
+        Restrict the exported aggregate to biologically-expected samples (e.g. post-immunisation).
+        Pick a metadata column, then the values that count as expected. The block's own per-sample
+        table still shows every sample. Empty = use all samples.
+      </template>
+    </PlDropdown>
+    <PlDropdownMulti
+      v-if="app.model.data.expectedFilterRef"
+      v-model="expectedValuesModel"
+      :options="expectedValueOptions.value ?? []"
+      label="Expected values"
+    />
+    <PlDropdown
+      v-model="app.model.data.groupingRef"
+      :options="metadataColumnOptions"
+      label="Independence grouping (metadata)"
+      clearable
+    >
+      <template #tooltip>
+        Mark which samples are independent units (e.g. a donor column), so correlated same-unit
+        samples collapse before the across-unit aggregation. Setting it turns on cross-donor
+        reproducibility — a clone must be a hit in ≥ 2 donors — and adds the reproducibility term to
+        the convergence score. Empty = every sample independent (convergent in ≥ 1).
+      </template>
+    </PlDropdown>
+  </PlAccordionSection>
+
   <PlAccordionSection label="Advanced settings">
     <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced
          so full-STAR runs on the default without prompting for a statistical
@@ -226,6 +305,25 @@ const lightCheckboxDisabled = computed(() => {
         full-STAR false-discovery-rate target for the Benjamini–Hochberg call across each sample's
         clonotypes. Lower = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies
         only when Pgen is available (full-STAR); ignored in the fast-STAR fallback.
+      </template>
+    </PlNumberField>
+
+    <!-- starScore strength↔reproducibility weight w (A-0011). The one score
+         knob; default 0.5. Only takes effect on the support term when an
+         independence grouping is set. -->
+    <PlNumberField
+      v-model="scoreWeightModel"
+      label="Score weight: strength ↔ reproducibility (w)"
+      :min="0"
+      :max="1"
+      :step="0.05"
+    >
+      <template #tooltip>
+        Balances the exported convergence score between peak strength and cross-donor
+        reproducibility:
+        <b>starScore = w · pct(peak) + (1 − w) · pct(support)</b>. w = 1 ranks on convergence
+        strength alone; w = 0 on donor recurrence alone; 0.5 (default) blends them. The support term
+        is only active when an independence grouping is set.
       </template>
     </PlNumberField>
 

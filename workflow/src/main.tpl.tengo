@@ -35,6 +35,7 @@
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 render := import("@platforma-sdk/workflow-tengo:render")
+exec := import("@platforma-sdk/workflow-tengo:exec")
 pframes := import("@platforma-sdk/workflow-tengo:pframes")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
@@ -44,6 +45,7 @@ times := import("times")
 
 packInputTpl := assets.importTemplate(":pack-input")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
+aggregateSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:aggregate")
 
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
@@ -134,6 +136,19 @@ wf.prepare(func(args) {
 		if !is_undefined(args.pgenRefLight) {
 			bb.addSingle(args.pgenRefLight, "lightPgen")
 		}
+	}
+
+	// Optional sample metadata for the clonotype-only aggregation (A-0011),
+	// dataset-level and sampleId-keyed: the expected-sample eligibility filter
+	// and the independence grouping. Resolved BY REF — the model carries these
+	// PlRefs in args to establish the dependency on the samples block, exactly
+	// like the Pgen ref. Absent → the aggregation runs its default (every
+	// sample an independent, eligible unit).
+	if !is_undefined(args.expectedFilterRef) {
+		bb.addSingle(args.expectedFilterRef, "expectedFilter")
+	}
+	if !is_undefined(args.groupingRef) {
+		bb.addSingle(args.groupingRef, "grouping")
 	}
 
 	return { columns: bb.build() }
@@ -469,15 +484,115 @@ wf.body(func(args) {
 			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
 		}
 
-		// NOTE (Q-0002, blocked): v1's single-sample export is removed. v2
-		// exports the convergence signal aggregated to the clonotype-only axis
-		// (A-0006), but the aggregation function is still an open question, so
-		// nothing is exported to the result pool yet — the per-sample `pf` below
-		// stays internal (drives this block's own table + histograms). The
-		// aggregated `exports.*` family is added once Q-0002 resolves.
+		// ---- Stage 4: aggregate to the clonotype-only axis (A-0011) ----
+		// Collapse the per-sample signal to one value per clonotype so the
+		// downstream in-vivo score / lead selection can consume it (A-0006). Only
+		// starScore + starHit are exported (+ a support count); neighbours stays a
+		// per-sample inner/QC value (A-0012 follow-up). The aggregation RULES (max,
+		// two-level grouping, k-replicability, eligibility filter, alpha-trim) live
+		// in the `aggregate` software — parameterised so they can change (Q-0009)
+		// without touching the workflow. Input is the reassembled per-sample TSV.
+		// k is not user-exposed (A-0011/A-0015): the model sets it to 2 when an
+		// independence grouping is present, else 1. `w` is the strength↔
+		// reproducibility weight for the starScore blend (Advanced, default 0.5).
+		aggReplicabilityK := is_undefined(args.replicabilityK) ? 1 : args.replicabilityK
+		scoreWeight := is_undefined(args.scoreWeight) ? 0.5 : args.scoreWeight
+		aggCmd := exec.builder().
+			software(aggregateSw).
+			cpu(1).
+			mem("4GiB").
+			arg("--input").arg("per_sample.tsv").
+			arg("--output").arg("aggregated.tsv").
+			arg("--chain").arg(chainName).
+			arg("--method").arg(method).
+			arg("--alpha").arg(string(alpha)).
+			arg("--k").arg(string(aggReplicabilityK)).
+			arg("--weight").arg(string(scoreWeight)).
+			addFile("per_sample.tsv", perSampleTsv).
+			saveFile("aggregated.tsv")
+		// fast-STAR fallback aggregates against the same nbFreq threshold.
+		if !hasPgen {
+			aggCmd = aggCmd.arg("--threshold").arg(string(threshold))
+		}
+		// Sample-metadata TSV (sampleId + optional expected / unit), from the
+		// by-ref-resolved metadata columns; aggregate.py joins it on sampleId.
+		if !is_undefined(args.expectedFilterRef) || !is_undefined(args.groupingRef) {
+			metaBuilder := pframes.tsvFileBuilder()
+			metaBuilder.setAxisHeader(anchorSpec.axesSpec[0].name, "sampleId")
+			if !is_undefined(args.expectedFilterRef) {
+				ef := columns.getColumn("expectedFilter")
+				metaBuilder.add({ spec: ef.spec, data: ef.data }, { header: "expected" })
+			}
+			if !is_undefined(args.groupingRef) {
+				gr := columns.getColumn("grouping")
+				metaBuilder.add({ spec: gr.spec, data: gr.data }, { header: "unit" })
+			}
+			aggCmd = aggCmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaBuilder.build())
+			if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
+				// json.encode returns bytes; exec.arg needs a string.
+				aggCmd = aggCmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+			}
+		}
+		aggregatedTsv := aggCmd.run().getFile("aggregated.tsv")
+
+		// The exported starScore is the AGGREGATED reproducibility blend (A-0011):
+		// a percentile in [0,1], method-agnostic (NOT the per-sample -log10 p /
+		// nbFreq), so it carries none of the per-sample format / threshold-line
+		// annotations. Higher = more convergent and/or more reproducible.
+		exportStarScoreAnn := {
+			"pl7.app/label": withChain("Convergence score"),
+			"pl7.app/table/visibility": "default",
+			"pl7.app/isScore": "true",
+			"pl7.app/score/rankingOrder": "decreasing",
+			"pl7.app/description": "Aggregated convergence score on the clonotype axis (A-0011): a weighted blend of the clone's peak per-donor convergence and its cross-donor support, each percentile-ranked across clonotypes (in [0,1]; higher = more convergent and/or more reproducible). The strength-vs-reproducibility weight is a block setting."
+		}
+
+		// Import as clonotype-only PColumns (no sampleId axis) — the
+		// downstream-consumable export family (A-0006): the SAME column identity as
+		// the per-sample columns (A-0012), one axis less. Only starScore + starHit
+		// are exported; support is internal to the score blend (not a column).
+		exportCloneAxis := {
+			name: anchorSpec.axesSpec[1].name,
+			type: anchorSpec.axesSpec[1].type,
+			domain: anchorSpec.axesSpec[1].domain,
+			annotations: { "pl7.app/label": "clonotypeKey" }
+		}
+		aggFrame := xsv.importFile(aggregatedTsv, "tsv", {
+			axes: [{ column: "clonotypeKey", spec: exportCloneAxis }],
+			columns: [
+				{ column: "starScore", spec: {
+					name: "pl7.app/vdj/convergence/starScore",
+					valueType: "Double",
+					domain: convDomain,
+					annotations: exportStarScoreAnn
+				}},
+				{ column: "starHit", spec: {
+					name: "pl7.app/vdj/convergence/starHit",
+					valueType: "String",
+					domain: convDomain,
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit"),
+						"pl7.app/description": "Whether this clone is called convergent across the repertoire (aggregated to the clonotype axis). full-STAR: Benjamini-Hochberg across clonotypes of the per-clonotype combined p-value at the FDR target alpha (>= k units when replicability is on); fast-STAR: aggregated neighbour frequency above the threshold.",
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+						"pl7.app/isScore": "true",
+						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
+					}
+				}}
+			],
+			storageFormat: "Parquet",
+			partitionKeyLength: 0
+		}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
+
+		// Clonotype-only export pframe, block trace injected (owned output).
+		exportPfBuilder := pframes.pFrameBuilder()
+		exportPfBuilder.add("starScore", trace.inject(aggFrame["starScore"].spec), aggFrame["starScore"].data)
+		exportPfBuilder.add("starHit", trace.inject(aggFrame["starHit"].spec), aggFrame["starHit"].data)
 
 		return {
 			pf: pfBuilder.build(),
+			// Clonotype-only aggregated family — the downstream-consumable export.
+			exportPf: exportPfBuilder.build(),
 			statsJson: finalStatsJson,
 			// Per-sample fan-out sidecars, keyed by the sampleId. The model
 			// attaches sample labels (logs) and builds the skipped-samples
@@ -505,13 +620,18 @@ wf.body(func(args) {
 		)
 		// Multi-sample family stays INTERNAL: it drives this block's own
 		// table + histograms only. It is not pooled downstream — consumers
-		// enrich by clonotype key, never by sampleId axis, so the per-sample
-		// columns have no downstream use. (The clonotype-only aggregated export
-		// is deferred to Q-0002.)
+		// enrich by clonotype key, never by sampleId axis.
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
 		outputs.heavyHitStats = heavy.statsJson
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
+		// Clonotype-only aggregated family → the result pool (A-0006/A-0011):
+		// the downstream-consumable convergence signal. exports take the raw
+		// built pframe (not exportFrame — that's for model-facing outputs).
+		exports.heavyConvergence = heavy.exportPf
+		// Same family as a model-facing output so the block can show the exported
+		// data in its own "Aggregated (export)" table.
+		outputs.heavyAggregatedPf = pframes.exportFrame(heavy.exportPf)
 	}
 
 	// Light pipeline — runs when chainL is populated.
@@ -532,6 +652,8 @@ wf.body(func(args) {
 		outputs.lightHitStats = light.statsJson
 		outputs.lightPerSampleLogs = light.perSampleLogs
 		outputs.lightPerSampleStatus = light.perSampleStatus
+		exports.lightConvergence = light.exportPf
+		outputs.lightAggregatedPf = pframes.exportFrame(light.exportPf)
 	}
 
 	return {

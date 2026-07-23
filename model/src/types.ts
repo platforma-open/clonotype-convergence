@@ -94,6 +94,28 @@ export type BlockArgs = {
    *  full-STAR knob; the workflow also defaults it if absent. */
   alpha: number;
 
+  // ---- Clonotype-only aggregation (A-0011) ---------------------------------
+  // Optional metadata-driven refinements of the exported aggregate; all absent
+  // → the default path (every sample an independent, eligible unit; k=1).
+  /** PlRef to a sampleId-keyed metadata column (`pl7.app/metadata`) whose
+   *  selected values mark the biologically-expected (post-exposure) samples.
+   *  Its presence in args establishes the samples-block dependency (like the
+   *  Pgen ref). Only expected samples enter the EXPORTED aggregate; the block's
+   *  own per-sample table keeps all samples. */
+  expectedFilterRef?: PlRef;
+  /** Values of `expectedFilterRef` that count as expected. */
+  expectedValues?: string[];
+  /** PlRef to a sampleId-keyed metadata column marking independent units
+   *  (e.g. donor) — drives the two-level aggregation. */
+  groupingRef?: PlRef;
+  /** Replicability: independent units a clonotype must be a hit in. NOT
+   *  user-exposed (A-0011/A-0015) — set to 2 when a grouping is present, else
+   *  the workflow uses 1. */
+  replicabilityK?: number;
+  /** starScore strength↔reproducibility weight `w` ∈ [0,1] (A-0011):
+   *  w·pct(peak) + (1−w)·pct(support). Default 0.5. */
+  scoreWeight?: number;
+
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
    *  and emit the additional `fastStarClusterFiltered` column. Off
@@ -155,12 +177,27 @@ export type BlockData = {
   applyClusterFilter: boolean;
   clusterMin?: number;
 
+  // Clonotype-only aggregation controls (A-0011). All optional; unset → the
+  // default aggregation (every sample an independent, eligible unit; k = 1).
+  /** Sample-metadata column marking biologically-expected samples. */
+  expectedFilterRef?: PlRef;
+  /** Selected expected values of `expectedFilterRef`. */
+  expectedValues?: string[];
+  /** Sample-metadata column marking independent units (e.g. donor). Setting it
+   *  turns on cross-donor reproducibility (k=2) + the support half of starScore
+   *  (A-0011); no separate toggle or k field. */
+  groupingRef?: PlRef;
+  /** starScore strength↔reproducibility weight `w` (Advanced, default 0.5). */
+  scoreWeight?: number;
+
   // UI-only state (never projects to args).
   settingsOpen?: boolean;
   logsOpen?: boolean;
   /** Required (initialised by dataModel.init); PlAgDataTableV2's
    *  v-model expects a defined value. */
   mainTableState: PlDataTableStateV2;
+  /** Table state for the clonotype-only aggregated EXPORT table (its own page). */
+  aggregatedTableState: PlDataTableStateV2;
 
   /** Heavy-chain histogram graph state. */
   graphStateHistogramHeavy: GraphMakerState;

@@ -8,9 +8,11 @@ import type {
 import {
   BlockModelV3,
   createPlDataTableSheet,
+  createPlDataTableV2,
   createPlDataTableV3,
   discoverTableColumnSnaphots,
   getUniquePartitionKeys,
+  isPColumnSpec,
   parseResourceMap,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
@@ -202,6 +204,24 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
+
+    // ---- Clonotype-only aggregation (A-0011) ----------------------
+    // The metadata refs, projected here, establish the samples-block dependency
+    // so the workflow can resolve the columns; all optional (absent → default
+    // aggregation). k >= 2 replicability needs a grouping (else k = 1).
+    if (data.expectedFilterRef) {
+      args.expectedFilterRef = data.expectedFilterRef;
+      if (data.expectedValues && data.expectedValues.length > 0) {
+        args.expectedValues = data.expectedValues;
+      }
+    }
+    if (data.groupingRef) {
+      // A grouping alone turns on cross-donor reproducibility (k=2) and the
+      // support half of starScore (A-0011) — no separate toggle / k field.
+      args.groupingRef = data.groupingRef;
+      args.replicabilityK = 2;
+    }
+    args.scoreWeight = data.scoreWeight ?? 0.5;
     return args;
   })
 
@@ -331,6 +351,22 @@ export const platforma = BlockModelV3.create(blockDataModel)
       (a.chainH !== undefined && a.hasPgenHeavy === false) ||
       (a.chainL !== undefined && a.hasPgenLight === false)
     );
+  })
+
+  // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
+  // for the aggregation's expected-sample filter and independence grouping
+  // (A-0011). Same discovery idiom as differential-clonotype-abundance.
+  .output("metadataOptions", (ctx) =>
+    ctx.resultPool.getOptions((spec) => isPColumnSpec(spec) && spec.name === "pl7.app/metadata"),
+  )
+
+  // PFrame of the picked expected-filter column, so the UI can fetch its unique
+  // values (getUniqueValues) to populate the expected-values multiselect.
+  .output("expectedValueSource", (ctx) => {
+    if (!ctx.data.expectedFilterRef) return undefined;
+    const col = ctx.resultPool.getPColumnByRef(ctx.data.expectedFilterRef);
+    if (!col) return undefined;
+    return ctx.createPFrame([col]);
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
@@ -625,6 +661,25 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
+  // Clonotype-only aggregated EXPORT table (A-0011) — the downstream-consumable
+  // signal, shown on its own page. One row per clonotype: starScore, starHit,
+  // support (no sampleId axis, so no sample sheet). Anchored on the populated
+  // chain (heavy if present, else light); in dual-chain SC only the heavy
+  // family is tabled here (the light family still exports to the pool).
+  .outputWithStatus("aggregatedTable", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    if (!args) return undefined;
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
+    const pCols = ctx.outputs
+      ?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true })
+      ?.getPColumns();
+    if (pCols === undefined || pCols.length === 0) return undefined;
+    // The aggregated columns are already in hand (the block's own output), so no
+    // pool discovery is needed — V2 takes the raw pcols directly.
+    return createPlDataTableV2(ctx, pCols, ctx.data.aggregatedTableState);
+  })
+
   // Sections adapt to input mode. In SC paired (heavy + LC),
   // heavy and LC share the scClonotypeKey axis so both chains' columns
   // surface in the SAME main table via enrichment — no separate LC
@@ -642,9 +697,19 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
     const sections: {
       type: "link";
-      href: "/" | "/convergence/heavy" | "/convergence/light";
+      href: "/" | "/convergence/heavy" | "/convergence/light" | "/export";
       label: string;
     }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
+
+    // Aggregated clonotype-only export table — available once a run has
+    // produced the aggregate (any populated chain).
+    if (hasHeavy || hasLight) {
+      sections.push({
+        type: "link" as const,
+        href: "/export" as const,
+        label: "Aggregated (export)",
+      });
+    }
 
     if (hasHeavy) {
       sections.push({
