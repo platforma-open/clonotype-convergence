@@ -104,18 +104,14 @@ watch(
   },
 );
 
-// PlAgDataTableV2 settings — bound to the model's mainTable output.
-// `sheets` adds the sample picker above the table (one sample at a
-// time; SDK pins to a single value).
-// `sourceId` is keyed on `mainTableSourceId` — a model output that
-// derives from `activeArgs`, NOT from the live edit state. That way
-// the per-source state cache (hidden columns, sort, filters) only
-// flips when a Run actually commits new args; picking a new dataset
-// before pressing Run doesn't reload the table or wipe its state.
+// Main table = the AGGREGATED clonotype-only table (A-0015): the shape
+// downstream consumes, shown first. No `sheets` — the sampleId axis is
+// collapsed away, so there is no per-sample picker (that lives on the
+// separate Per-sample QC page). `sourceId` derives from `activeArgs` so the
+// per-source view state only flips when a Run commits new args.
 const tableSettings = usePlDataTableSettingsV2({
   sourceId: () => app.model.outputs.mainTableSourceId,
-  model: () => app.model.outputs.mainTable,
-  sheets: () => app.model.outputs.mainTableSheets,
+  model: () => app.model.outputs.aggregatedTable,
 });
 
 // PlBlockPage hides the entire subtitle row when v-model:subtitle is
@@ -199,12 +195,12 @@ const customBlockLabel = computed({
     </PlAlert>
 
     <PlAgDataTableV2
-      v-model="app.model.data.mainTableState"
+      v-model="app.model.data.aggregatedTableState"
       :settings="tableSettings"
       show-columns-panel
       show-export-button
       :loading-text="app.model.outputs.isRunning ? 'Running' : undefined"
-      not-ready-text="Select an input dataset and press Run to see clonotypes."
+      not-ready-text="Select an input dataset and press Run to see the convergence signal."
     />
   </PlBlockPage>
 
@@ -223,7 +219,7 @@ const customBlockLabel = computed({
       <div>
         <div>Hit statistics</div>
         <div :class="$style.statsSubtitle">
-          Aggregated across all samples for the current settings.
+          Convergence calls on the aggregated, clonotype-level export.
         </div>
       </div>
     </template>

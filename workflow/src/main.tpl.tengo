@@ -183,7 +183,7 @@ wf.body(func(args) {
 	// inside each per-sample body. Reassembles the per-sample outputs into a
 	// pframe of convergence PColumns chain-tagged with `chainName` and
 	// method-tagged. Returns the pframe.
-	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, pgenKey, hasPgen, chainName, threshold) {
+	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, pgenKey, hasPgen, chainName, threshold, scLetter) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
 		// untouched in single-chain mode. Uniform shape across all
@@ -263,10 +263,24 @@ wf.body(func(args) {
 		// Stage-3 cluster columns only when the filter is enabled — must match
 		// exactly what the body's TSV carries (xsv.importFile errors on
 		// declared-but-missing).
+		// Chain identity on the convergence columns MUST follow the dataset's
+		// convention so downstream enrichment matches by the same axes+domain the
+		// clonotype-key columns use. Bulk: chain lives on the clonotype-key axis
+		// domain, and blocks additionally stamp pl7.app/vdj/chain on the value
+		// column. SC: heavy and light hang off the SAME scClonotypeKey axis and are
+		// distinguished by the column-domain pl7.app/vdj/scClonotypeChain letter
+		// ("A"/"B") — NOT pl7.app/vdj/chain (a bulk-style domain with no meaning on
+		// an SC column that would break enrichment against SC siblings such as
+		// gen-prob's Pgen). scLetter is defined <=> SC mode (from the model).
+		isSC := !is_undefined(scLetter)
 		convDomain := {
 			"pl7.app/block": blockId,
-			"pl7.app/vdj/chain": chainName,
 			"pl7.app/vdj/convergence/method": method
+		}
+		if isSC {
+			convDomain["pl7.app/vdj/scClonotypeChain"] = scLetter
+		} else {
+			convDomain["pl7.app/vdj/chain"] = chainName
 		}
 		starScoreAnn := {
 			"pl7.app/label": withChain("Convergence score"),
@@ -430,24 +444,6 @@ wf.body(func(args) {
 		}
 		perSampleTsv := xsv.exportFrame(exportSrcBuilder.build(), "tsv", {})
 
-		// Hit-count stats badge: {above, total, beforeCluster?}, counted over
-		// the reassembled per-sample starHit (full- or fast-STAR). In cluster
-		// mode `above` is the cluster-filtered hit count and `beforeCluster` the
-		// pre-cluster starHit count; otherwise `above` is the starHit count.
-		hitCol := args.applyClusterFilter ? "starHitClusterFiltered" : "starHit"
-		statsWf := pt.workflow().mem("2GiB").cpu(1)
-		statsDf := statsWf.frame(perSampleTsv, { xsvType: "tsv", inferSchema: false })
-		statsAggs := [
-			pt.col("starHit").count().alias("total"),
-			pt.when(pt.col(hitCol).eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
-		]
-		if args.applyClusterFilter {
-			statsAggs = append(statsAggs,
-				pt.when(pt.col("starHit").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("beforeCluster"))
-		}
-		statsDf.select(statsAggs...).saveContent("stats.ndjson")
-		finalStatsJson := statsWf.run().getFileContent("stats.ndjson")
-
 		// Trace label carries the distinguishing settings (threshold(s),
 		// nMin, cluster filter) so downstream deriveDistinctLabels can tell
 		// apart columns from multiple convergence blocks reading the same
@@ -535,6 +531,20 @@ wf.body(func(args) {
 		}
 		aggregatedTsv := aggCmd.run().getFile("aggregated.tsv")
 
+		// Hit-count stats badge: {above, total}, counted over the AGGREGATED,
+		// clonotype-only export (A-0011) — one row per clonotype. `above` = clones
+		// called convergent across the repertoire (starHit == "Hit"); `total` =
+		// clonotypes. This is the exported signal's own summary; the old per-sample
+		// sum (a clonotype counted once per sample it appeared in) is not meaningful
+		// for the aggregated result the block now surfaces.
+		statsWf := pt.workflow().mem("2GiB").cpu(1)
+		statsDf := statsWf.frame(aggregatedTsv, { xsvType: "tsv", inferSchema: false })
+		statsDf.select(
+			pt.col("starHit").count().alias("total"),
+			pt.when(pt.col("starHit").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
+		).saveContent("stats.ndjson")
+		finalStatsJson := statsWf.run().getFileContent("stats.ndjson")
+
 		// The exported starScore is the AGGREGATED reproducibility blend (A-0011):
 		// a percentile in [0,1], method-agnostic (NOT the per-sample -log10 p /
 		// nbFreq), so it carries none of the per-sample format / threshold-line
@@ -584,15 +594,33 @@ wf.body(func(args) {
 			partitionKeyLength: 0
 		}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
 
-		// Clonotype-only export pframe, block trace injected (owned output).
+		// Clonotype-only export pframe, block trace injected (owned output). This
+		// is the block's OWN model-facing aggregated family (starScore + starHit),
+		// kept one-row-per-clonotype so the aggregated table + score histogram stay
+		// clonotype-only.
 		exportPfBuilder := pframes.pFrameBuilder()
 		exportPfBuilder.add("starScore", trace.inject(aggFrame["starScore"].spec), aggFrame["starScore"].data)
 		exportPfBuilder.add("starHit", trace.inject(aggFrame["starHit"].spec), aggFrame["starHit"].data)
 
+		// Pool export family (A-0006): the aggregated starScore + starHit PLUS the
+		// full per-sample Convergent-neighbours column (both sampleId and
+		// clonotypeKey axes). Downstream (lead selection) consumes the raw
+		// per-sample neighbour count alongside the aggregated signal, so the pool
+		// export carries it in full; the block's own model family (exportPf) stays
+		// clonotype-only so its table doesn't fan back out over samples.
+		neighboursSpec := perSampleResult.outputSpec("neighbours", "neighbours")
+		neighboursData := perSampleResult.outputData("neighbours", "neighbours")
+		poolExportPfBuilder := pframes.pFrameBuilder()
+		poolExportPfBuilder.add("starScore", trace.inject(aggFrame["starScore"].spec), aggFrame["starScore"].data)
+		poolExportPfBuilder.add("starHit", trace.inject(aggFrame["starHit"].spec), aggFrame["starHit"].data)
+		poolExportPfBuilder.add("neighbours", trace.inject(neighboursSpec), neighboursData)
+
 		return {
 			pf: pfBuilder.build(),
-			// Clonotype-only aggregated family — the downstream-consumable export.
+			// Clonotype-only aggregated family — the block's own model-facing table.
 			exportPf: exportPfBuilder.build(),
+			// Downstream-consumable pool export (aggregated + per-sample neighbours).
+			poolExportPf: poolExportPfBuilder.build(),
 			statsJson: finalStatsJson,
 			// Per-sample fan-out sidecars, keyed by the sampleId. The model
 			// attaches sample labels (logs) and builds the skipped-samples
@@ -616,7 +644,8 @@ wf.body(func(args) {
 			"heavyPgen",
 			args.hasPgenHeavy == true,
 			args.chainHName,
-			args.thresholdH
+			args.thresholdH,
+			args.chainHScLetter
 		)
 		// Multi-sample family stays INTERNAL: it drives this block's own
 		// table + histograms only. It is not pooled downstream — consumers
@@ -628,9 +657,9 @@ wf.body(func(args) {
 		// Clonotype-only aggregated family → the result pool (A-0006/A-0011):
 		// the downstream-consumable convergence signal. exports take the raw
 		// built pframe (not exportFrame — that's for model-facing outputs).
-		exports.heavyConvergence = heavy.exportPf
-		// Same family as a model-facing output so the block can show the exported
-		// data in its own "Aggregated (export)" table.
+		exports.heavyConvergence = heavy.poolExportPf
+		// Clonotype-only family as a model-facing output so the block shows the
+		// aggregated data in its own Main table + score histogram.
 		outputs.heavyAggregatedPf = pframes.exportFrame(heavy.exportPf)
 	}
 
@@ -645,14 +674,15 @@ wf.body(func(args) {
 			"lightPgen",
 			args.hasPgenLight == true,
 			args.chainLName,
-			args.thresholdL
+			args.thresholdL,
+			args.chainLScLetter
 		)
 		// Light multi-sample family also internal-only — see heavy above.
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
 		outputs.lightHitStats = light.statsJson
 		outputs.lightPerSampleLogs = light.perSampleLogs
 		outputs.lightPerSampleStatus = light.perSampleStatus
-		exports.lightConvergence = light.exportPf
+		exports.lightConvergence = light.poolExportPf
 		outputs.lightAggregatedPf = pframes.exportFrame(light.exportPf)
 	}
 

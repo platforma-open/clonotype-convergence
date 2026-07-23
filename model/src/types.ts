@@ -199,10 +199,14 @@ export type BlockData = {
   /** Table state for the clonotype-only aggregated EXPORT table (its own page). */
   aggregatedTableState: PlDataTableStateV2;
 
-  /** Heavy-chain histogram graph state. */
+  /** Heavy-chain per-sample neighbour-frequency histogram graph state. */
   graphStateHistogramHeavy: GraphMakerState;
-  /** Light-chain histogram graph state. */
+  /** Light-chain per-sample neighbour-frequency histogram graph state. */
   graphStateHistogramLight: GraphMakerState;
+  /** Heavy-chain aggregated convergence-score histogram graph state. */
+  graphStateScoreHeavy: GraphMakerState;
+  /** Light-chain aggregated convergence-score histogram graph state. */
+  graphStateScoreLight: GraphMakerState;
 
   /** User-overridden block label. Empty string when the user hasn't
    *  set one — the derived chain/threshold label then shows as a

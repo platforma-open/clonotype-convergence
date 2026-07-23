@@ -8,7 +8,6 @@ import type {
 import {
   BlockModelV3,
   createPlDataTableSheet,
-  createPlDataTableV2,
   createPlDataTableV3,
   discoverTableColumnSnaphots,
   getUniquePartitionKeys,
@@ -491,7 +490,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
-      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
+      ?.getDataAsJson<{ above: number; total: number }>(),
   )
 
   // Light-chain p-frame for the light histogram. See histogramPf
@@ -525,7 +524,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
         assertFieldType: "Input",
         allowPermanentAbsence: true,
       })
-      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
+      ?.getDataAsJson<{ above: number; total: number }>(),
   )
 
   // Skipped-samples warning per chain — see buildSkippedSamples. UI
@@ -661,33 +660,145 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // Clonotype-only aggregated EXPORT table (A-0011) — the downstream-consumable
-  // signal, shown on its own page. One row per clonotype: starScore, starHit,
-  // support (no sampleId axis, so no sample sheet). Anchored on the populated
-  // chain (heavy if present, else light); in dual-chain SC only the heavy
-  // family is tabled here (the light family still exports to the pool).
+  // Clonotype-only aggregated table (A-0011) — the DEFAULT (Main) view and the
+  // downstream-consumable shape (A-0015): one row per clonotype (starScore +
+  // starHit, no sampleId axis → no sample sheet). Anchored on the populated
+  // chain (heavy if present, else light); in dual-chain SC only the heavy family
+  // is tabled here (the light family still exports to the pool).
   .outputWithStatus("aggregatedTable", (ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
     if (!args) return undefined;
     if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
     const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
+    const ref = args.chainH ?? args.chainL;
+    if (!ref) return undefined;
+    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
+
+    // Anchor on this block's aggregated (clonotype-only) starHit column.
     const pCols = ctx.outputs
       ?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true })
       ?.getPColumns();
-    if (pCols === undefined || pCols.length === 0) return undefined;
-    // The aggregated columns are already in hand (the block's own output), so no
-    // pool discovery is needed — V2 takes the raw pcols directly.
-    return createPlDataTableV2(ctx, pCols, ctx.data.aggregatedTableState);
+    const starHitSpec = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/starHit")?.spec;
+    if (!starHitSpec) return undefined;
+
+    // Same enrichment as the per-sample mainTable, but on the clonotype-only
+    // axis: pull every column sharing the clonotypeKey axis from the pool
+    // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
+    // columns) so they're available in the column settings — hidden by
+    // default, convergence columns default-visible. maxHops:0 keeps
+    // enrichment to the anchor's own axis (no linker hops into cluster/space
+    // axis systems).
+    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
+    const variants = discoverTableColumnSnaphots(ctx, {
+      anchors: { main: starHitSpec },
+      selector: {
+        mode: "enrichment",
+        maxHops: 0,
+        // One row per clonotype: drop any column carrying a sampleId axis (the
+        // per-sample convergence family — including the exported neighbours
+        // column — and per-sample metadata) so enrichment doesn't fan the
+        // table back out over samples. partialAxesMatch:true excludes columns
+        // that merely INCLUDE sampleId, not only exact [sampleId].
+        exclude: [
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: true,
+          },
+        ],
+      },
+    });
+    if (!variants) return undefined;
+
+    // Keep all non-convergence enrichment and this block's own convergence
+    // columns; drop convergence columns produced by other instances of this
+    // block (see mainTable for the same rationale).
+    const ownVariants = variants.filter((v) => {
+      const spec = v.column.spec;
+      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      if (thisBlockId === undefined) return true;
+      return spec.domain?.["pl7.app/block"] === thisBlockId;
+    });
+
+    return createPlDataTableV3(ctx, {
+      columns: ownVariants,
+      tableState: ctx.data.aggregatedTableState,
+      displayOptions: {
+        visibility: [
+          // Force the clonotype-id label (Clone ID) default-visible — some
+          // MiXCR builds annotate it "optional".
+          {
+            match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
+            visibility: "default",
+          },
+          // Everything else that isn't a clonotype-key axis or a convergence
+          // column starts optional (hidden, available in the column panel).
+          {
+            match: (spec: PColumnSpec) => {
+              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
+              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
+              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
+              return true;
+            },
+            visibility: "optional",
+          },
+        ],
+      },
+    });
   })
 
-  // Sections adapt to input mode. In SC paired (heavy + LC),
-  // heavy and LC share the scClonotypeKey axis so both chains' columns
-  // surface in the SAME main table via enrichment — no separate LC
-  // table page. Modes:
-  //   bulk single-chain → main table + one histogram page
-  //   SC heavy-only → main table + one histogram page
-  //   SC heavy + light → main table (heavy + light columns) +
-  //                      heavy histogram + light histogram
+  // Per-chain aggregated-score histogram PFrames (A-0015): the exported
+  // clonotype-only starScore grouped by starHit — the distribution companion to
+  // the aggregated Main table. Built from the aggregated family.
+  .outputWithStatus("scoreHistogramPfHeavy", (ctx): PFrameHandle | undefined => {
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "heavyAggregatedPf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
+    if (pCols === undefined) return undefined;
+    return ctx.createPFrame(pCols);
+  })
+  .output("scoreHistogramPfHeavyPcols", (ctx) => {
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "heavyAggregatedPf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
+    if (pCols === undefined || pCols.length === 0) return undefined;
+    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
+  })
+  .outputWithStatus("scoreHistogramPfLight", (ctx): PFrameHandle | undefined => {
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "lightAggregatedPf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
+    if (pCols === undefined) return undefined;
+    return ctx.createPFrame(pCols);
+  })
+  .output("scoreHistogramPfLightPcols", (ctx) => {
+    const pCols = ctx.outputs
+      ?.resolve({
+        field: "lightAggregatedPf",
+        assertFieldType: "Input",
+        allowPermanentAbsence: true,
+      })
+      ?.getPColumns();
+    if (pCols === undefined || pCols.length === 0) return undefined;
+    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
+  })
+
+  // Sections (A-0015): the aggregated clonotype-only table is the default (Main)
+  // view — the shape downstream consumes; the per-sample table is a separate
+  // section. Each processed chain adds a Convergence-score histogram (the
+  // aggregated starScore, grouped by starHit) and a per-sample-score histogram
+  // (the per-sample statistic — −log10 p in full-STAR, nbFreq in fast-STAR).
   .sections((ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
     const ready = ctx.data.datasetRef !== undefined && args !== undefined;
@@ -697,32 +808,49 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
     const sections: {
       type: "link";
-      href: "/" | "/convergence/heavy" | "/convergence/light" | "/export";
+      href:
+        | "/"
+        | "/per-sample"
+        | "/convergence/score-heavy"
+        | "/convergence/score-light"
+        | "/convergence/heavy"
+        | "/convergence/light";
       label: string;
     }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
-
-    // Aggregated clonotype-only export table — available once a run has
-    // produced the aggregate (any populated chain).
-    if (hasHeavy || hasLight) {
-      sections.push({
-        type: "link" as const,
-        href: "/export" as const,
-        label: "Aggregated (export)",
-      });
-    }
 
     if (hasHeavy) {
       sections.push({
         type: "link" as const,
+        href: "/convergence/score-heavy" as const,
+        label: dualChain ? "Score distribution (heavy)" : "Score distribution",
+      });
+    }
+    if (hasLight) {
+      sections.push({
+        type: "link" as const,
+        href: "/convergence/score-light" as const,
+        label: dualChain ? "Score distribution (light)" : "Score distribution",
+      });
+    }
+    if (hasHeavy || hasLight) {
+      sections.push({
+        type: "link" as const,
+        href: "/per-sample" as const,
+        label: "Per-sample table",
+      });
+    }
+    if (hasHeavy) {
+      sections.push({
+        type: "link" as const,
         href: "/convergence/heavy" as const,
-        label: dualChain ? "Neighbour frequency (heavy)" : "Neighbour frequency",
+        label: dualChain ? "Per-sample distribution (heavy)" : "Per-sample distribution",
       });
     }
     if (hasLight) {
       sections.push({
         type: "link" as const,
         href: "/convergence/light" as const,
-        label: dualChain ? "Neighbour frequency (light)" : "Neighbour frequency",
+        label: dualChain ? "Per-sample distribution (light)" : "Per-sample distribution",
       });
     }
     return sections;

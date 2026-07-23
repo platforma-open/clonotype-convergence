@@ -253,42 +253,41 @@ const lightCheckboxDisabled = computed(() => {
   </PlNumberField>
 
   <!-- Clonotype-only aggregation (A-0011): how the per-sample signal collapses
-       to the one exported value per clonotype that the in-vivo score / lead
-       selection consume. Defaults (all controls empty) = every sample an
+       to the one exported value per clonotype the in-vivo score / lead selection
+       consume. Always visible. Defaults (both empty) = every sample an
        independent, eligible unit, convergent in >= 1. -->
-  <PlAccordionSection label="Repertoire aggregation (export)">
-    <PlDropdown
-      v-model="app.model.data.expectedFilterRef"
-      :options="metadataColumnOptions"
-      label="Expected-sample filter (metadata)"
-      clearable
-    >
-      <template #tooltip>
-        Restrict the exported aggregate to biologically-expected samples (e.g. post-immunisation).
-        Pick a metadata column, then the values that count as expected. The block's own per-sample
-        table still shows every sample. Empty = use all samples.
-      </template>
-    </PlDropdown>
-    <PlDropdownMulti
-      v-if="app.model.data.expectedFilterRef"
-      v-model="expectedValuesModel"
-      :options="expectedValueOptions.value ?? []"
-      label="Expected values"
-    />
-    <PlDropdown
-      v-model="app.model.data.groupingRef"
-      :options="metadataColumnOptions"
-      label="Independence grouping (metadata)"
-      clearable
-    >
-      <template #tooltip>
-        Mark which samples are independent units (e.g. a donor column), so correlated same-unit
-        samples collapse before the across-unit aggregation. Setting it turns on cross-donor
-        reproducibility — a clone must be a hit in ≥ 2 donors — and adds the reproducibility term to
-        the convergence score. Empty = every sample independent (convergent in ≥ 1).
-      </template>
-    </PlDropdown>
-  </PlAccordionSection>
+  <PlDropdown
+    v-model="app.model.data.expectedFilterRef"
+    :options="metadataColumnOptions"
+    label="Timepoint"
+    clearable
+  >
+    <template #tooltip>
+      Restrict the exported aggregate to biologically-expected samples (e.g. post-immunisation
+      timepoints). Pick a metadata column, then the values that count as expected. The block's own
+      per-sample table still shows every sample. Empty = use all samples.
+    </template>
+  </PlDropdown>
+  <PlDropdownMulti
+    v-if="app.model.data.expectedFilterRef"
+    v-model="expectedValuesModel"
+    :options="expectedValueOptions.value ?? []"
+    label="Expected values"
+  />
+  <PlDropdown
+    v-model="app.model.data.groupingRef"
+    :options="metadataColumnOptions"
+    label="Biological replicate"
+    clearable
+  >
+    <template #tooltip>
+      Mark which samples are independent biological replicates (e.g. a donor / animal column), so
+      correlated same-replicate samples collapse before the across-replicate aggregation. Setting it
+      turns on cross-replicate reproducibility — a clone must be a hit in ≥ 2 replicates — and adds
+      the reproducibility term to the convergence score. Empty = every sample independent
+      (convergent in ≥ 1).
+    </template>
+  </PlDropdown>
 
   <PlAccordionSection label="Advanced settings">
     <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced

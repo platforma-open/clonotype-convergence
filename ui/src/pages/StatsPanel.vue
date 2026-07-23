@@ -4,7 +4,7 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-type HitStats = { above: number; total: number; beforeCluster?: number };
+type HitStats = { above: number; total: number };
 
 const heavy = computed<HitStats | undefined>(() => app.model.outputs.heavyHitStats);
 const light = computed<HitStats | undefined>(() => app.model.outputs.lightHitStats);
@@ -14,18 +14,13 @@ const fmt = (n: number) => n.toLocaleString();
 
 type Row = { label: string; value: string };
 function rowsFor(s: HitStats): Row[] {
-  const rows: Row[] = [];
-  if (s.beforeCluster !== undefined) {
-    rows.push({ label: "Convergent hits", value: fmt(s.beforeCluster) });
-    rows.push({ label: "Passed cluster filter", value: fmt(s.above) });
-  } else {
-    rows.push({ label: "Convergent hits", value: fmt(s.above) });
-  }
-  // "Total records" rather than "Total clonotypes": the underlying
-  // counts come from the long-format (sampleId, clonotypeKey) frame,
-  // so a clonotype shared by N samples contributes N records.
-  rows.push({ label: "Total records (clonotype × sample)", value: fmt(s.total) });
-  return rows;
+  // Counts are over the aggregated, clonotype-only export (one row per
+  // clonotype): `above` = clones called convergent across the repertoire,
+  // `total` = clonotypes.
+  return [
+    { label: "Convergent clonotypes", value: fmt(s.above) },
+    { label: "Total clonotypes", value: fmt(s.total) },
+  ];
 }
 </script>
 

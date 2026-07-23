@@ -1,6 +1,20 @@
+import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
 import { DEFAULT_ALPHA, DEFAULT_NMIN } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
+
+// Default aggregated convergence-score histogram state (A-0015): plots the
+// exported clonotype-only starScore (a percentile in [0,1]) — linear Y (no long
+// tail). Shared by init() and the v3 backfill migration.
+const scoreGraphState = (fillColor: string): GraphMakerState => ({
+  title: "Score distribution",
+  template: "bins",
+  currentTab: null,
+  layersSettings: { bins: { fillColor } },
+  axesSettings: { axisY: { axisLabelsAngle: 90, scale: "linear" }, other: { binsCount: 30 } },
+});
+const SCORE_FILL_HEAVY = "#5a9bd4";
+const SCORE_FILL_LIGHT = "#b48ead";
 
 export const blockDataModel = new DataModelBuilder()
   .from<BlockDataV1>("v1")
@@ -30,6 +44,22 @@ export const blockDataModel = new DataModelBuilder()
       };
     },
   )
+  // v3 — backfill the fields added for the aggregated export (A-0011/A-0015):
+  // the starScore weight, the expected-values multiselect, the aggregated-table
+  // state, and the two aggregated-score histogram states. Blocks created at v2
+  // (before these existed) otherwise have them undefined, which crashes
+  // GraphMaker (undefined graph state). Existing values are preserved.
+  .migrate<BlockData>("v3", (prev) => {
+    const p = prev as Partial<BlockData>;
+    return {
+      ...prev,
+      scoreWeight: p.scoreWeight ?? 0.5,
+      expectedValues: p.expectedValues ?? [],
+      aggregatedTableState: p.aggregatedTableState ?? createPlDataTableStateV2(),
+      graphStateScoreHeavy: p.graphStateScoreHeavy ?? scoreGraphState(SCORE_FILL_HEAVY),
+      graphStateScoreLight: p.graphStateScoreLight ?? scoreGraphState(SCORE_FILL_LIGHT),
+    };
+  })
   .init(() => ({
     settingsOpen: true,
     logsOpen: false,
@@ -63,7 +93,7 @@ export const blockDataModel = new DataModelBuilder()
     // bins template, log Y axis (long-tail signal — most clones have
     // small Nb_freq, a few have very large).
     graphStateHistogramHeavy: {
-      title: "Convergence score",
+      title: "Per-sample distribution",
       template: "bins",
       currentTab: null,
       layersSettings: {
@@ -80,7 +110,7 @@ export const blockDataModel = new DataModelBuilder()
     // Light-chain histogram graph state. Same shape as heavy;
     // different fill colour to disambiguate at a glance.
     graphStateHistogramLight: {
-      title: "Convergence score",
+      title: "Per-sample distribution",
       template: "bins",
       currentTab: null,
       layersSettings: {
@@ -94,4 +124,7 @@ export const blockDataModel = new DataModelBuilder()
         other: { binsCount: 30 },
       },
     },
+    // Aggregated convergence-score histograms (A-0015) — see scoreGraphState.
+    graphStateScoreHeavy: scoreGraphState(SCORE_FILL_HEAVY),
+    graphStateScoreLight: scoreGraphState(SCORE_FILL_LIGHT),
   }));
