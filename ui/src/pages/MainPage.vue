@@ -155,18 +155,16 @@ const customBlockLabel = computed({
       </PlBtnGhost>
     </template>
 
-    <PlAlert v-if="inFallback" type="warn" icon>
-      <template #title>Pgen not available — showing fast-STAR</template>
-      Generation Probability wasn't found for this input, so convergence is called by the
-      threshold-based fast-STAR method (<b>not</b> FDR-controlled). Run the Generation Probability
-      block on this dataset to enable full-STAR.
+    <PlAlert v-if="inFallback" type="warn" label="Using fast-STAR">
+      No Generation Probability for this input, so hits are called by threshold (<b>not</b>
+      FDR-controlled). Run Generation Probability on this dataset to enable full-STAR.
     </PlAlert>
 
-    <PlAlert v-if="skippedBelowMin.length > 0" type="warn" icon>
-      <template #title>
-        {{ skippedBelowMin.length }} sample{{ skippedBelowMin.length === 1 ? "" : "s" }} below
-        minimum
-      </template>
+    <PlAlert
+      v-if="skippedBelowMin.length > 0"
+      type="warn"
+      :label="`${skippedBelowMin.length} sample${skippedBelowMin.length === 1 ? '' : 's'} below minimum`"
+    >
       {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
       fewer than {{ skippedNMin }} unique nucleotide CDR3 sequences and
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
@@ -174,23 +172,21 @@ const customBlockLabel = computed({
       {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
     </PlAlert>
 
-    <PlAlert v-if="skippedNoCdr3.length > 0" type="warn" icon>
-      <template #title>
-        {{ skippedNoCdr3.length }} sample{{ skippedNoCdr3.length === 1 ? "" : "s" }} with no usable
-        CDR3
-      </template>
+    <PlAlert
+      v-if="skippedNoCdr3.length > 0"
+      type="warn"
+      :label="`${skippedNoCdr3.length} sample${skippedNoCdr3.length === 1 ? '' : 's'} with no usable CDR3`"
+    >
       {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
       no usable CDR3 sequences and
       {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
     </PlAlert>
 
-    <PlAlert v-if="heavyAllEmpty" type="warn" icon>
-      <template #title>No heavy-chain data</template>
+    <PlAlert v-if="heavyAllEmpty" type="warn" label="No heavy-chain data">
       No samples had usable CDR3 data for the heavy chain. Check the upstream input.
     </PlAlert>
 
-    <PlAlert v-if="lightAllEmpty" type="warn" icon>
-      <template #title>No light-chain data</template>
+    <PlAlert v-if="lightAllEmpty" type="warn" label="No light-chain data">
       No samples had usable CDR3 data for the light chain. Check the upstream input.
     </PlAlert>
 

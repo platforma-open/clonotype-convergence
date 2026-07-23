@@ -116,10 +116,15 @@ def bh_hit_mask(pvalues: np.ndarray, alpha: float) -> np.ndarray:
         return np.zeros(0, dtype=bool)
     order = np.argsort(pvalues, kind="stable")
     sorted_p = pvalues[order]
+    # 1-based ranks: reject the first (rank-1) rows at the smallest rank whose
+    # p_(rank) exceeds (rank/m)*alpha; default to m (all) if the line is never
+    # crossed. rank starts at 1 so the smallest p is tested against its own
+    # threshold — otherwise a set where even p_(1) fails BH would still force
+    # order[:1] to Hit.
     k = m
-    for rank in range(1, m):
-        if sorted_p[rank] > (rank / m) * alpha:
-            k = rank
+    for rank in range(1, m + 1):
+        if sorted_p[rank - 1] > (rank / m) * alpha:
+            k = rank - 1
             break
     mask = np.zeros(m, dtype=bool)
     mask[order[:k]] = True

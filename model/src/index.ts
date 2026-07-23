@@ -140,7 +140,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // the light opt-in in the mixed case; this gates a stale/forced state.
     if (chainH && chainL && facts.hasPgenHeavy !== facts.hasPgenLight) {
       throw new Error(
-        "Heavy and light chains differ in Pgen availability — full-STAR and fast-STAR can't be " +
+        "Heavy and light chains differ in Generation Probability availability — full-STAR and " +
+          "fast-STAR can't be " +
           "combined in one run. Process a single chain, or run Generation Probability for both.",
       );
     }
@@ -300,6 +301,15 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // hidden-columns / sort state (so stale column IDs from the old
   // dataset don't haunt the new one).
   .output("mainTableSourceId", (ctx) => {
+    // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
+    // running/loading overlay when it takes the `sourceId: null` branch
+    // (pending: !model.stable); a table with a defined sourceId and no sheets
+    // (the aggregated Main table) would otherwise sit on the not-ready
+    // placeholder for the whole run. The per-sample table gets this for free
+    // because its `sheets` go undefined mid-run; the aggregated table has no
+    // sheets, so the sourceId is its only lever. Returning undefined here routes
+    // it into the pending branch → the running overlay shows.
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
     const args = ctx.activeArgs as BlockArgs | undefined;
     if (!args) return undefined;
     const ref = args.chainH ?? args.chainL;
@@ -350,6 +360,27 @@ export const platforma = BlockModelV3.create(blockDataModel)
       (a.chainH !== undefined && a.hasPgenHeavy === false) ||
       (a.chainL !== undefined && a.hasPgenLight === false)
     );
+  })
+
+  // LIVE Generation Probability availability for the picked dataset (A-0010).
+  // Re-discovers gen-prob's Pgen from the CURRENT result pool every render (not
+  // the pick-time snapshot), so the method + Pgen ref track gen-prob being
+  // added / removed / re-created. The args callback can't reach the pool (it
+  // receives only `data`), so a UI watcher mirrors this into
+  // `data.datasetFacts` to keep args fresh — this output is the single live
+  // source both the UI and that sync read. Undefined when no dataset is picked
+  // or the dataset spec isn't resolvable yet (transient pool churn) — callers
+  // keep the last-synced snapshot in that window rather than flip.
+  .output("pgenStatus", (ctx) => {
+    if (!ctx.data.datasetRef) return undefined;
+    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef);
+    if (!facts) return undefined;
+    return {
+      hasPgenHeavy: facts.hasPgenHeavy,
+      hasPgenLight: facts.hasPgenLight,
+      pgenRefHeavy: facts.pgenRefHeavy,
+      pgenRefLight: facts.pgenRefLight,
+    };
   })
 
   // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
@@ -668,16 +699,21 @@ export const platforma = BlockModelV3.create(blockDataModel)
   .outputWithStatus("aggregatedTable", (ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
     if (!args) return undefined;
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
     const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
     const ref = args.chainH ?? args.chainL;
     if (!ref) return undefined;
     if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
     // Anchor on this block's aggregated (clonotype-only) starHit column.
-    const pCols = ctx.outputs
-      ?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true })
-      ?.getPColumns();
+    // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
+    // run the field isn't ready yet, and a plain resolve marks the render
+    // context UNSTABLE, so outputWithStatus reports "loading" and the table
+    // shows the running overlay. `allowPermanentAbsence: true` would instead
+    // treat the missing field as a stable absence → the not-ready placeholder
+    // stays up during the whole run (this view has no `sheets` to drive the
+    // pending state, so the model status is the only signal). The field always
+    // exists for the chosen chain (args.chainH/L gates which one we request).
+    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
     const starHitSpec = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/starHit")?.spec;
     if (!starHitSpec) return undefined;
 

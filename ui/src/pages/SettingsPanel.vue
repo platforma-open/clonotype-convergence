@@ -53,10 +53,15 @@ const expectedValuesModel = computed<string[]>({
     app.model.data.expectedValues = v;
   },
 });
-const scoreWeightModel = computed<number>({
-  get: () => app.model.data.scoreWeight ?? 0.5,
+// Presented as the REPRODUCIBILITY weight (up = more cross-donor
+// reproducibility). The stored arg `scoreWeight` is w, which weights the
+// STRENGTH term (peak) in starScore = w·pct(peak) + (1−w)·pct(support), so the
+// displayed reproducibility weight is 1 − w; convert on both ends. Default 0.5
+// maps to 0.5.
+const reproducibilityWeightModel = computed<number>({
+  get: () => 1 - (app.model.data.scoreWeight ?? 0.5),
   set: (v) => {
-    app.model.data.scoreWeight = v;
+    app.model.data.scoreWeight = 1 - v;
   },
 });
 
@@ -180,12 +185,10 @@ const lightCheckboxDisabled = computed(() => {
   <!-- fast-STAR fallback notice. Shown when a processed chain has no Pgen
        available, so the block uses the threshold-based call instead of the
        FDR-controlled full-STAR (A-0010). -->
-  <PlAlert v-if="heavyFast || lightFast" type="warn" icon>
-    <template #title>Pgen not available — fast-STAR fallback</template>
-    Generation Probability wasn't found for this input, so the block falls back to the
-    threshold-based fast-STAR call — <b>not</b> FDR-controlled. Run the Generation Probability block
-    on this dataset (an OLGA-supported species) and re-pick it here to enable full-STAR. The
-    per-chain thresholds below are the fast-STAR parameters.
+  <PlAlert v-if="heavyFast || lightFast" type="warn" label="Using fast-STAR">
+    No Generation Probability for this input, so hits are called by threshold — <b>not</b>
+    FDR-controlled. Run Generation Probability on this dataset and re-pick it here to enable
+    full-STAR.
   </PlAlert>
 
   <!-- Heavy-chain fast-STAR threshold. Only shown in fallback (no Pgen) —
@@ -200,10 +203,10 @@ const lightCheckboxDisabled = computed(() => {
     required
   >
     <template #tooltip>
-      fast-STAR frequency cutoff (used only when Pgen is unavailable). Clonotypes with a
-      neighbour-frequency above this value are flagged as convergent. Default 0.000961 corresponds
-      to ≈5% false-discovery rate on human IgH (Abbate et al. 2024). Recalibrate visually on the
-      histogram for non-human or non-IgH data.
+      fast-STAR frequency cutoff (used only when Generation Probability is unavailable). Clonotypes
+      with a neighbour-frequency above this value are flagged as convergent. Default 0.000961
+      corresponds to ≈5% false-discovery rate on human IgH (Abbate et al. 2024). Recalibrate
+      visually on the histogram for non-human or non-IgH data.
     </template>
   </PlNumberField>
 
@@ -223,10 +226,10 @@ const lightCheckboxDisabled = computed(() => {
         the light chain — emits a parallel light-chain hit column and histogram. Unchecked = heavy
         only.
         <template v-if="lightCheckboxDisabled">
-          <br /><br />Disabled: the heavy and light chains differ in Pgen availability, so one would
-          run full-STAR and the other fast-STAR. Mixing the two methods in a single run isn't
-          supported — run Generation Probability for both chains (or neither) to process the light
-          chain.
+          <br /><br />Disabled: the heavy and light chains differ in Generation Probability
+          availability, so one would run full-STAR and the other fast-STAR. Mixing the two methods
+          in a single run isn't supported — run Generation Probability for both chains (or neither)
+          to process the light chain.
         </template>
       </template>
     </PlTooltip>
@@ -245,9 +248,9 @@ const lightCheckboxDisabled = computed(() => {
     required
   >
     <template #tooltip>
-      fast-STAR frequency cutoff for the light chain (used only when Pgen is unavailable).
-      Light-chain diversity is lower (no D segment, shorter CDR3) and has no published FDR
-      calibration, so the heavy-calibrated value (0.000961) typically over-flags. Recalibrate
+      fast-STAR frequency cutoff for the light chain (used only when Generation Probability is
+      unavailable). Light-chain diversity is lower (no D segment, shorter CDR3) and has no published
+      FDR calibration, so the heavy-calibrated value (0.000961) typically over-flags. Recalibrate
       visually on the light-chain histogram.
     </template>
   </PlNumberField>
@@ -256,36 +259,39 @@ const lightCheckboxDisabled = computed(() => {
        to the one exported value per clonotype the in-vivo score / lead selection
        consume. Always visible. Defaults (both empty) = every sample an
        independent, eligible unit, convergent in >= 1. -->
+  <!-- Timepoint eligibility filter (A-0011): restrict the exported aggregate to
+       samples from the selected timepoints. Empty = use all samples. -->
   <PlDropdown
     v-model="app.model.data.expectedFilterRef"
     :options="metadataColumnOptions"
-    label="Timepoint"
+    label="Timepoint column"
     clearable
   >
     <template #tooltip>
-      Restrict the exported aggregate to biologically-expected samples (e.g. post-immunisation
-      timepoints). Pick a metadata column, then the values that count as expected. The block's own
-      per-sample table still shows every sample. Empty = use all samples.
+      Restrict the export to samples from the selected timepoints (e.g. post-immunisation). Empty =
+      all samples.
     </template>
   </PlDropdown>
+  <!-- Always visible; inactive until a Timepoint column is picked (no column →
+       no values to choose). -->
   <PlDropdownMulti
-    v-if="app.model.data.expectedFilterRef"
     v-model="expectedValuesModel"
     :options="expectedValueOptions.value ?? []"
-    label="Expected values"
+    label="Timepoints for export"
+    :disabled="!app.model.data.expectedFilterRef"
   />
   <PlDropdown
     v-model="app.model.data.groupingRef"
     :options="metadataColumnOptions"
-    label="Biological replicate"
+    label="Replicate"
     clearable
   >
     <template #tooltip>
-      Mark which samples are independent biological replicates (e.g. a donor / animal column), so
-      correlated same-replicate samples collapse before the across-replicate aggregation. Setting it
-      turns on cross-replicate reproducibility — a clone must be a hit in ≥ 2 replicates — and adds
-      the reproducibility term to the convergence score. Empty = every sample independent
-      (convergent in ≥ 1).
+      Which samples are independent replicates (e.g. a donor or animal column). This is what turns
+      on the <b>reproducibility</b> signal: samples sharing a replicate collapse together, a clone
+      must be convergent in ≥ 2 replicates to count as a hit, and cross-replicate recurrence feeds
+      the score (see Reproducibility weight). Empty = every sample treated as independent,
+      convergent in ≥ 1, and reproducibility is not used.
     </template>
   </PlDropdown>
 
@@ -303,26 +309,31 @@ const lightCheckboxDisabled = computed(() => {
       <template #tooltip>
         full-STAR false-discovery-rate target for the Benjamini–Hochberg call across each sample's
         clonotypes. Lower = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies
-        only when Pgen is available (full-STAR); ignored in the fast-STAR fallback.
+        only when Generation Probability is available (full-STAR); ignored in the fast-STAR
+        fallback.
       </template>
     </PlNumberField>
 
-    <!-- starScore strength↔reproducibility weight w (A-0011). The one score
-         knob; default 0.5. Only takes effect on the support term when an
-         independence grouping is set. -->
+    <!-- Reproducibility weight (A-0011): the displayed value is 1 − w (see the
+         reproducibilityWeightModel computed). The one score knob; default 0.5.
+         The reproducibility term only takes effect when a Replicate column is
+         set. -->
     <PlNumberField
-      v-model="scoreWeightModel"
-      label="Score weight: strength ↔ reproducibility (w)"
+      v-model="reproducibilityWeightModel"
+      label="Reproducibility weight"
       :min="0"
       :max="1"
       :step="0.05"
     >
       <template #tooltip>
-        Balances the exported convergence score between peak strength and cross-donor
-        reproducibility:
-        <b>starScore = w · pct(peak) + (1 − w) · pct(support)</b>. w = 1 ranks on convergence
-        strength alone; w = 0 on donor recurrence alone; 0.5 (default) blends them. The support term
-        is only active when an independence grouping is set.
+        The exported per-clonotype score blends two signals.
+        <b>Strength</b> — how convergent a clone is in its single strongest sample (its peak −log10
+        p-value). <b>Reproducibility</b> — in how many independent replicates the clone is
+        convergent (cross-replicate recurrence).
+        <b>score = (1 − w) · strength + w · reproducibility</b>, where w is this weight (0.5 =
+        equal; 1 = reproducibility only; 0 = strength only). Reproducibility is only computed when a
+        <b>Replicate</b> column is set — without one, every sample is its own unit, the score is
+        strength alone, and this weight has no effect.
       </template>
     </PlNumberField>
 
