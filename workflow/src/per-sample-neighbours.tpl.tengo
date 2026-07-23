@@ -107,18 +107,23 @@ self.body(func(inputs) {
 		cacheHours(24).
 		run()
 
-	// Stage 2 — hit calling. full-STAR (FDR-controlled, Pgen null) is the
-	// primary signal; fast-STAR (threshold) is the fallback when Pgen is absent
-	// for this chain. Both emit the SAME unified columns: starHit
-	// ("Hit"/"Not hit") + starScore (continuous, ranks decreasing).
-	calledTsv := undefined
+	// Stage 2 — hit calling, PARALLEL modes (A-0003/A-0010 v2). fast-STAR runs on
+	// EVERY chain (the always-on baseline); full-STAR is ADDED when this chain's
+	// Pgen is present. Both emit side by side with distinct v1-style names
+	// (A-0012): fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);
+	// full-STAR → fullStarScore (= -log10 p) + fullStar (BH hit).
+	//
+	// When Pgen is present, run full-STAR first: full_star.py emits fullstar.tsv
+	// = neighbours.tsv + Pvalue + starHit over ALL rows, so it's a superset we can
+	// base the merged pt step on. Otherwise base on neighbours.tsv (fast only).
+	baseTsv := neighboursCmd.getFile("neighbours.tsv")
 	if hasPgen {
 		// full-STAR: Poisson tail vs the Pgen null + Benjamini-Hochberg at alpha.
 		// uniq_nucl is derived from neighbours.tsv's nSeqCDR3 (== the nUniqueNt
 		// compute-neighbours reports), so compute-neighbours stays byte-identical
-		// (its pinned cache survives alpha tweaks). The tool emits the raw
-		// Pvalue; starScore = -log10(Pvalue) is applied here so it ranks in the
-		// same direction as fast-STAR's nbFreq (higher = more convergent).
+		// (its pinned cache survives alpha tweaks). full_star.py emits raw Pvalue
+		// + its BH hit ("starHit"); the pt step below turns those into
+		// fullStarScore = -log10(Pvalue) + fullStar.
 		fullStarCmd := exec.builder().
 			software(fullStarSw).
 			cpu(1).
@@ -132,32 +137,33 @@ self.body(func(inputs) {
 			addFile("neighbours.tsv", neighboursCmd.getFile("neighbours.tsv")).
 			saveFile("fullstar.tsv").
 			run()
-		scoreWf := pt.workflow().mem("1GiB").cpu(1)
-		scoreDf := scoreWf.frame(fullStarCmd.getFile("fullstar.tsv"), { xsvType: "tsv", inferSchema: false }).
-			withColumns(
-				pt.col("Pvalue").cast("Float64").log10().negate().alias("starScore"))
-		scoreDf.save("called.tsv")
-		calledTsv = scoreWf.run().getFile("called.tsv")
-	} else {
-		// fast-STAR fallback: starHit = Nb_freq > threshold (strict); starScore
-		// = Nb_freq. inferSchema false → cast Nb_freq to Float64 only for the
-		// comparison, so blank / non-numeric values become null → "Not hit".
-		thrWf := pt.workflow().mem("1GiB").cpu(1)
-		thrDf := thrWf.frame(neighboursCmd.getFile("neighbours.tsv"), { xsvType: "tsv", inferSchema: false }).
-			withColumns(
-				pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(inputs.threshold))).
-					then(pt.lit("Hit")).
-					otherwise(pt.lit("Not hit")).
-					alias("starHit"),
-				pt.col("Nb_freq").cast("Float64").alias("starScore"))
-		thrDf.save("called.tsv")
-		calledTsv = thrWf.run().getFile("called.tsv")
+		baseTsv = fullStarCmd.getFile("fullstar.tsv")
 	}
 
-	// Stage 3 — paper's cluster filter, only when enabled. Method-agnostic:
-	// refines whichever starHit set exists (full- or fast-STAR) via
-	// --hit-column starHit. Adds starHitClusterFiltered + clusterSize. One
-	// sample per invocation, so clustering is within this sample's rows.
+	// Derive the per-mode columns. inferSchema false → cast Nb_freq / Pvalue to
+	// Float64 only where compared, so blank / non-numeric values become null →
+	// "Not hit" / null score. fast-STAR always; full-STAR columns appended when
+	// Pgen was present (Pvalue / starHit exist in the superset base).
+	callWf := pt.workflow().mem("1GiB").cpu(1)
+	callCols := [
+		pt.col("Nb_freq").cast("Float64").alias("nbFreq"),
+		pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(inputs.threshold))).
+			then(pt.lit("Hit")).
+			otherwise(pt.lit("Not hit")).
+			alias("fastStar")
+	]
+	if hasPgen {
+		callCols = append(callCols,
+			pt.col("Pvalue").cast("Float64").log10().negate().alias("fullStarScore"),
+			pt.col("starHit").alias("fullStar"))
+	}
+	callDf := callWf.frame(baseTsv, { xsvType: "tsv", inferSchema: false }).withColumns(callCols...)
+	callDf.save("called.tsv")
+	calledTsv := callWf.run().getFile("called.tsv")
+
+	// Stage 3 — paper's cluster filter, only when enabled. Refines the fast-STAR
+	// hit (fastStar) → fastStarClusterFiltered + clusterSize (A-0012). One sample
+	// per invocation, so clustering is within this sample's rows.
 	finalTsv := calledTsv
 	if inputs.applyClusterFilter {
 		clusterCmd := exec.builder().
@@ -168,7 +174,7 @@ self.body(func(inputs) {
 			arg("--output").arg("output.tsv").
 			arg("--cluster-min").arg(string(inputs.clusterMin)).
 			arg("--chain").arg(inputs.chain).
-			arg("--hit-column").arg("starHit").
+			arg("--hit-column").arg("fastStar").
 			addFile("called.tsv", finalTsv).
 			saveFile("output.tsv").
 			run()

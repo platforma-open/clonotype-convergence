@@ -182,10 +182,14 @@ def main() -> int:
         return 2
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Only starScore + starHit are exported (A-0012/A-0014). `support` (donor-hit
-    # count) is computed internally — it feeds the starScore blend and the k-call
-    # — but is NOT emitted as its own column.
-    out_cols = [clone_c, "starScore", "starHit"]
+    # Output columns are named after the MODE being aggregated (A-0012 v2): the
+    # workflow calls this once per emitted mode with --score-column/--hit-column
+    # = nbFreq/fastStar (fast-STAR) or fullStarScore/fullStar (full-STAR), and
+    # the aggregated result carries those same names. Internally the blend/hit
+    # are computed as starScore/starHit and renamed on write. `support` (donor-
+    # hit count) is computed internally (feeds the blend + the k-call) but is NOT
+    # emitted.
+    out_cols = [clone_c, score_c, hit_c]
 
     log(prefix, f"input rows (sample x clonotype): {len(df)}")
     if len(df) == 0:
@@ -292,9 +296,13 @@ def main() -> int:
         per_clone["starScore"] = pct_peak
         log(prefix, "starScore = pct(peak) (no grouping → support undefined)")
 
-    result = per_clone[[clone_c, "starScore", "starHit"]].sort_values("starScore", ascending=False)
+    result = (
+        per_clone[[clone_c, "starScore", "starHit"]]
+        .sort_values("starScore", ascending=False)
+        .rename(columns={"starScore": score_c, "starHit": hit_c})
+    )
     result.to_csv(args.output, sep="\t", index=False)
-    log(prefix, f"aggregated to {len(result)} clonotypes; {int((result['starHit'] == 'Hit').sum())} hits")
+    log(prefix, f"aggregated to {len(result)} clonotypes; {int((result[hit_c] == 'Hit').sum())} hits")
     log(prefix, "aggregate done")
     return 0
 

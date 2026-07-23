@@ -5,7 +5,7 @@
    explicitly.
 2. cluster_filter.py is method-agnostic — it refines whatever `starHit`=="Hit"
    set exists (full- or fast-STAR) via --hit-column, emitting
-   starHitClusterFiltered + clusterSize.
+   fastStarClusterFiltered + clusterSize.
 
 Run:  cd software && python -m pytest test/test_workflow_mode.py
 """
@@ -64,8 +64,8 @@ def test_cluster_filter_method_agnostic(tmp_path):
                                "--cluster-min", "3", "--chain", "IGHeavy",
                                "--hit-column", "starHit"])
     r = pd.read_csv(out, sep="\t")
-    assert "starHitClusterFiltered" in r.columns and "clusterSize" in r.columns
-    filt = dict(zip(r["aaSeqCDR3"], r["starHitClusterFiltered"]))
+    assert "fastStarClusterFiltered" in r.columns and "clusterSize" in r.columns
+    filt = dict(zip(r["aaSeqCDR3"], r["fastStarClusterFiltered"]))
     # 4-member cluster survives; singleton hit and the non-hit do not.
     assert filt["CARDYW"] == "Hit" and filt["CARDYS"] == "Hit"
     assert filt["CWWWWW"] == "Not hit" and filt["CGGGGG"] == "Not hit"

@@ -196,10 +196,9 @@ wf.body(func(args) {
 		anchorSpec := columns.getSpec(anchorRef)
 		labelCols := columns.getColumns(labelKey)
 
-		// full-STAR vs fast-STAR is decided by the dataset-facts snapshot
-		// (hasPgen, threaded from args via the caller), not by live pool state —
-		// so UI, args, and workflow agree on the method (A-0009/A-0010).
-		method := hasPgen ? "full-STAR" : "fast-STAR"
+		// fast-STAR runs on every chain; full-STAR is ADDED when this chain has
+		// Pgen (`hasPgen`, threaded from args via the caller — A-0009/A-0010).
+		// Both modes emit side by side (A-0003 v2).
 
 		// ---- Per-sample dedup ----
 		// Pack the CDR3 sequences into ONE String value per (sampleId,
@@ -255,45 +254,25 @@ wf.body(func(args) {
 			data: packedData
 		}
 
-		// Convergence output column specs (A-0012). One stable name across
-		// methods; full-STAR vs fast-STAR distinguished by the `method` domain
-		// (like heavy/light via `chain`). starScore's value semantics + non-
-		// identity annotations differ by method: full-STAR = -log10(p) (no fixed
-		// threshold); fast-STAR = nbFreq frequency (keeps .3~% + threshold line).
-		// Stage-3 cluster columns only when the filter is enabled — must match
-		// exactly what the body's TSV carries (xsv.importFile errors on
-		// declared-but-missing).
-		// Chain identity on the convergence columns MUST follow the dataset's
-		// convention so downstream enrichment matches by the same axes+domain the
-		// clonotype-key columns use. Bulk: chain lives on the clonotype-key axis
-		// domain, and blocks additionally stamp pl7.app/vdj/chain on the value
-		// column. SC: heavy and light hang off the SAME scClonotypeKey axis and are
-		// distinguished by the column-domain pl7.app/vdj/scClonotypeChain letter
-		// ("A"/"B") — NOT pl7.app/vdj/chain (a bulk-style domain with no meaning on
-		// an SC column that would break enrichment against SC siblings such as
-		// gen-prob's Pgen). scLetter is defined <=> SC mode (from the model).
+		// Convergence output column specs (A-0012 v2). fast-STAR and full-STAR are
+		// emitted SIDE BY SIDE under distinct v1-style names — the method lives in
+		// the NAME, not a domain key. fast-STAR (always): neighbours (inner), nbFreq
+		// (score), fastStar (hit) — exact v1 identity so v1 consumers resolve
+		// unchanged. full-STAR (added only when this chain has Pgen): fullStarScore
+		// (-log10 p), fullStar (hit). Stage-3 cluster columns only when the filter is
+		// on (xsv.importFile errors on declared-but-missing).
+		//
+		// Chain identity follows the dataset convention so downstream enrichment
+		// matches: bulk stamps pl7.app/vdj/chain; SC uses the column-domain
+		// scClonotypeChain letter ("A"/"B") — NOT pl7.app/vdj/chain (meaningless on an
+		// SC column, breaks enrichment vs SC siblings like gen-prob's Pgen). scLetter
+		// is defined <=> SC mode.
 		isSC := !is_undefined(scLetter)
-		convDomain := {
-			"pl7.app/block": blockId,
-			"pl7.app/vdj/convergence/method": method
-		}
+		convDomain := { "pl7.app/block": blockId }
 		if isSC {
 			convDomain["pl7.app/vdj/scClonotypeChain"] = scLetter
 		} else {
 			convDomain["pl7.app/vdj/chain"] = chainName
-		}
-		starScoreAnn := {
-			"pl7.app/label": withChain("Convergence score"),
-			"pl7.app/table/visibility": "default",
-			"pl7.app/isScore": "true",
-			"pl7.app/score/rankingOrder": "decreasing"
-		}
-		if hasPgen {
-			starScoreAnn["pl7.app/description"] = "full-STAR convergence score: -log10 of the Benjamini-Hochberg-tested Poisson-tail p-value against the clone's generation-probability null. Higher = more convergent (less probable under recombination alone). Per sample."
-		} else {
-			starScoreAnn["pl7.app/description"] = "fast-STAR convergence score: convergent neighbour frequency (same-length aa CDR3s differing by one aa, over unique nucleotide CDR3s). Higher = denser one-mutation neighbourhood. Per sample; the fast-STAR threshold is applied to this value."
-			starScoreAnn["pl7.app/format"] = ".3~%"
-			starScoreAnn["pl7.app/graph/thresholds"] = string(json.encode([{ value: threshold, label: "Threshold" }]))
 		}
 		columnSpecs := [
 			{ column: "neighbours", spec: {
@@ -303,39 +282,76 @@ wf.body(func(args) {
 				annotations: {
 					"pl7.app/label": withChain("Convergent neighbours"),
 					"pl7.app/table/visibility": "default",
-					"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted)."
+					"pl7.app/description": "Raw count of same-length amino-acid CDR3 neighbours for this clone in the sample (multiplicity-weighted). The numerator of Convergent neighbour frequency. Per sample."
 				}
 			}},
-			{ column: "starHit", spec: {
-				name: "pl7.app/vdj/convergence/starHit",
+			{ column: "nbFreq", spec: {
+				name: "pl7.app/vdj/convergence/nbFreq",
+				valueType: "Double",
+				domain: convDomain,
+				annotations: {
+					"pl7.app/label": withChain("Convergent neighbour frequency"),
+					"pl7.app/table/visibility": "default",
+					"pl7.app/isScore": "true",
+					"pl7.app/score/rankingOrder": "decreasing",
+					"pl7.app/format": ".3~%",
+					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
+					"pl7.app/description": "fast-STAR convergence score: convergent neighbour frequency (same-length aa CDR3s differing by one aa, over unique nucleotide CDR3s). Higher = denser one-mutation neighbourhood. Per sample; the fast-STAR threshold is applied to this value."
+				}
+			}},
+			{ column: "fastStar", spec: {
+				name: "pl7.app/vdj/convergence/fastStar",
 				valueType: "String",
 				domain: convDomain,
 				annotations: {
-					"pl7.app/label": withChain("Convergent hit"),
-					"pl7.app/description": "Whether this clone is called convergent. full-STAR: an FDR-controlled Poisson test of the neighbour count against the generation-probability null (Benjamini-Hochberg at the FDR target alpha). fast-STAR (fallback): convergent neighbour frequency above the configured threshold. Per sample.",
+					"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
+					"pl7.app/description": "Whether this clone's convergent neighbour frequency exceeds the configured fast-STAR threshold. Per sample.",
 					"pl7.app/table/visibility": "default",
 					"pl7.app/isDiscreteFilter": "true",
 					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
 					"pl7.app/isScore": "true",
 					"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
 				}
-			}},
-			{ column: "starScore", spec: {
-				name: "pl7.app/vdj/convergence/starScore",
-				valueType: "Double",
-				domain: convDomain,
-				annotations: starScoreAnn
 			}}
 		]
+		if hasPgen {
+			columnSpecs = append(columnSpecs,
+				{ column: "fullStarScore", spec: {
+					name: "pl7.app/vdj/convergence/fullStarScore",
+					valueType: "Double",
+					domain: convDomain,
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit score (full-STAR)"),
+						"pl7.app/table/visibility": "default",
+						"pl7.app/isScore": "true",
+						"pl7.app/score/rankingOrder": "decreasing",
+						"pl7.app/description": "full-STAR convergence score: -log10 of the Benjamini-Hochberg-tested Poisson-tail p-value against the clone's generation-probability null. Higher = more convergent (less probable under recombination alone). No fixed threshold — the cutoff is the FDR call. Per sample."
+					}
+				}},
+				{ column: "fullStar", spec: {
+					name: "pl7.app/vdj/convergence/fullStar",
+					valueType: "String",
+					domain: convDomain,
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit (full-STAR)"),
+						"pl7.app/description": "Whether this clone is called convergent by full-STAR: an FDR-controlled Poisson test of the neighbour count against the generation-probability null (Benjamini-Hochberg at the FDR target alpha). Per sample.",
+						"pl7.app/table/visibility": "default",
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+						"pl7.app/isScore": "true",
+						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
+					}
+				}})
+		}
 		if args.applyClusterFilter {
 			columnSpecs = append(columnSpecs,
-				{ column: "starHitClusterFiltered", spec: {
-					name: "pl7.app/vdj/convergence/starHitClusterFiltered",
+				{ column: "fastStarClusterFiltered", spec: {
+					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
 					valueType: "String",
 					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "Stricter binder signal: a convergent hit whose CDR3 also belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. Suppresses noise; a strict subset of Convergent hit. Per sample.",
+						"pl7.app/description": "Stricter binder signal: a fast-STAR hit whose CDR3 also belongs to a cluster of similar CDR3s (one-edit distance) of at least the configured minimum size. A strict subset of the fast-STAR hit. Per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
@@ -350,8 +366,7 @@ wf.body(func(args) {
 						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
-				}}
-			)
+				}})
 		}
 
 		perSampleResult := pframes.processColumn(
@@ -449,7 +464,7 @@ wf.body(func(args) {
 		// apart columns from multiple convergence blocks reading the same
 		// dataset. customBlockLabel (user override) wins; else the
 		// parameter-encoding defaultBlockLabel; static name as last resort.
-		traceLabel := args.customBlockLabel || args.defaultBlockLabel || ("Clonotype convergence (" + method + ")")
+		traceLabel := args.customBlockLabel || args.defaultBlockLabel || "Clonotype convergence"
 		trace := pSpec.makeTrace(anchorSpec, {
 			type: "milaboratories.clonotype-convergence",
 			id: blockId,
@@ -480,38 +495,19 @@ wf.body(func(args) {
 			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
 		}
 
-		// ---- Stage 4: aggregate to the clonotype-only axis (A-0011) ----
-		// Collapse the per-sample signal to one value per clonotype so the
-		// downstream in-vivo score / lead selection can consume it (A-0006). Only
-		// starScore + starHit are exported (+ a support count); neighbours stays a
-		// per-sample inner/QC value (A-0012 follow-up). The aggregation RULES (max,
-		// two-level grouping, k-replicability, eligibility filter, alpha-trim) live
-		// in the `aggregate` software — parameterised so they can change (Q-0009)
-		// without touching the workflow. Input is the reassembled per-sample TSV.
-		// k is not user-exposed (A-0011/A-0015): the model sets it to 2 when an
-		// independence grouping is present, else 1. `w` is the strength↔
-		// reproducibility weight for the starScore blend (Advanced, default 0.5).
+		// ---- Stage 4: aggregate to the clonotype-only axis (A-0011), PER MODE ----
+		// Each emitted mode collapses independently: fast-STAR (nbFreq/fastStar)
+		// always, full-STAR (fullStarScore/fullStar) when this chain has Pgen. The
+		// aggregation function (peak/support percentile blend + >=k BH hit) is the
+		// same for both — only the input score/hit columns differ (A-0011 v2). The
+		// aggregate software is parameterised by --score-column/--hit-column/--method
+		// and names its output columns to match. `neighbours` is NOT aggregated.
 		aggReplicabilityK := is_undefined(args.replicabilityK) ? 1 : args.replicabilityK
 		scoreWeight := is_undefined(args.scoreWeight) ? 0.5 : args.scoreWeight
-		aggCmd := exec.builder().
-			software(aggregateSw).
-			cpu(1).
-			mem("4GiB").
-			arg("--input").arg("per_sample.tsv").
-			arg("--output").arg("aggregated.tsv").
-			arg("--chain").arg(chainName).
-			arg("--method").arg(method).
-			arg("--alpha").arg(string(alpha)).
-			arg("--k").arg(string(aggReplicabilityK)).
-			arg("--weight").arg(string(scoreWeight)).
-			addFile("per_sample.tsv", perSampleTsv).
-			saveFile("aggregated.tsv")
-		// fast-STAR fallback aggregates against the same nbFreq threshold.
-		if !hasPgen {
-			aggCmd = aggCmd.arg("--threshold").arg(string(threshold))
-		}
-		// Sample-metadata TSV (sampleId + optional expected / unit), from the
-		// by-ref-resolved metadata columns; aggregate.py joins it on sampleId.
+
+		// Sample-metadata TSV (sampleId + optional expected / unit), built once and
+		// shared across the per-mode aggregations.
+		metaTsv := undefined
 		if !is_undefined(args.expectedFilterRef) || !is_undefined(args.groupingRef) {
 			metaBuilder := pframes.tsvFileBuilder()
 			metaBuilder.setAxisHeader(anchorSpec.axesSpec[0].name, "sampleId")
@@ -523,108 +519,134 @@ wf.body(func(args) {
 				gr := columns.getColumn("grouping")
 				metaBuilder.add({ spec: gr.spec, data: gr.data }, { header: "unit" })
 			}
-			aggCmd = aggCmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaBuilder.build())
-			if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
-				// json.encode returns bytes; exec.arg needs a string.
-				aggCmd = aggCmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+			metaTsv = metaBuilder.build()
+		}
+
+		// aggregateMode — run aggregate.py for one mode; returns aggregated.tsv
+		// (columns clonotypeKey + scoreCol + hitCol, named after the mode).
+		aggregateMode := func(scoreCol, hitCol, methodName) {
+			cmd := exec.builder().
+				software(aggregateSw).
+				cpu(1).
+				mem("4GiB").
+				arg("--input").arg("per_sample.tsv").
+				arg("--output").arg("aggregated.tsv").
+				arg("--chain").arg(chainName).
+				arg("--method").arg(methodName).
+				arg("--score-column").arg(scoreCol).
+				arg("--hit-column").arg(hitCol).
+				arg("--alpha").arg(string(alpha)).
+				arg("--k").arg(string(aggReplicabilityK)).
+				arg("--weight").arg(string(scoreWeight)).
+				addFile("per_sample.tsv", perSampleTsv).
+				saveFile("aggregated.tsv")
+			if methodName == "fast-STAR" {
+				cmd = cmd.arg("--threshold").arg(string(threshold))
 			}
-		}
-		aggregatedTsv := aggCmd.run().getFile("aggregated.tsv")
-
-		// Hit-count stats badge: {above, total}, counted over the AGGREGATED,
-		// clonotype-only export (A-0011) — one row per clonotype. `above` = clones
-		// called convergent across the repertoire (starHit == "Hit"); `total` =
-		// clonotypes. This is the exported signal's own summary; the old per-sample
-		// sum (a clonotype counted once per sample it appeared in) is not meaningful
-		// for the aggregated result the block now surfaces.
-		statsWf := pt.workflow().mem("2GiB").cpu(1)
-		statsDf := statsWf.frame(aggregatedTsv, { xsvType: "tsv", inferSchema: false })
-		statsDf.select(
-			pt.col("starHit").count().alias("total"),
-			pt.when(pt.col("starHit").eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
-		).saveContent("stats.ndjson")
-		finalStatsJson := statsWf.run().getFileContent("stats.ndjson")
-
-		// The exported starScore is the AGGREGATED reproducibility blend (A-0011):
-		// a percentile in [0,1], method-agnostic (NOT the per-sample -log10 p /
-		// nbFreq), so it carries none of the per-sample format / threshold-line
-		// annotations. Higher = more convergent and/or more reproducible.
-		exportStarScoreAnn := {
-			"pl7.app/label": withChain("Convergence score"),
-			"pl7.app/table/visibility": "default",
-			"pl7.app/isScore": "true",
-			"pl7.app/score/rankingOrder": "decreasing",
-			"pl7.app/description": "Aggregated convergence score on the clonotype axis (A-0011): a weighted blend of the clone's peak per-donor convergence and its cross-donor support, each percentile-ranked across clonotypes (in [0,1]; higher = more convergent and/or more reproducible). The strength-vs-reproducibility weight is a block setting."
+			if !is_undefined(metaTsv) {
+				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
+				if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
+					cmd = cmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+				}
+			}
+			return cmd.run().getFile("aggregated.tsv")
 		}
 
-		// Import as clonotype-only PColumns (no sampleId axis) — the
-		// downstream-consumable export family (A-0006): the SAME column identity as
-		// the per-sample columns (A-0012), one axis less. Only starScore + starHit
-		// are exported; support is internal to the score blend (not a column).
+		// statsFor — hit-count badge {above,total} over one mode's aggregated TSV.
+		statsFor := func(aggTsv, hitCol) {
+			wf := pt.workflow().mem("2GiB").cpu(1)
+			df := wf.frame(aggTsv, { xsvType: "tsv", inferSchema: false })
+			df.select(
+				pt.col(hitCol).count().alias("total"),
+				pt.when(pt.col(hitCol).eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
+			).saveContent("stats.ndjson")
+			return wf.run().getFileContent("stats.ndjson")
+		}
+
 		exportCloneAxis := {
 			name: anchorSpec.axesSpec[1].name,
 			type: anchorSpec.axesSpec[1].type,
 			domain: anchorSpec.axesSpec[1].domain,
 			annotations: { "pl7.app/label": "clonotypeKey" }
 		}
-		aggFrame := xsv.importFile(aggregatedTsv, "tsv", {
-			axes: [{ column: "clonotypeKey", spec: exportCloneAxis }],
-			columns: [
-				{ column: "starScore", spec: {
-					name: "pl7.app/vdj/convergence/starScore",
-					valueType: "Double",
-					domain: convDomain,
-					annotations: exportStarScoreAnn
-				}},
-				{ column: "starHit", spec: {
-					name: "pl7.app/vdj/convergence/starHit",
-					valueType: "String",
-					domain: convDomain,
-					annotations: {
-						"pl7.app/label": withChain("Convergent hit"),
-						"pl7.app/description": "Whether this clone is called convergent across the repertoire (aggregated to the clonotype axis). full-STAR: Benjamini-Hochberg across clonotypes of the per-clonotype combined p-value at the FDR target alpha (>= k units when replicability is on); fast-STAR: aggregated neighbour frequency above the threshold.",
-						"pl7.app/isDiscreteFilter": "true",
-						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
-						"pl7.app/isScore": "true",
-						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
-					}
-				}}
-			],
-			storageFormat: "Parquet",
-			partitionKeyLength: 0
-		}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
 
-		// Clonotype-only export pframe, block trace injected (owned output). This
-		// is the block's OWN model-facing aggregated family (starScore + starHit),
-		// kept one-row-per-clonotype so the aggregated table + score histogram stay
-		// clonotype-only.
+		// Exported score = the AGGREGATED reproducibility blend (A-0011): a percentile
+		// in [0,1] (NOT the per-sample nbFreq / -log10 p), so it drops the per-sample
+		// format / threshold-line annotations. The column keeps its mode NAME so
+		// consumers resolve it by name (A-0012/A-0013).
+		blendDesc := "Aggregated convergence score on the clonotype axis: a weighted blend of the clone's peak per-donor convergence and its cross-donor support, each percentile-ranked across clonotypes (in [0,1]; higher = more convergent and/or more reproducible). The strength-vs-reproducibility weight is a block setting."
+		hitDescAgg := "Whether this clone is called convergent across the repertoire (aggregated to the clonotype axis): Benjamini-Hochberg across clonotypes at the FDR target alpha (>= k replicates when a replicate grouping is set)."
+
 		exportPfBuilder := pframes.pFrameBuilder()
-		exportPfBuilder.add("starScore", trace.inject(aggFrame["starScore"].spec), aggFrame["starScore"].data)
-		exportPfBuilder.add("starHit", trace.inject(aggFrame["starHit"].spec), aggFrame["starHit"].data)
+		poolExportPfBuilder := pframes.pFrameBuilder()
 
-		// Pool export family (A-0006): the aggregated starScore + starHit PLUS the
-		// full per-sample Convergent-neighbours column (both sampleId and
-		// clonotypeKey axes). Downstream (lead selection) consumes the raw
-		// per-sample neighbour count alongside the aggregated signal, so the pool
-		// export carries it in full; the block's own model family (exportPf) stays
-		// clonotype-only so its table doesn't fan back out over samples.
+		// addMode — import one mode's aggregated TSV; add its score + hit to both the
+		// model-facing (exportPf) and pool (poolExportPf) families.
+		addMode := func(aggTsv, scoreCol, hitCol, scoreLabel, hitLabel) {
+			frame := xsv.importFile(aggTsv, "tsv", {
+				axes: [{ column: "clonotypeKey", spec: exportCloneAxis }],
+				columns: [
+					{ column: scoreCol, spec: {
+						name: "pl7.app/vdj/convergence/" + scoreCol,
+						valueType: "Double",
+						domain: convDomain,
+						annotations: {
+							"pl7.app/label": withChain(scoreLabel),
+							"pl7.app/table/visibility": "default",
+							"pl7.app/isScore": "true",
+							"pl7.app/score/rankingOrder": "decreasing",
+							"pl7.app/description": blendDesc
+						}
+					}},
+					{ column: hitCol, spec: {
+						name: "pl7.app/vdj/convergence/" + hitCol,
+						valueType: "String",
+						domain: convDomain,
+						annotations: {
+							"pl7.app/label": withChain(hitLabel),
+							"pl7.app/description": hitDescAgg,
+							"pl7.app/isDiscreteFilter": "true",
+							"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+							"pl7.app/isScore": "true",
+							"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
+						}
+					}}
+				],
+				storageFormat: "Parquet",
+				partitionKeyLength: 0
+			}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
+			exportPfBuilder.add(scoreCol, trace.inject(frame[scoreCol].spec), frame[scoreCol].data)
+			exportPfBuilder.add(hitCol, trace.inject(frame[hitCol].spec), frame[hitCol].data)
+			poolExportPfBuilder.add(scoreCol, trace.inject(frame[scoreCol].spec), frame[scoreCol].data)
+			poolExportPfBuilder.add(hitCol, trace.inject(frame[hitCol].spec), frame[hitCol].data)
+		}
+
+		// fast-STAR: always.
+		fastAggTsv := aggregateMode("nbFreq", "fastStar", "fast-STAR")
+		addMode(fastAggTsv, "nbFreq", "fastStar", "Convergent neighbour frequency", "Convergent hit (fast-STAR)")
+		statsFast := statsFor(fastAggTsv, "fastStar")
+
+		// full-STAR: added when this chain has Pgen.
+		statsFull := undefined
+		if hasPgen {
+			fullAggTsv := aggregateMode("fullStarScore", "fullStar", "full-STAR")
+			addMode(fullAggTsv, "fullStarScore", "fullStar", "Convergent hit score (full-STAR)", "Convergent hit (full-STAR)")
+			statsFull = statsFor(fullAggTsv, "fullStar")
+		}
+
+		// Pool export also carries the full per-sample neighbours column (both axes)
+		// — downstream requested the raw per-sample count (deviation from A-0012's
+		// inner-only, per operator).
 		neighboursSpec := perSampleResult.outputSpec("neighbours", "neighbours")
 		neighboursData := perSampleResult.outputData("neighbours", "neighbours")
-		poolExportPfBuilder := pframes.pFrameBuilder()
-		poolExportPfBuilder.add("starScore", trace.inject(aggFrame["starScore"].spec), aggFrame["starScore"].data)
-		poolExportPfBuilder.add("starHit", trace.inject(aggFrame["starHit"].spec), aggFrame["starHit"].data)
 		poolExportPfBuilder.add("neighbours", trace.inject(neighboursSpec), neighboursData)
 
 		return {
 			pf: pfBuilder.build(),
-			// Clonotype-only aggregated family — the block's own model-facing table.
 			exportPf: exportPfBuilder.build(),
-			// Downstream-consumable pool export (aggregated + per-sample neighbours).
 			poolExportPf: poolExportPfBuilder.build(),
-			statsJson: finalStatsJson,
-			// Per-sample fan-out sidecars, keyed by the sampleId. The model
-			// attaches sample labels (logs) and builds the skipped-samples
-			// warning (status).
+			statsFast: statsFast,
+			statsFull: statsFull,
 			perSampleLogs: perSampleResult.outputData("log"),
 			perSampleStatus: perSampleResult.outputData("status")
 		}
@@ -651,7 +673,11 @@ wf.body(func(args) {
 		// table + histograms only. It is not pooled downstream — consumers
 		// enrich by clonotype key, never by sampleId axis.
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
-		outputs.heavyHitStats = heavy.statsJson
+		// Per-mode hit stats (A-0015): fast-STAR always, full-STAR when it ran.
+		outputs.heavyFastStats = heavy.statsFast
+		if !is_undefined(heavy.statsFull) {
+			outputs.heavyFullStats = heavy.statsFull
+		}
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
 		// Clonotype-only aggregated family → the result pool (A-0006/A-0011):
@@ -679,7 +705,10 @@ wf.body(func(args) {
 		)
 		// Light multi-sample family also internal-only — see heavy above.
 		outputs.lightConvergencePf = pframes.exportFrame(light.pf)
-		outputs.lightHitStats = light.statsJson
+		outputs.lightFastStats = light.statsFast
+		if !is_undefined(light.statsFull) {
+			outputs.lightFullStats = light.statsFull
+		}
 		outputs.lightPerSampleLogs = light.perSampleLogs
 		outputs.lightPerSampleStatus = light.perSampleStatus
 		exports.lightConvergence = light.poolExportPf

@@ -25,6 +25,10 @@ type Panel = "settings" | "logs" | "stats" | null;
 // add (no dataset yet).
 const ui = reactive({
   activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
+  // Per-chain dismiss flags for the closable "full-STAR not computed" info
+  // banners (local only — not persisted).
+  dismissedFullStarHeavy: false,
+  dismissedFullStarLight: false,
 });
 
 // Single mutation path (only one panel is open at a time). Header buttons open
@@ -51,7 +55,11 @@ const statsOpen = panelModel("stats");
 
 // Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
-  () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
+  () =>
+    !!app.model.outputs.heavyFastStats ||
+    !!app.model.outputs.heavyFullStats ||
+    !!app.model.outputs.lightFastStats ||
+    !!app.model.outputs.lightFullStats,
 );
 
 // Skipped-samples warning. `belowMin` lists samples that had CDR3 data
@@ -85,10 +93,12 @@ const skippedNoCdr3 = computed<string[]>(() => {
 const heavyAllEmpty = computed(() => app.model.outputs.heavySkippedSamples?.allEmpty === true);
 const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allEmpty === true);
 
-// fast-STAR fallback: the last run used the threshold-based call for a
-// processed chain (no Pgen) instead of FDR-controlled full-STAR (A-0010).
+// Per-chain full-STAR availability (A-0010 v2): fast-STAR runs on every chain;
+// full-STAR is added only where that chain has Generation Probability. A chain
+// PROCESSED without full-STAR gets a per-chain banner (it shows fast-STAR only).
 // From activeArgs (what actually ran), so it matches the shown results.
-const inFallback = computed(() => app.model.outputs.ranFallback === true);
+const fullStarMissingHeavy = computed(() => app.model.outputs.fullStarMissingHeavy === true);
+const fullStarMissingLight = computed(() => app.model.outputs.fullStarMissingLight === true);
 
 // Auto-close the Settings modal when a Run commits. `runArgsId` (model output
 // over activeArgs) changes only when a Run actually commits new args, so this
@@ -155,9 +165,26 @@ const customBlockLabel = computed({
       </PlBtnGhost>
     </template>
 
-    <PlAlert v-if="inFallback" type="warn" label="Using fast-STAR">
-      No Generation Probability for this input, so hits are called by threshold (<b>not</b>
-      FDR-controlled). Run Generation Probability on this dataset to enable full-STAR.
+    <PlAlert
+      :model-value="fullStarMissingHeavy && !ui.dismissedFullStarHeavy"
+      type="info"
+      closeable
+      label="Heavy chain: full-STAR not computed"
+      @update:model-value="ui.dismissedFullStarHeavy = true"
+    >
+      No Generation Probability for the heavy chain, so it shows <b>fast-STAR only</b> (threshold
+      call, not FDR-controlled). Run Generation Probability on this dataset to add full-STAR.
+    </PlAlert>
+
+    <PlAlert
+      :model-value="fullStarMissingLight && !ui.dismissedFullStarLight"
+      type="info"
+      closeable
+      label="Light chain: full-STAR not computed"
+      @update:model-value="ui.dismissedFullStarLight = true"
+    >
+      No Generation Probability for the light chain, so it shows <b>fast-STAR only</b> (threshold
+      call, not FDR-controlled). Run Generation Probability on this dataset to add full-STAR.
     </PlAlert>
 
     <PlAlert

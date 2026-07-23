@@ -2,12 +2,10 @@ import type { PlRef } from "@platforma-sdk/model";
 import { platforma } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import { defineAppV3 } from "@platforma-sdk/ui-vue";
 import { watch } from "vue";
-import HeavyChainPage from "./pages/HeavyChainPage.vue";
-import LightChainPage from "./pages/LightChainPage.vue";
+import AggregatedDistributionPage from "./pages/AggregatedDistributionPage.vue";
 import MainPage from "./pages/MainPage.vue";
+import PerSampleDistributionPage from "./pages/PerSampleDistributionPage.vue";
 import PerSamplePage from "./pages/PerSamplePage.vue";
-import ScoreHeavyPage from "./pages/ScoreHeavyPage.vue";
-import ScoreLightPage from "./pages/ScoreLightPage.vue";
 
 export const sdkPlugin = defineAppV3(platforma, (app) => {
   // Keep the dataset snapshot's Generation Probability fields live (A-0010).
@@ -17,17 +15,15 @@ export const sdkPlugin = defineAppV3(platforma, (app) => {
     progress: () => app.model.outputs.isRunning,
     routes: {
       // "/" → the aggregated, clonotype-only table (A-0015) — the shape
-      // downstream consumes, shown first. Anchored on the populated chain.
+      // downstream consumes, shown first.
       "/": () => MainPage,
+      // Two selector-driven distribution charts (A-0015 v2): aggregated (the
+      // exported clonotype-only scores) and per-sample. Each offers every score
+      // across chain × mode via the Y-axis predicate.
+      "/distribution/aggregated": () => AggregatedDistributionPage,
+      "/distribution/per-sample": () => PerSampleDistributionPage,
       // Per-sample QC table (v1's internal per-sample family, sample sheet).
       "/per-sample": () => PerSamplePage,
-      // Per-chain aggregated convergence-score histograms (starScore by starHit).
-      "/convergence/score-heavy": () => ScoreHeavyPage,
-      "/convergence/score-light": () => ScoreLightPage,
-      // Per-chain per-sample neighbour-frequency (QC) histograms. Each shown
-      // only when its chain is processed.
-      "/convergence/heavy": () => HeavyChainPage,
-      "/convergence/light": () => LightChainPage,
     },
   };
 });

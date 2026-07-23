@@ -5,13 +5,13 @@ Method-agnostic: reads the unified hit column (`starHit`, "Hit"/"Not hit")
 produced by whichever hit-calling stage ran — full-STAR (BH) OR fast-STAR
 (threshold). Per sample, runs DBSCAN with the vendored Levenshtein-1 metric
 on the `starHit=="Hit"` subset and identifies clones whose cluster reaches
---cluster-min. Emits an **additive** new column `starHitClusterFiltered`
+--cluster-min. Emits an **additive** new column `fastStarClusterFiltered`
 ("Hit" for survivors, "Not hit" for everyone else — a strict subset of
 `starHit`'s "Hit" set). `starHit` itself is NOT modified. Surviving rows
 additionally get a `clusterSize` column populated with the size of their
 natural Levenshtein-1 cluster (non-hit rows get 0).
 
-Output TSV has the input schema + `starHitClusterFiltered` + `clusterSize`.
+Output TSV has the input schema + `fastStarClusterFiltered` + `clusterSize`.
 This template stays pure: caching is keyed on (hitCallOutput, clusterMin),
 independent of the hit-calling knob (threshold or alpha).
 
@@ -143,10 +143,10 @@ def main() -> int:
         return 2
 
     # Initialise additive columns:
-    #   starHitClusterFiltered: "Not hit" by default; survivors flip to "Hit"
+    #   fastStarClusterFiltered: "Not hit" by default; survivors flip to "Hit"
     #     (strict subset of starHit's "Hit" set)
     #   clusterSize: 0 by default; populated for ALL hits below
-    df["starHitClusterFiltered"] = NOT_HIT
+    df["fastStarClusterFiltered"] = NOT_HIT
     df["clusterSize"] = 0
 
     hits_before_total = int((df[args.hit_column] == HIT).sum())
@@ -179,9 +179,9 @@ def main() -> int:
     # starHit signal, with the filtered version surfaced explicitly when
     # present.
     survivor_mask = df.index.isin(survivors_idx)
-    df.loc[survivor_mask, "starHitClusterFiltered"] = HIT
+    df.loc[survivor_mask, "fastStarClusterFiltered"] = HIT
 
-    hits_after_total = int((df["starHitClusterFiltered"] == HIT).sum())
+    hits_after_total = int((df["fastStarClusterFiltered"] == HIT).sum())
     print(
         f"[chain {args.chain}] cluster-min={args.cluster_min} "
         f"total hits: {hits_before_total} → {hits_after_total} "

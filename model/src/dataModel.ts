@@ -3,18 +3,17 @@ import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model
 import { DEFAULT_ALPHA, DEFAULT_NMIN } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
-// Default aggregated convergence-score histogram state (A-0015): plots the
-// exported clonotype-only starScore (a percentile in [0,1]) — linear Y (no long
-// tail). Shared by init() and the v3 backfill migration.
-const scoreGraphState = (fillColor: string): GraphMakerState => ({
-  title: "Score distribution",
+// Default distribution chart state (A-0015 v2). One state per selector-driven
+// page. Linear Y for the aggregated page (the blend is a percentile in [0,1] —
+// no long tail); log Y for the per-sample page (nbFreq / -log10 p is
+// long-tailed). Shared by init() and the v4 backfill migration.
+const distGraphState = (title: string, scale: "linear" | "log"): GraphMakerState => ({
+  title,
   template: "bins",
   currentTab: null,
-  layersSettings: { bins: { fillColor } },
-  axesSettings: { axisY: { axisLabelsAngle: 90, scale: "linear" }, other: { binsCount: 30 } },
+  layersSettings: { bins: { fillColor: "#5a9bd4" } },
+  axesSettings: { axisY: { axisLabelsAngle: 90, scale }, other: { binsCount: 30 } },
 });
-const SCORE_FILL_HEAVY = "#5a9bd4";
-const SCORE_FILL_LIGHT = "#b48ead";
 
 export const blockDataModel = new DataModelBuilder()
   .from<BlockDataV1>("v1")
@@ -56,8 +55,21 @@ export const blockDataModel = new DataModelBuilder()
       scoreWeight: p.scoreWeight ?? 0.5,
       expectedValues: p.expectedValues ?? [],
       aggregatedTableState: p.aggregatedTableState ?? createPlDataTableStateV2(),
-      graphStateScoreHeavy: p.graphStateScoreHeavy ?? scoreGraphState(SCORE_FILL_HEAVY),
-      graphStateScoreLight: p.graphStateScoreLight ?? scoreGraphState(SCORE_FILL_LIGHT),
+    };
+  })
+  // v4 — parallel fast/full modes (spec v2). The four per-chain histogram
+  // states (graphStateHistogram/Score Heavy/Light) are replaced by two
+  // selector-driven chart states (aggregated + per-sample). Backfill the two so
+  // GraphMaker never gets an undefined state; the old fields, if present on
+  // legacy data, are simply left unused.
+  .migrate<BlockData>("v4", (prev) => {
+    const p = prev as Partial<BlockData>;
+    return {
+      ...prev,
+      graphStateAggregated:
+        p.graphStateAggregated ?? distGraphState("Score distribution", "linear"),
+      graphStatePerSample:
+        p.graphStatePerSample ?? distGraphState("Per-sample distribution", "log"),
     };
   })
   .init(() => ({
@@ -69,12 +81,12 @@ export const blockDataModel = new DataModelBuilder()
     // chain/threshold subtitle shows as a placeholder in the page header.
     customBlockLabel: "",
     // Heavy-chain fast-STAR threshold default 0.000961 (≈5% FDR target on
-    // Abbate et al. 2024 human IgH calibration). Used only in the fast-STAR
-    // fallback (full-STAR uses `alpha`); the UI shows it only when the heavy
-    // chain has no Pgen.
-    // thresholdL deliberately has NO default; the user must enter it
-    // explicitly (in fast mode) so an inappropriate light-chain value isn't
-    // shipped silently — the args lambda gates the run until it's set.
+    // Abbate et al. 2024 human IgH calibration). fast-STAR runs on every chain,
+    // so this is always in effect once heavy is processed.
+    // thresholdL deliberately has NO default (A-0015): the heavy-calibrated
+    // value over-flags the lower-diversity light chain, so the user must enter
+    // it explicitly. Until they do, a processed light chain leaves the block
+    // non-runnable (the args gate throws → Run disabled).
     thresholdH: 0.000961,
     nMin: DEFAULT_NMIN,
     // full-STAR FDR target (Benjamini–Hochberg). STAR default 0.005.
@@ -89,42 +101,9 @@ export const blockDataModel = new DataModelBuilder()
     // their v-model bindings are well-typed. `w` default 0.5 (50/50).
     expectedValues: [],
     scoreWeight: 0.5,
-    // Heavy-chain histogram graph state. Initial settings:
-    // bins template, log Y axis (long-tail signal — most clones have
-    // small Nb_freq, a few have very large).
-    graphStateHistogramHeavy: {
-      title: "Per-sample distribution",
-      template: "bins",
-      currentTab: null,
-      layersSettings: {
-        bins: { fillColor: "#99e099" },
-      },
-      axesSettings: {
-        axisY: {
-          axisLabelsAngle: 90,
-          scale: "log",
-        },
-        other: { binsCount: 30 },
-      },
-    },
-    // Light-chain histogram graph state. Same shape as heavy;
-    // different fill colour to disambiguate at a glance.
-    graphStateHistogramLight: {
-      title: "Per-sample distribution",
-      template: "bins",
-      currentTab: null,
-      layersSettings: {
-        bins: { fillColor: "#99c4e0" },
-      },
-      axesSettings: {
-        axisY: {
-          axisLabelsAngle: 90,
-          scale: "log",
-        },
-        other: { binsCount: 30 },
-      },
-    },
-    // Aggregated convergence-score histograms (A-0015) — see scoreGraphState.
-    graphStateScoreHeavy: scoreGraphState(SCORE_FILL_HEAVY),
-    graphStateScoreLight: scoreGraphState(SCORE_FILL_LIGHT),
+    // Two selector-driven distribution chart states (A-0015 v2) — see
+    // distGraphState. Aggregated = the exported blend (linear Y); per-sample =
+    // the long-tailed per-sample statistic (log Y).
+    graphStateAggregated: distGraphState("Score distribution", "linear"),
+    graphStatePerSample: distGraphState("Per-sample distribution", "log"),
   }));

@@ -2,8 +2,8 @@
 import type { PlRef } from "@platforma-sdk/model";
 import { PFrameImpl } from "@platforma-sdk/model";
 import {
+  PlAccordion,
   PlAccordionSection,
-  PlAlert,
   PlCheckbox,
   PlDropdown,
   PlDropdownMulti,
@@ -18,10 +18,14 @@ import {
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
+
+// "Convergence context" section open by default so its controls stay visible
+// (grouped, not hidden). Local UI state, not persisted.
+const convergenceContextOpen = ref(true);
 
 // ---- Clonotype-only aggregation controls (A-0011) ------------------------
 // Sample-metadata columns offered for the expected-sample filter and the
@@ -146,25 +150,10 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Method per chain comes from the dataset-facts snapshot (data.datasetFacts),
-// captured at pick time — same source the args lambda gates on. A chain runs
-// in the fast-STAR fallback when its Pgen is absent (`hasPgen* === false`); the
-// per-chain fast-STAR threshold is shown (and required) only then. `undefined`
-// facts (no pick yet) show nothing.
-const heavyFast = computed(
-  () => heavyActive.value && app.model.data.datasetFacts?.hasPgenHeavy === false,
-);
-const lightFast = computed(
-  () => lightActive.value && app.model.data.datasetFacts?.hasPgenLight === false,
-);
-// SC light opt-in is disabled only when enabling it would MIX methods — heavy
-// and light differ in Pgen availability (A-0003/A-0010). When both chains agree
-// (both full, or both fast) the light chain is selectable; in the both-fast
-// case the light threshold below becomes required.
-const lightCheckboxDisabled = computed(() => {
-  const f = app.model.data.datasetFacts;
-  return f !== undefined && f.hasPgenHeavy !== f.hasPgenLight;
-});
+// Parallel modes (A-0010 v2): fast-STAR runs on every processed chain, so its
+// per-chain nb_freq threshold is always shown when that chain is active
+// (heavyActive / lightActive). full-STAR is added automatically wherever the
+// chain has Generation Probability — no method toggle, no disable-light.
 </script>
 
 <template>
@@ -182,19 +171,10 @@ const lightCheckboxDisabled = computed(() => {
     </template>
   </PlDropdownRef>
 
-  <!-- fast-STAR fallback notice. Shown when a processed chain has no Pgen
-       available, so the block uses the threshold-based call instead of the
-       FDR-controlled full-STAR (A-0010). -->
-  <PlAlert v-if="heavyFast || lightFast" type="warn" label="Using fast-STAR">
-    No Generation Probability for this input, so hits are called by threshold — <b>not</b>
-    FDR-controlled. Run Generation Probability on this dataset and re-pick it here to enable
-    full-STAR.
-  </PlAlert>
-
-  <!-- Heavy-chain fast-STAR threshold. Only shown in fallback (no Pgen) —
-       full-STAR uses the FDR target (alpha) in Advanced instead. -->
+  <!-- Heavy-chain fast-STAR threshold. fast-STAR runs on every chain, so this
+       is always shown when heavy is processed. -->
   <PlNumberField
-    v-if="heavyFast"
+    v-if="heavyActive"
     v-model="app.model.data.thresholdH"
     label="Heavy-chain threshold (fast-STAR)"
     :min="0"
@@ -203,10 +183,10 @@ const lightCheckboxDisabled = computed(() => {
     required
   >
     <template #tooltip>
-      fast-STAR frequency cutoff (used only when Generation Probability is unavailable). Clonotypes
-      with a neighbour-frequency above this value are flagged as convergent. Default 0.000961
-      corresponds to ≈5% false-discovery rate on human IgH (Abbate et al. 2024). Recalibrate
-      visually on the histogram for non-human or non-IgH data.
+      fast-STAR neighbour-frequency cutoff: clonotypes above it are flagged as a fast-STAR hit.
+      fast-STAR runs on every chain. Default 0.000961 ≈ 5% false-discovery rate on human IgH (Abbate
+      et al. 2024); recalibrate visually on the per-sample distribution for non-human or non-IgH
+      data.
     </template>
   </PlNumberField>
 
@@ -216,29 +196,22 @@ const lightCheckboxDisabled = computed(() => {
   <PlCheckbox
     v-if="showLightCheckbox"
     :model-value="lightChecked"
-    :disabled="lightCheckboxDisabled"
     @update:model-value="onToggleLightCheckbox"
   >
     Process light chain
     <PlTooltip class="info" position="top">
       <template #tooltip>
         The selected single-cell input contains both heavy and light chains. Check to also analyze
-        the light chain — emits a parallel light-chain hit column and histogram. Unchecked = heavy
-        only.
-        <template v-if="lightCheckboxDisabled">
-          <br /><br />Disabled: the heavy and light chains differ in Generation Probability
-          availability, so one would run full-STAR and the other fast-STAR. Mixing the two methods
-          in a single run isn't supported — run Generation Probability for both chains (or neither)
-          to process the light chain.
-        </template>
+        the light chain — emits a parallel light-chain family. full-STAR is added automatically
+        wherever the light chain has Generation Probability. Unchecked = heavy only.
       </template>
     </PlTooltip>
   </PlCheckbox>
 
-  <!-- Light-chain fast-STAR threshold. Only shown when the light chain is
-       processed AND in fallback (no Pgen). No default — required in fallback. -->
+  <!-- Light-chain fast-STAR threshold. Shown when the light chain is processed
+       (fast-STAR runs on every chain). No default — required. -->
   <PlNumberField
-    v-if="lightFast"
+    v-if="lightActive"
     v-model="app.model.data.thresholdL"
     label="Light-chain threshold (fast-STAR)"
     :min="0"
@@ -248,52 +221,67 @@ const lightCheckboxDisabled = computed(() => {
     required
   >
     <template #tooltip>
-      fast-STAR frequency cutoff for the light chain (used only when Generation Probability is
-      unavailable). Light-chain diversity is lower (no D segment, shorter CDR3) and has no published
-      FDR calibration, so the heavy-calibrated value (0.000961) typically over-flags. Recalibrate
-      visually on the light-chain histogram.
+      fast-STAR neighbour-frequency cutoff for the light chain. Light-chain diversity is lower (no D
+      segment, shorter CDR3) and has no published FDR calibration, so the heavy-calibrated value
+      (0.000961) typically over-flags. Recalibrate visually on the per-sample distribution.
     </template>
   </PlNumberField>
 
-  <!-- Clonotype-only aggregation (A-0011): how the per-sample signal collapses
-       to the one exported value per clonotype the in-vivo score / lead selection
-       consume. Always visible. Defaults (both empty) = every sample an
-       independent, eligible unit, convergent in >= 1. -->
-  <!-- Timepoint eligibility filter (A-0011): restrict the exported aggregate to
-       samples from the selected timepoints. Empty = use all samples. -->
-  <PlDropdown
-    v-model="app.model.data.expectedFilterRef"
-    :options="metadataColumnOptions"
-    label="Timepoint column"
-    clearable
-  >
-    <template #tooltip>
-      Restrict the export to samples from the selected timepoints (e.g. post-immunisation). Empty =
-      all samples.
-    </template>
-  </PlDropdown>
-  <!-- Always visible; inactive until a Timepoint column is picked (no column →
-       no values to choose). -->
-  <PlDropdownMulti
-    v-model="expectedValuesModel"
-    :options="expectedValueOptions.value ?? []"
-    label="Timepoints for export"
-    :disabled="!app.model.data.expectedFilterRef"
-  />
-  <PlDropdown
-    v-model="app.model.data.groupingRef"
-    :options="metadataColumnOptions"
-    label="Replicate"
-    clearable
-  >
-    <template #tooltip>
-      Which samples are independent replicates (e.g. a donor or animal column). This is what turns
-      on the <b>reproducibility</b> signal: samples sharing a replicate collapse together, a clone
-      must be convergent in ≥ 2 replicates to count as a hit, and cross-replicate recurrence feeds
-      the score (see Reproducibility weight). Empty = every sample treated as independent,
-      convergent in ≥ 1, and reproducibility is not used.
-    </template>
-  </PlDropdown>
+  <!-- Convergence context (A-0011): the biological metadata that shapes the
+       clonotype-only aggregated export — an expected-convergence sample filter
+       and an independence (replicate) grouping. Grouped in a section, default
+       open. Defaults (all empty) = every sample an independent, eligible unit,
+       convergent in >= 1. -->
+  <!-- Convergence context: collapsible section, OPEN by default. Standalone
+       PlAccordionSection can't default-open (an injected accordion manager
+       drives it), so wrap in PlAccordion multiple → the section's v-model
+       controls its open state. -->
+  <PlAccordion :multiple="true">
+    <PlAccordionSection v-model="convergenceContextOpen" label="Convergence context">
+      <!-- Expected-convergence filter: pick the metadata column whose values
+           pinpoint where convergence is expected, then which of its values to
+           keep. Restricts the EXPORTED aggregate; the per-sample table keeps
+           all samples. Empty = use all samples. The column + its values are a
+           tight pair (small gap) so it's obvious the values belong to the
+           column above; Replicate keeps normal spacing. -->
+      <div :class="$style.filterPair">
+        <PlDropdown
+          v-model="app.model.data.expectedFilterRef"
+          :options="metadataColumnOptions"
+          label="Convergence expected at"
+          clearable
+        >
+          <template #tooltip>
+            Restrict the exported aggregate to samples where convergence is biologically expected.
+            Pick the metadata column (e.g. timepoint) whose values mark where convergence is
+            expected; choose the values below. Empty = use all samples.
+          </template>
+        </PlDropdown>
+        <!-- Always visible; inactive until a column is picked (no column → no
+             values to choose). -->
+        <PlDropdownMulti
+          v-model="expectedValuesModel"
+          :options="expectedValueOptions.value ?? []"
+          label="Selected values"
+          :disabled="!app.model.data.expectedFilterRef"
+        />
+      </div>
+      <PlDropdown
+        v-model="app.model.data.groupingRef"
+        :options="metadataColumnOptions"
+        label="Replicate"
+        clearable
+      >
+        <template #tooltip>
+          Which samples are independent replicates (e.g. a donor or animal column). This is what
+          turns on the <b>reproducibility</b> signal: samples sharing a replicate collapse together,
+          a clone must be convergent in ≥ 2 replicates to count as a hit, and cross-replicate
+          recurrence feeds the score (see Reproducibility weight). Empty = every sample treated as
+          independent, convergent in ≥ 1, and reproducibility is not used.
+        </template>
+      </PlDropdown>
+    </PlAccordionSection>
+  </PlAccordion>
 
   <PlAccordionSection label="Advanced settings">
     <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced
@@ -380,3 +368,14 @@ const lightCheckboxDisabled = computed(() => {
     </PlNumberField>
   </PlAccordionSection>
 </template>
+
+<style module>
+/* Tight column→values pair: the "Selected values" multiselect sits close under
+   "Convergence expected at" so it reads as that column's values, while the
+   surrounding controls (Replicate, etc.) keep normal spacing. */
+.filterPair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+</style>
