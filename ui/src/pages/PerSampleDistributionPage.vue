@@ -13,8 +13,10 @@ const app = useApp();
 // appears when a fast-STAR score (nbFreq, which carries the threshold
 // annotation) is selected; full-STAR scores carry none (the cutoff is the FDR
 // call).
+// tabByFirstAxis → tab by the score's sampleId axis, so the user gets one
+// histogram facet per sample by default.
 const defaultOptions = computed(() =>
-  distributionDefaults(app.model.outputs.perSampleDistributionPfPcols),
+  distributionDefaults(app.model.outputs.perSampleDistributionPfPcols, { tabByFirstAxis: true }),
 );
 </script>
 
