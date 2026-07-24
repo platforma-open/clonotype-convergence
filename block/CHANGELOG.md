@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence
 
+## 1.3.1
+
+### Patch Changes
+
+- a11a244: prepublish script
+
 ## 1.3.0
 
 ### Minor Changes
