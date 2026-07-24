@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.clonotype-convergence.software",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "description": "Block Software",
   "type": "module",
   "scripts": {
