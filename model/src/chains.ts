@@ -22,6 +22,14 @@ export const inputAnchorSpecs = [
 
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
+// Raw per-clonotype generation probability from the Generation Probability
+// block — full-STAR's input and the fast-STAR fallback trigger (A-0009).
+export const PGEN_NAME = "pl7.app/vdj/generationProbability";
+
+// Default full-STAR FDR target (STAR's default; A-0008). Shared by the data
+// model's init() and the args lambda's fallback default.
+export const DEFAULT_ALPHA = 0.005;
+
 // Default sample-size floor. Shared by the data model's init() and
 // the trace-label builder, which omits nMin from the label when it's
 // left at this default.
@@ -71,13 +79,24 @@ export function getDefaultBlockLabel(data: BlockData): string {
   const facts = data.datasetFacts;
   if (facts) {
     const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
-    const primaryThreshold = facts.chains.some(isHeavy) ? data.thresholdH : data.thresholdL;
-    if (primaryThreshold !== undefined) {
-      let thr = `thr ${primaryThreshold}`;
-      if (isSC && data.processLightChain && data.thresholdL !== undefined) {
-        thr += ` / L thr ${data.thresholdL}`;
+    const primaryIsHeavy = facts.chains.some(isHeavy);
+    // The threshold labels a chain ONLY in the fast-STAR fallback (no Pgen);
+    // full-STAR uses alpha and hides the threshold, so surfacing it would
+    // misrepresent the run. Mixed methods are designed out (args throws), so
+    // the primary chain's Pgen availability decides for both.
+    const runsFallback = primaryIsHeavy ? !facts.hasPgenHeavy : !facts.hasPgenLight;
+    if (runsFallback) {
+      const primaryThreshold = primaryIsHeavy ? data.thresholdH : data.thresholdL;
+      if (primaryThreshold !== undefined) {
+        let thr = `thr ${primaryThreshold}`;
+        if (isSC && data.processLightChain && data.thresholdL !== undefined) {
+          thr += ` / L thr ${data.thresholdL}`;
+        }
+        parts.push(thr);
       }
-      parts.push(thr);
+    } else if (data.alpha !== undefined && data.alpha !== DEFAULT_ALPHA) {
+      // full-STAR: disambiguate blocks by their FDR target when non-default.
+      parts.push(`alpha ${data.alpha}`);
     }
   }
 

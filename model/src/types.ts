@@ -22,6 +22,23 @@ export type UpstreamFacts = {
   hasNtCDR3: boolean;
   hasAbundance: boolean;
   clonotypeKeyAxisName: string;
+  /** Whether a per-clonotype Pgen column (from the Generation Probability
+   *  block) is available for the heavy / light chain. Decides full-STAR
+   *  (present) vs the fast-STAR fallback (absent), and gates the per-chain
+   *  fast-STAR threshold. Captured at pick time (snapshot). Derived from the
+   *  presence of the matching Pgen ref below (single source of truth). */
+  hasPgenHeavy: boolean;
+  hasPgenLight: boolean;
+  /** PlRef to the Generation Probability block's per-clonotype Pgen column
+   *  for the heavy / light chain, matched by name + this dataset's clonotype
+   *  axis (so it can't grab a Pgen from another run). Carried into args so the
+   *  platform records convergence's DEPENDENCY on gen-prob — that edge is what
+   *  pulls gen-prob's Pgen export into the WORKFLOW's context pool (the model's
+   *  full-project pool sees it regardless; the workflow only sees upstreams).
+   *  Without it the workflow's anchored query finds no Pgen and full-STAR
+   *  silently degrades to 0 hits. Snapshotted at pick time. */
+  pgenRefHeavy?: PlRef;
+  pgenRefLight?: PlRef;
 };
 
 /** Args passed to the workflow — output shape of `.args(...)`.
@@ -58,8 +75,46 @@ export type BlockArgs = {
   /** SC scClonotypeChain letter for light ("B"). See chainHScLetter. */
   chainLScLetter?: string;
 
+  /** Whether the heavy / light chain runs full-STAR (Pgen available) — from
+   *  the dataset-facts snapshot. Drives the workflow's method per chain and
+   *  whether it consumes the Pgen sibling. Set only for a processed chain. */
+  hasPgenHeavy?: boolean;
+  hasPgenLight?: boolean;
+  /** PlRef to gen-prob's per-clonotype Pgen column for the heavy / light
+   *  chain. Projected ONLY for a full-STAR chain (hasPgen*). Its presence in
+   *  args establishes the cross-block dependency on gen-prob so the workflow
+   *  can resolve the Pgen data by ref (bb.addSingle). */
+  pgenRefHeavy?: PlRef;
+  pgenRefLight?: PlRef;
+
   /** Sample-size floor. Default 100. */
   nMin: number;
+
+  /** full-STAR FDR target (Benjamini–Hochberg alpha). Default 0.005. The
+   *  full-STAR knob; the workflow also defaults it if absent. */
+  alpha: number;
+
+  // ---- Clonotype-only aggregation (A-0011) ---------------------------------
+  // Optional metadata-driven refinements of the exported aggregate; all absent
+  // → the default path (every sample an independent, eligible unit; k=1).
+  /** PlRef to a sampleId-keyed metadata column (`pl7.app/metadata`) whose
+   *  selected values mark the biologically-expected (post-exposure) samples.
+   *  Its presence in args establishes the samples-block dependency (like the
+   *  Pgen ref). Only expected samples enter the EXPORTED aggregate; the block's
+   *  own per-sample table keeps all samples. */
+  expectedFilterRef?: PlRef;
+  /** Values of `expectedFilterRef` that count as expected. */
+  expectedValues?: string[];
+  /** PlRef to a sampleId-keyed metadata column marking independent units
+   *  (e.g. donor) — drives the two-level aggregation. */
+  groupingRef?: PlRef;
+  /** Replicability: independent units a clonotype must be a hit in. NOT
+   *  user-exposed (A-0011/A-0015) — set to 2 when a grouping is present, else
+   *  the workflow uses 1. */
+  replicabilityK?: number;
+  /** starScore strength↔reproducibility weight `w` ∈ [0,1] (A-0011):
+   *  w·pct(peak) + (1−w)·pct(support). Default 0.5. */
+  scoreWeight?: number;
 
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
@@ -69,12 +124,6 @@ export type BlockArgs = {
   /** DBSCAN min_samples for the binder cluster filter. Projected
    *  only when applyClusterFilter is true. */
   clusterMin?: number;
-
-  /** Single-sample export. Raw pl7.app/sampleId axis value of
-   *  the sample whose convergence columns are collapsed to a
-   *  clonotype-only axis and exported for antibody lead selection. No
-   *  default — when unset (key absent), nothing is exported. */
-  exportSampleId?: string;
 
   // Labels projected into the workflow trace step so downstream blocks
   // can disambiguate columns from multiple convergence blocks.
@@ -118,6 +167,9 @@ export type BlockData = {
   thresholdL?: number;
   /** Sample-size floor. */
   nMin?: number;
+  /** full-STAR FDR target (Benjamini–Hochberg alpha). Advanced setting;
+   *  initialised to 0.005. */
+  alpha?: number;
 
   // Cluster filter. Toggle + cluster-min. Toggle is required
   // (initialised to false by dataModel.init); the v-model binding on
@@ -125,10 +177,18 @@ export type BlockData = {
   applyClusterFilter: boolean;
   clusterMin?: number;
 
-  /** Sample to export downstream. Raw sampleId value, picked from
-   *  the `exportSampleOptions` output. No default — unset means no
-   *  export. Projects into args (staling), so changing it requires Run. */
-  exportSampleId?: string;
+  // Clonotype-only aggregation controls (A-0011). All optional; unset → the
+  // default aggregation (every sample an independent, eligible unit; k = 1).
+  /** Sample-metadata column marking biologically-expected samples. */
+  expectedFilterRef?: PlRef;
+  /** Selected expected values of `expectedFilterRef`. */
+  expectedValues?: string[];
+  /** Sample-metadata column marking independent units (e.g. donor). Setting it
+   *  turns on cross-donor reproducibility (k=2) + the support half of starScore
+   *  (A-0011); no separate toggle or k field. */
+  groupingRef?: PlRef;
+  /** starScore strength↔reproducibility weight `w` (Advanced, default 0.5). */
+  scoreWeight?: number;
 
   // UI-only state (never projects to args).
   settingsOpen?: boolean;
@@ -136,11 +196,15 @@ export type BlockData = {
   /** Required (initialised by dataModel.init); PlAgDataTableV2's
    *  v-model expects a defined value. */
   mainTableState: PlDataTableStateV2;
+  /** Table state for the clonotype-only aggregated EXPORT table (its own page). */
+  aggregatedTableState: PlDataTableStateV2;
 
-  /** Heavy-chain histogram graph state. */
-  graphStateHistogramHeavy: GraphMakerState;
-  /** Light-chain histogram graph state. */
-  graphStateHistogramLight: GraphMakerState;
+  /** Aggregated (clonotype-only) distribution chart state — one selector-driven
+   *  page over every aggregated score across chain × mode (A-0015 v2). */
+  graphStateAggregated: GraphMakerState;
+  /** Per-sample distribution chart state — one selector-driven page over every
+   *  per-sample score across chain × mode. */
+  graphStatePerSample: GraphMakerState;
 
   /** User-overridden block label. Empty string when the user hasn't
    *  set one — the derived chain/threshold label then shows as a
@@ -151,7 +215,10 @@ export type BlockData = {
 
 /** Legacy (v1) persisted facts shape — uses `axisName` where the current
  *  shape uses `clonotypeKeyAxisName`. Used only by the data-model migration. */
-export type UpstreamFactsV1 = Omit<UpstreamFacts, "clonotypeKeyAxisName"> & { axisName: string };
+export type UpstreamFactsV1 = Omit<
+  UpstreamFacts,
+  "clonotypeKeyAxisName" | "hasPgenHeavy" | "hasPgenLight" | "pgenRefHeavy" | "pgenRefLight"
+> & { axisName: string };
 
 /** Legacy (v1) persisted block data — carries separate main/light ref
  *  snapshots. Used only by the data-model migration. */

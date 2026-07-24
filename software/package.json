@@ -47,6 +47,26 @@
             "{pkg}/cluster_filter.py"
           ]
         }
+      },
+      "full-star": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/full_star.py"
+          ]
+        }
+      },
+      "aggregate": {
+        "binary": {
+          "artifact": "py-archive",
+          "cmd": [
+            "python",
+            "-u",
+            "{pkg}/aggregate.py"
+          ]
+        }
       }
     }
   }

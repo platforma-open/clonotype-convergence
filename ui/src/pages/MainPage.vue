@@ -25,6 +25,10 @@ type Panel = "settings" | "logs" | "stats" | null;
 // add (no dataset yet).
 const ui = reactive({
   activePanel: (app.model.data.datasetRef === undefined ? "settings" : null) as Panel,
+  // Per-chain dismiss flags for the closable "full-STAR not computed" info
+  // banners (local only — not persisted).
+  dismissedFullStarHeavy: false,
+  dismissedFullStarLight: false,
 });
 
 // Single mutation path (only one panel is open at a time). Header buttons open
@@ -51,7 +55,11 @@ const statsOpen = panelModel("stats");
 
 // Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
-  () => !!app.model.outputs.heavyHitStats || !!app.model.outputs.lightHitStats,
+  () =>
+    !!app.model.outputs.heavyFastStats ||
+    !!app.model.outputs.heavyFullStats ||
+    !!app.model.outputs.lightFastStats ||
+    !!app.model.outputs.lightFullStats,
 );
 
 // Skipped-samples warning. `belowMin` lists samples that had CDR3 data
@@ -79,9 +87,18 @@ const skippedNoCdr3 = computed<string[]>(() => {
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
 // empty CDR3s). Chain-attributed so the user knows which chain is
-// the problem in dual-chain mode.
+// the problem in dual-chain mode. This warns about missing CDR3 DATA (a
+// real input problem), NOT about empty Pgen — an empty Pgen with good CDR3
+// just yields an empty full-STAR table, no special warning.
 const heavyAllEmpty = computed(() => app.model.outputs.heavySkippedSamples?.allEmpty === true);
 const lightAllEmpty = computed(() => app.model.outputs.lightSkippedSamples?.allEmpty === true);
+
+// Per-chain full-STAR availability (A-0010 v2): fast-STAR runs on every chain;
+// full-STAR is added only where that chain has Generation Probability. A chain
+// PROCESSED without full-STAR gets a per-chain banner (it shows fast-STAR only).
+// From activeArgs (what actually ran), so it matches the shown results.
+const fullStarMissingHeavy = computed(() => app.model.outputs.fullStarMissingHeavy === true);
+const fullStarMissingLight = computed(() => app.model.outputs.fullStarMissingLight === true);
 
 // Auto-close the Settings modal when a Run commits. `runArgsId` (model output
 // over activeArgs) changes only when a Run actually commits new args, so this
@@ -97,18 +114,14 @@ watch(
   },
 );
 
-// PlAgDataTableV2 settings — bound to the model's mainTable output.
-// `sheets` adds the sample picker above the table (one sample at a
-// time; SDK pins to a single value).
-// `sourceId` is keyed on `mainTableSourceId` — a model output that
-// derives from `activeArgs`, NOT from the live edit state. That way
-// the per-source state cache (hidden columns, sort, filters) only
-// flips when a Run actually commits new args; picking a new dataset
-// before pressing Run doesn't reload the table or wipe its state.
+// Main table = the AGGREGATED clonotype-only table (A-0015): the shape
+// downstream consumes, shown first. No `sheets` — the sampleId axis is
+// collapsed away, so there is no per-sample picker (that lives on the
+// separate Per-sample QC page). `sourceId` derives from `activeArgs` so the
+// per-source view state only flips when a Run commits new args.
 const tableSettings = usePlDataTableSettingsV2({
   sourceId: () => app.model.outputs.mainTableSourceId,
-  model: () => app.model.outputs.mainTable,
-  sheets: () => app.model.outputs.mainTableSheets,
+  model: () => app.model.outputs.aggregatedTable,
 });
 
 // PlBlockPage hides the entire subtitle row when v-model:subtitle is
@@ -152,11 +165,33 @@ const customBlockLabel = computed({
       </PlBtnGhost>
     </template>
 
-    <PlAlert v-if="skippedBelowMin.length > 0" type="warn" icon>
-      <template #title>
-        {{ skippedBelowMin.length }} sample{{ skippedBelowMin.length === 1 ? "" : "s" }} below
-        minimum
-      </template>
+    <PlAlert
+      :model-value="fullStarMissingHeavy && !ui.dismissedFullStarHeavy"
+      type="info"
+      closeable
+      label="Heavy chain: full-STAR not computed"
+      @update:model-value="ui.dismissedFullStarHeavy = true"
+    >
+      No Generation Probability for the heavy chain, so it shows <b>fast-STAR only</b> (threshold
+      call, not FDR-controlled). Run Generation Probability on this dataset to add full-STAR.
+    </PlAlert>
+
+    <PlAlert
+      :model-value="fullStarMissingLight && !ui.dismissedFullStarLight"
+      type="info"
+      closeable
+      label="Light chain: full-STAR not computed"
+      @update:model-value="ui.dismissedFullStarLight = true"
+    >
+      No Generation Probability for the light chain, so it shows <b>fast-STAR only</b> (threshold
+      call, not FDR-controlled). Run Generation Probability on this dataset to add full-STAR.
+    </PlAlert>
+
+    <PlAlert
+      v-if="skippedBelowMin.length > 0"
+      type="warn"
+      :label="`${skippedBelowMin.length} sample${skippedBelowMin.length === 1 ? '' : 's'} below minimum`"
+    >
       {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
       fewer than {{ skippedNMin }} unique nucleotide CDR3 sequences and
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
@@ -164,33 +199,31 @@ const customBlockLabel = computed({
       {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
     </PlAlert>
 
-    <PlAlert v-if="skippedNoCdr3.length > 0" type="warn" icon>
-      <template #title>
-        {{ skippedNoCdr3.length }} sample{{ skippedNoCdr3.length === 1 ? "" : "s" }} with no usable
-        CDR3
-      </template>
+    <PlAlert
+      v-if="skippedNoCdr3.length > 0"
+      type="warn"
+      :label="`${skippedNoCdr3.length} sample${skippedNoCdr3.length === 1 ? '' : 's'} with no usable CDR3`"
+    >
       {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
       no usable CDR3 sequences and
       {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
     </PlAlert>
 
-    <PlAlert v-if="heavyAllEmpty" type="warn" icon>
-      <template #title>No heavy-chain data</template>
+    <PlAlert v-if="heavyAllEmpty" type="warn" label="No heavy-chain data">
       No samples had usable CDR3 data for the heavy chain. Check the upstream input.
     </PlAlert>
 
-    <PlAlert v-if="lightAllEmpty" type="warn" icon>
-      <template #title>No light-chain data</template>
+    <PlAlert v-if="lightAllEmpty" type="warn" label="No light-chain data">
       No samples had usable CDR3 data for the light chain. Check the upstream input.
     </PlAlert>
 
     <PlAgDataTableV2
-      v-model="app.model.data.mainTableState"
+      v-model="app.model.data.aggregatedTableState"
       :settings="tableSettings"
       show-columns-panel
       show-export-button
       :loading-text="app.model.outputs.isRunning ? 'Running' : undefined"
-      not-ready-text="Select an input dataset and press Run to see clonotypes."
+      not-ready-text="Select an input dataset and press Run to see the convergence signal."
     />
   </PlBlockPage>
 
@@ -209,7 +242,7 @@ const customBlockLabel = computed({
       <div>
         <div>Hit statistics</div>
         <div :class="$style.statsSubtitle">
-          Aggregated across all samples for the configured threshold(s).
+          Convergence calls on the aggregated, clonotype-level export.
         </div>
       </div>
     </template>

@@ -4,57 +4,49 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-type HitStats = { above: number; total: number; beforeCluster?: number };
+type HitStats = { above: number; total: number };
+type StatSection = { heading: string; stats: HitStats };
 
-const heavy = computed<HitStats | undefined>(() => app.model.outputs.heavyHitStats);
-const light = computed<HitStats | undefined>(() => app.model.outputs.lightHitStats);
-const dualChain = computed(() => !!heavy.value && !!light.value);
+// Per chain × per emitted mode (A-0015 v2): fast-STAR always, full-STAR where it
+// ran. Counts are over the aggregated, clonotype-only export (one row per
+// clonotype): `above` = clones called convergent across the repertoire,
+// `total` = clonotypes.
+const sections = computed<StatSection[]>(() => {
+  const o = app.model.outputs;
+  const out: StatSection[] = [];
+  const add = (heading: string, s: HitStats | undefined) => {
+    if (s) out.push({ heading, stats: s });
+  };
+  add("Heavy — fast-STAR", o.heavyFastStats);
+  add("Heavy — full-STAR", o.heavyFullStats);
+  add("Light — fast-STAR", o.lightFastStats);
+  add("Light — full-STAR", o.lightFullStats);
+  return out;
+});
 
 const fmt = (n: number) => n.toLocaleString();
-
-type Row = { label: string; value: string };
-function rowsFor(s: HitStats): Row[] {
-  const rows: Row[] = [];
-  if (s.beforeCluster !== undefined) {
-    rows.push({ label: "Above threshold", value: fmt(s.beforeCluster) });
-    rows.push({ label: "Passed cluster filter", value: fmt(s.above) });
-  } else {
-    rows.push({ label: "Above threshold", value: fmt(s.above) });
-  }
-  // "Total records" rather than "Total clonotypes": the underlying
-  // counts come from the long-format (sampleId, clonotypeKey) frame,
-  // so a clonotype shared by N samples contributes N records.
-  rows.push({ label: "Total records (clonotype × sample)", value: fmt(s.total) });
-  return rows;
-}
 </script>
 
 <template>
-  <div v-if="heavy || light" :class="$style.statsPanel">
-    <section v-if="heavy">
-      <div v-if="dualChain" :class="$style.heading">Heavy chain</div>
+  <div v-if="sections.length > 0" :class="$style.statsPanel">
+    <section
+      v-for="(sec, i) in sections"
+      :key="sec.heading"
+      :class="i > 0 ? $style.sectionAfter : undefined"
+    >
+      <div :class="$style.heading">{{ sec.heading }}</div>
       <div :class="$style.table">
         <div :class="$style.headerRow">
           <div>Statistic</div>
           <div :class="$style.valueCol">Value</div>
         </div>
-        <div v-for="row in rowsFor(heavy)" :key="row.label" :class="$style.row">
-          <div>{{ row.label }}</div>
-          <div :class="$style.valueCol">{{ row.value }}</div>
+        <div :class="$style.row">
+          <div>Convergent clonotypes</div>
+          <div :class="$style.valueCol">{{ fmt(sec.stats.above) }}</div>
         </div>
-      </div>
-    </section>
-
-    <section v-if="light" :class="heavy ? $style.sectionAfter : undefined">
-      <div v-if="dualChain" :class="$style.heading">Light chain</div>
-      <div :class="$style.table">
-        <div :class="$style.headerRow">
-          <div>Statistic</div>
-          <div :class="$style.valueCol">Value</div>
-        </div>
-        <div v-for="row in rowsFor(light)" :key="row.label" :class="$style.row">
-          <div>{{ row.label }}</div>
-          <div :class="$style.valueCol">{{ row.value }}</div>
+        <div :class="$style.row">
+          <div>Total clonotypes</div>
+          <div :class="$style.valueCol">{{ fmt(sec.stats.total) }}</div>
         </div>
       </div>
     </section>

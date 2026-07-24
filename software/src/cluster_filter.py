@@ -1,26 +1,27 @@
 """Stage 3 — paper's "binder" cluster filter (optional, gated by
 args.applyClusterFilter).
 
-Reads Stage 2's output (which has fastStar already set as String
-"Hit"/"Not hit" by threshold). Per sample, runs DBSCAN with the
-vendored Levenshtein-1 metric on the fastStar=="Hit" subset and
-identifies clones whose cluster reaches --cluster-min. Emits an
-**additive** new column `fastStarClusterFiltered` ("Hit" for survivors,
-"Not hit" for everyone else — strict subset of fastStar's "Hit" set).
-Stage 2's `fastStar` is NOT modified. Surviving rows additionally get a
-`clusterSize` column populated with the size of their natural
-Levenshtein-1 cluster (non-hit rows get 0).
+Method-agnostic: reads the unified hit column (`starHit`, "Hit"/"Not hit")
+produced by whichever hit-calling stage ran — full-STAR (BH) OR fast-STAR
+(threshold). Per sample, runs DBSCAN with the vendored Levenshtein-1 metric
+on the `starHit=="Hit"` subset and identifies clones whose cluster reaches
+--cluster-min. Emits an **additive** new column `fastStarClusterFiltered`
+("Hit" for survivors, "Not hit" for everyone else — a strict subset of
+`starHit`'s "Hit" set). `starHit` itself is NOT modified. Surviving rows
+additionally get a `clusterSize` column populated with the size of their
+natural Levenshtein-1 cluster (non-hit rows get 0).
 
 Output TSV has the input schema + `fastStarClusterFiltered` + `clusterSize`.
-This template stays pure: caching is keyed on
-(stage2Output, clusterMin), independent of threshold.
+This template stays pure: caching is keyed on (hitCallOutput, clusterMin),
+independent of the hit-calling knob (threshold or alpha).
 
 CLI:
     cluster_filter.py
-        --input <tsv>          # Stage 2 output (one sample's rows)
+        --input <tsv>          # hit-calling output (one sample's rows)
         --output <tsv>
         --cluster-min <int>    # DBSCAN min_samples (paper default: 10)
         --chain <str>
+        [--hit-column starHit]
 
 Runs on ONE sample per invocation — the per-sample fan-out slices by
 sampleId upstream. Structured stdout, one event per line,
@@ -55,6 +56,7 @@ def parse_args() -> argparse.Namespace:
         dest="cluster_min",
     )
     parser.add_argument("--chain", required=True)
+    parser.add_argument("--hit-column", default="starHit", dest="hit_column")
     return parser.parse_args()
 
 
@@ -134,7 +136,7 @@ def main() -> int:
 
     df = pd.read_csv(args.input, sep="\t")
 
-    required = {"fastStar", "aaSeqCDR3", "Nb_freq"}
+    required = {args.hit_column, "aaSeqCDR3"}
     missing = required - set(df.columns)
     if missing:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
@@ -142,12 +144,12 @@ def main() -> int:
 
     # Initialise additive columns:
     #   fastStarClusterFiltered: "Not hit" by default; survivors flip to "Hit"
-    #     (strict subset of fastStar's "Hit" set)
+    #     (strict subset of starHit's "Hit" set)
     #   clusterSize: 0 by default; populated for ALL hits below
     df["fastStarClusterFiltered"] = NOT_HIT
     df["clusterSize"] = 0
 
-    hits_before_total = int((df["fastStar"] == HIT).sum())
+    hits_before_total = int((df[args.hit_column] == HIT).sum())
 
     if hits_before_total == 0:
         # Nothing to cluster — pass through unchanged. (LC data is commonly
@@ -157,7 +159,7 @@ def main() -> int:
         return 0
 
     # One sample per invocation (the fan-out slices by sampleId upstream).
-    hits_df = df[df["fastStar"] == HIT]
+    hits_df = df[df[args.hit_column] == HIT]
     prefix = f"[chain {args.chain}]"
     sizes_by_idx, survivors_idx, surviving_clusters_total = cluster_sample(
         hits_df, args.cluster_min
@@ -171,10 +173,10 @@ def main() -> int:
         f"cluster-min={args.cluster_min} hits: {hits_before_total} → {len(survivors_idx)}",
     )
 
-    # Mark survivors in the additive column. fastStar itself is untouched
+    # Mark survivors in the additive column. starHit itself is untouched
     # — the cluster filter is additive, not replacement: downstream
     # consumers comparing runs across toggle states see a consistent
-    # fastStar signal, with the filtered version surfaced explicitly when
+    # starHit signal, with the filtered version surfaced explicitly when
     # present.
     survivor_mask = df.index.isin(survivors_idx)
     df.loc[survivor_mask, "fastStarClusterFiltered"] = HIT

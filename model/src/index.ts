@@ -11,10 +11,12 @@ import {
   createPlDataTableV3,
   discoverTableColumnSnaphots,
   getUniquePartitionKeys,
+  isPColumnSpec,
   parseResourceMap,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
+  DEFAULT_ALPHA,
   formatSubtitle,
   getDefaultBlockLabel,
   inputAnchorSpecs,
@@ -130,7 +132,13 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // No `!chainH && !chainL` check needed: the datasetOptions gate only offers
     // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
-    // ---- Thresholds -----------------------------------------------
+    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
+    // Parallel modes (A-0003/A-0010 v2): fast-STAR runs on every processed
+    // chain; full-STAR is ADDED on a chain when its Pgen is available. No
+    // shared-method constraint and no disable-light — heavy and light are
+    // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
+    // always required for each processed chain (heavy has a default; light must
+    // be set explicitly).
     if (chainH && data.thresholdH === undefined) {
       throw new Error("Heavy-chain threshold is required");
     }
@@ -160,6 +168,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
     const args: BlockArgs = {
       nMin: data.nMin,
+      alpha: data.alpha ?? DEFAULT_ALPHA,
       applyClusterFilter,
       customBlockLabel: data.customBlockLabel,
       defaultBlockLabel: getDefaultBlockLabel(data),
@@ -167,27 +176,43 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (chainH) {
       args.chainH = chainH;
       args.chainHName = chainHName;
+      args.hasPgenHeavy = facts.hasPgenHeavy;
+      // full-STAR is added when Pgen is present; the ref establishes the gen-prob
+      // dependency so the workflow can resolve Pgen data by ref.
+      if (facts.hasPgenHeavy) args.pgenRefHeavy = facts.pgenRefHeavy;
+      // fast-STAR always runs → its threshold is always projected.
       args.thresholdH = data.thresholdH;
       if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
     }
     if (chainL) {
       args.chainL = chainL;
       args.chainLName = chainLName;
+      args.hasPgenLight = facts.hasPgenLight;
+      if (facts.hasPgenLight) args.pgenRefLight = facts.pgenRefLight;
       args.thresholdL = data.thresholdL;
       if (lightIsSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[chainLName!];
     }
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
-    // Single-sample export. Not required (export is conditional on
-    // it being set); projected only when a non-empty sampleId is chosen.
-    // Truthy guard (not `!== undefined`): a cleared `PlDropdown` yields an
-    // empty string, which must count as "no selection" — otherwise the
-    // workflow would run the export collapse with a filter matching no
-    // rows (re-reading the whole TSV + re-importing per block every run).
-    if (data.exportSampleId) {
-      args.exportSampleId = data.exportSampleId;
+
+    // ---- Clonotype-only aggregation (A-0011) ----------------------
+    // The metadata refs, projected here, establish the samples-block dependency
+    // so the workflow can resolve the columns; all optional (absent → default
+    // aggregation). k >= 2 replicability needs a grouping (else k = 1).
+    if (data.expectedFilterRef) {
+      args.expectedFilterRef = data.expectedFilterRef;
+      if (data.expectedValues && data.expectedValues.length > 0) {
+        args.expectedValues = data.expectedValues;
+      }
     }
+    if (data.groupingRef) {
+      // A grouping alone turns on cross-donor reproducibility (k=2) and the
+      // support half of starScore (A-0011) — no separate toggle / k field.
+      args.groupingRef = data.groupingRef;
+      args.replicabilityK = 2;
+    }
+    args.scoreWeight = data.scoreWeight ?? 0.5;
     return args;
   })
 
@@ -267,6 +292,15 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // hidden-columns / sort state (so stale column IDs from the old
   // dataset don't haunt the new one).
   .output("mainTableSourceId", (ctx) => {
+    // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
+    // running/loading overlay when it takes the `sourceId: null` branch
+    // (pending: !model.stable); a table with a defined sourceId and no sheets
+    // (the aggregated Main table) would otherwise sit on the not-ready
+    // placeholder for the whole run. The per-sample table gets this for free
+    // because its `sheets` go undefined mid-run; the aggregated table has no
+    // sheets, so the sourceId is its only lever. Returning undefined here routes
+    // it into the pending branch → the running overlay shows.
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
     const args = ctx.activeArgs as BlockArgs | undefined;
     if (!args) return undefined;
     const ref = args.chainH ?? args.chainL;
@@ -306,20 +340,55 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
   })
 
-  // Options for the "Sample to export" picker. value = raw sampleId,
-  // label = human sample name (findLabels resolves the pl7.app/label column
-  // on the sampleId axis, same source createPlDataTableSheet uses). Sourced
-  // from the UPSTREAM anchor's partition keys, so it's available before this
-  // block's first run — deliberately NOT gated on getIsReadyOrError, unlike
-  // mainTableSheets. Undefined until a dataset is picked.
-  .output("exportSampleOptions", (ctx) => {
+  // Per-chain: was this chain PROCESSED but full-STAR NOT computed (no Pgen)?
+  // (A-0010 v2) — fast-STAR always runs, full-STAR is added per chain, so the
+  // banner is per chain: "full-STAR not computed for this chain; showing
+  // fast-STAR only". Read from activeArgs (what actually ran), so it reflects
+  // the current results, not the pending edit state.
+  .output("fullStarMissingHeavy", (ctx) => {
+    const a = ctx.activeArgs as BlockArgs | undefined;
+    return a?.chainH !== undefined && a.hasPgenHeavy === false;
+  })
+  .output("fullStarMissingLight", (ctx) => {
+    const a = ctx.activeArgs as BlockArgs | undefined;
+    return a?.chainL !== undefined && a.hasPgenLight === false;
+  })
+
+  // LIVE Generation Probability availability for the picked dataset (A-0010).
+  // Re-discovers gen-prob's Pgen from the CURRENT result pool every render (not
+  // the pick-time snapshot), so the method + Pgen ref track gen-prob being
+  // added / removed / re-created. The args callback can't reach the pool (it
+  // receives only `data`), so a UI watcher mirrors this into
+  // `data.datasetFacts` to keep args fresh — this output is the single live
+  // source both the UI and that sync read. Undefined when no dataset is picked
+  // or the dataset spec isn't resolvable yet (transient pool churn) — callers
+  // keep the last-synced snapshot in that window rather than flip.
+  .output("pgenStatus", (ctx) => {
     if (!ctx.data.datasetRef) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
-    if (!anchor) return undefined;
-    const samples = getUniquePartitionKeys(anchor.data)?.[0];
-    if (!samples) return undefined;
-    const labels = ctx.resultPool.findLabels(anchor.spec.axesSpec[0]);
-    return samples.map((v) => ({ value: String(v), label: labels?.[v] ?? String(v) }));
+    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef);
+    if (!facts) return undefined;
+    return {
+      hasPgenHeavy: facts.hasPgenHeavy,
+      hasPgenLight: facts.hasPgenLight,
+      pgenRefHeavy: facts.pgenRefHeavy,
+      pgenRefLight: facts.pgenRefLight,
+    };
+  })
+
+  // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
+  // for the aggregation's expected-sample filter and independence grouping
+  // (A-0011). Same discovery idiom as differential-clonotype-abundance.
+  .output("metadataOptions", (ctx) =>
+    ctx.resultPool.getOptions((spec) => isPColumnSpec(spec) && spec.name === "pl7.app/metadata"),
+  )
+
+  // PFrame of the picked expected-filter column, so the UI can fetch its unique
+  // values (getUniqueValues) to populate the expected-values multiselect.
+  .output("expectedValueSource", (ctx) => {
+    if (!ctx.data.expectedFilterRef) return undefined;
+    const col = ctx.resultPool.getPColumnByRef(ctx.data.expectedFilterRef);
+    if (!col) return undefined;
+    return ctx.createPFrame([col]);
   })
 
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
@@ -409,76 +478,65 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
-  // Heavy-chain p-frame for the heavy histogram. Conditional on the
-  // heavy pipeline running (workflow's `convergencePf` output is only
-  // emitted when args.chainH is set). The workflow bundles sample-
-  // label + clone-label columns into convergencePf so the histogram
-  // already has the labels it needs — model just passes them through
-  // with ctx.createPFrame (no broad enrichment).
-  .outputWithStatus("histogramPf", (ctx): PFrameHandle | undefined => {
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: "convergencePf",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    if (pCols === undefined) return undefined;
+  // Per-sample distribution p-frame (A-0015 v2): the per-sample convergence
+  // columns for BOTH chains combined (heavy `convergencePf` + light
+  // `lightConvergencePf`), so the single selector-driven Per-sample chart page
+  // can offer every per-sample score across chain × mode. Each chain's pframe
+  // bundles its own sample/clone labels; absent chains resolve to [].
+  .outputWithStatus("perSampleDistributionPf", (ctx): PFrameHandle | undefined => {
+    const heavy =
+      ctx.outputs
+        ?.resolve({ field: "convergencePf", assertFieldType: "Input", allowPermanentAbsence: true })
+        ?.getPColumns() ?? [];
+    const light =
+      ctx.outputs
+        ?.resolve({
+          field: "lightConvergencePf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const pCols = [...heavy, ...light];
+    if (pCols.length === 0) return undefined;
     return ctx.createPFrame(pCols);
   })
-  .output("histogramPfPcols", (ctx) => {
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: "convergencePf",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    if (pCols === undefined || pCols.length === 0) return undefined;
+  .output("perSampleDistributionPfPcols", (ctx) => {
+    const heavy =
+      ctx.outputs
+        ?.resolve({ field: "convergencePf", assertFieldType: "Input", allowPermanentAbsence: true })
+        ?.getPColumns() ?? [];
+    const light =
+      ctx.outputs
+        ?.resolve({
+          field: "lightConvergencePf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const pCols = [...heavy, ...light];
+    if (pCols.length === 0) return undefined;
     return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
-  .output("heavyHitStats", (ctx) =>
+  .output("heavyFastStats", (ctx) =>
     ctx.outputs
-      ?.resolve({
-        field: "heavyHitStats",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
+      ?.resolve({ field: "heavyFastStats", assertFieldType: "Input", allowPermanentAbsence: true })
+      ?.getDataAsJson<{ above: number; total: number }>(),
+  )
+  .output("heavyFullStats", (ctx) =>
+    ctx.outputs
+      ?.resolve({ field: "heavyFullStats", assertFieldType: "Input", allowPermanentAbsence: true })
+      ?.getDataAsJson<{ above: number; total: number }>(),
   )
 
-  // Light-chain p-frame for the light histogram. See histogramPf
-  // above — labels come from the workflow's lightConvergencePf.
-  .outputWithStatus("lightHistogramPf", (ctx): PFrameHandle | undefined => {
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: "lightConvergencePf",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    if (pCols === undefined) return undefined;
-    return ctx.createPFrame(pCols);
-  })
-  .output("lightHistogramPfPcols", (ctx) => {
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: "lightConvergencePf",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    if (pCols === undefined || pCols.length === 0) return undefined;
-    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
-  })
-  .output("lightHitStats", (ctx) =>
+  .output("lightFastStats", (ctx) =>
     ctx.outputs
-      ?.resolve({
-        field: "lightHitStats",
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getDataAsJson<{ above: number; total: number; beforeCluster?: number }>(),
+      ?.resolve({ field: "lightFastStats", assertFieldType: "Input", allowPermanentAbsence: true })
+      ?.getDataAsJson<{ above: number; total: number }>(),
+  )
+  .output("lightFullStats", (ctx) =>
+    ctx.outputs
+      ?.resolve({ field: "lightFullStats", assertFieldType: "Input", allowPermanentAbsence: true })
+      ?.getDataAsJson<{ above: number; total: number }>(),
   )
 
   // Skipped-samples warning per chain — see buildSkippedSamples. UI
@@ -490,7 +548,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
 
-  // mainTable. Anchored on the dataset's fastStar column —
+  // mainTable. Anchored on the dataset's starHit column —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
@@ -516,10 +574,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const fastStarSpec = pCols?.find(
+    const starHitSpec = pCols?.find(
       (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
     )?.spec;
-    if (!fastStarSpec) return undefined;
+    if (!starHitSpec) return undefined;
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -528,9 +586,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // runs in wasm/Rust, which has no negative lookahead), so we filter by
     // the block domain here. This block's id sits on the anchor's own
     // domain (pl7.app/block).
-    const thisBlockId = fastStarSpec.domain?.["pl7.app/block"];
+    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
     const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: fastStarSpec },
+      anchors: { main: starHitSpec },
       selector: {
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment
@@ -563,6 +621,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // produced by other instances of this block.
     const ownVariants = variants.filter((v) => {
       const spec = v.column.spec;
+      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
+      // convergence result; showing them in the convergence table is noise.
+      if (
+        spec.name === "pl7.app/vdj/generationProbability" ||
+        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
+      ) {
+        return false;
+      }
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
@@ -616,40 +682,184 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // Sections adapt to input mode. In SC paired (heavy + LC),
-  // heavy and LC share the scClonotypeKey axis so both chains' columns
-  // surface in the SAME main table via enrichment — no separate LC
-  // table page. Modes:
-  //   bulk single-chain → main table + one histogram page
-  //   SC heavy-only → main table + one histogram page
-  //   SC heavy + light → main table (heavy + light columns) +
-  //                      heavy histogram + light histogram
+  // Clonotype-only aggregated table (A-0011) — the DEFAULT (Main) view and the
+  // downstream-consumable shape (A-0015): one row per clonotype (starScore +
+  // starHit, no sampleId axis → no sample sheet). Anchored on the populated
+  // chain (heavy if present, else light); in dual-chain SC only the heavy family
+  // is tabled here (the light family still exports to the pool).
+  .outputWithStatus("aggregatedTable", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    if (!args) return undefined;
+    const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
+    const ref = args.chainH ?? args.chainL;
+    if (!ref) return undefined;
+    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
+
+    // Anchor on this block's aggregated (clonotype-only) starHit column.
+    // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
+    // run the field isn't ready yet, and a plain resolve marks the render
+    // context UNSTABLE, so outputWithStatus reports "loading" and the table
+    // shows the running overlay. `allowPermanentAbsence: true` would instead
+    // treat the missing field as a stable absence → the not-ready placeholder
+    // stays up during the whole run (this view has no `sheets` to drive the
+    // pending state, so the model status is the only signal). The field always
+    // exists for the chosen chain (args.chainH/L gates which one we request).
+    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
+    const starHitSpec = pCols?.find(
+      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
+    )?.spec;
+    if (!starHitSpec) return undefined;
+
+    // Same enrichment as the per-sample mainTable, but on the clonotype-only
+    // axis: pull every column sharing the clonotypeKey axis from the pool
+    // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
+    // columns) so they're available in the column settings — hidden by
+    // default, convergence columns default-visible. maxHops:0 keeps
+    // enrichment to the anchor's own axis (no linker hops into cluster/space
+    // axis systems).
+    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
+    const variants = discoverTableColumnSnaphots(ctx, {
+      anchors: { main: starHitSpec },
+      selector: {
+        mode: "enrichment",
+        maxHops: 0,
+        // One row per clonotype: drop any column carrying a sampleId axis (the
+        // per-sample convergence family — including the exported neighbours
+        // column — and per-sample metadata) so enrichment doesn't fan the
+        // table back out over samples. partialAxesMatch:true excludes columns
+        // that merely INCLUDE sampleId, not only exact [sampleId].
+        exclude: [
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: true,
+          },
+        ],
+      },
+    });
+    if (!variants) return undefined;
+
+    // Keep all non-convergence enrichment and this block's own convergence
+    // columns; drop convergence columns produced by other instances of this
+    // block (see mainTable for the same rationale).
+    const ownVariants = variants.filter((v) => {
+      const spec = v.column.spec;
+      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
+      // convergence result; showing them in the convergence table is noise.
+      if (
+        spec.name === "pl7.app/vdj/generationProbability" ||
+        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
+      ) {
+        return false;
+      }
+      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+      if (thisBlockId === undefined) return true;
+      return spec.domain?.["pl7.app/block"] === thisBlockId;
+    });
+
+    return createPlDataTableV3(ctx, {
+      columns: ownVariants,
+      tableState: ctx.data.aggregatedTableState,
+      displayOptions: {
+        visibility: [
+          // Force the clonotype-id label (Clone ID) default-visible — some
+          // MiXCR builds annotate it "optional".
+          {
+            match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
+            visibility: "default",
+          },
+          // Everything else that isn't a clonotype-key axis or a convergence
+          // column starts optional (hidden, available in the column panel).
+          {
+            match: (spec: PColumnSpec) => {
+              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
+              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
+              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
+              return true;
+            },
+            visibility: "optional",
+          },
+        ],
+      },
+    });
+  })
+
+  // Aggregated distribution p-frame (A-0015 v2): the exported clonotype-only
+  // convergence columns for BOTH chains combined (heavy + light aggregated
+  // families), so the single selector-driven Aggregated chart page can offer
+  // every aggregated score across chain × mode. Absent chains resolve to [].
+  .outputWithStatus("aggregatedDistributionPf", (ctx): PFrameHandle | undefined => {
+    const heavy =
+      ctx.outputs
+        ?.resolve({
+          field: "heavyAggregatedPf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const light =
+      ctx.outputs
+        ?.resolve({
+          field: "lightAggregatedPf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const pCols = [...heavy, ...light];
+    if (pCols.length === 0) return undefined;
+    return ctx.createPFrame(pCols);
+  })
+  .output("aggregatedDistributionPfPcols", (ctx) => {
+    const heavy =
+      ctx.outputs
+        ?.resolve({
+          field: "heavyAggregatedPf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const light =
+      ctx.outputs
+        ?.resolve({
+          field: "lightAggregatedPf",
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns() ?? [];
+    const pCols = [...heavy, ...light];
+    if (pCols.length === 0) return undefined;
+    return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
+  })
+
+  // Sections (A-0015 v2): the aggregated clonotype-only table is the default
+  // (Main) view; the per-sample table is a separate QC section. The per-chain
+  // histogram routes are replaced by TWO selector-driven chart pages — an
+  // Aggregated distribution and a Per-sample distribution — each offering every
+  // score across chain × mode via a graph-maker data-column predicate.
   .sections((ctx) => {
     const args = ctx.activeArgs as BlockArgs | undefined;
     const ready = ctx.data.datasetRef !== undefined && args !== undefined;
-    const hasHeavy = ready && args?.chainH !== undefined;
-    const hasLight = ready && args?.chainL !== undefined;
-    const dualChain = hasHeavy && hasLight;
+    const hasAny = ready && (args?.chainH !== undefined || args?.chainL !== undefined);
 
     const sections: {
       type: "link";
-      href: "/" | "/convergence/heavy" | "/convergence/light";
+      href: "/" | "/per-sample" | "/distribution/aggregated" | "/distribution/per-sample";
       label: string;
     }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
 
-    if (hasHeavy) {
-      sections.push({
-        type: "link" as const,
-        href: "/convergence/heavy" as const,
-        label: dualChain ? "Neighbour frequency (heavy)" : "Neighbour frequency",
-      });
-    }
-    if (hasLight) {
-      sections.push({
-        type: "link" as const,
-        href: "/convergence/light" as const,
-        label: dualChain ? "Neighbour frequency (light)" : "Neighbour frequency",
-      });
+    if (hasAny) {
+      sections.push(
+        {
+          type: "link" as const,
+          href: "/distribution/aggregated" as const,
+          label: "Score distribution",
+        },
+        { type: "link" as const, href: "/per-sample" as const, label: "Per-sample table" },
+        {
+          type: "link" as const,
+          href: "/distribution/per-sample" as const,
+          label: "Per-sample distribution",
+        },
+      );
     }
     return sections;
   })

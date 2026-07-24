@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import type { PlRef } from "@platforma-sdk/model";
+import { PFrameImpl } from "@platforma-sdk/model";
 import {
+  PlAccordion,
   PlAccordionSection,
-  PlAlert,
   PlCheckbox,
   PlDropdown,
+  PlDropdownMulti,
   PlDropdownRef,
   PlNumberField,
   PlTooltip,
+  useWatchFetch,
 } from "@platforma-sdk/ui-vue";
 import {
   isHeavy,
@@ -15,10 +18,56 @@ import {
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
-import { computed, watch } from "vue";
+import { computed, ref } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
+
+// "Convergence context" section open by default so its controls stay visible
+// (grouped, not hidden). Local UI state, not persisted.
+const convergenceContextOpen = ref(true);
+
+// ---- Clonotype-only aggregation controls (A-0011) ------------------------
+// Sample-metadata columns offered for the expected-sample filter and the
+// independence grouping (both sampleId-keyed `pl7.app/metadata`).
+const metadataColumnOptions = computed(
+  () => app.model.outputs.metadataOptions?.map((o) => ({ value: o.ref, label: o.label })) ?? [],
+);
+// Unique values of the picked expected-filter column, for the value multiselect
+// (fetched from the PFrame the model exposes — same idiom as DCA's numerators).
+const expectedValueOptions = useWatchFetch(
+  () => app.model.outputs.expectedValueSource,
+  async (pframeHandle) => {
+    if (!pframeHandle) return [];
+    const pframe = new PFrameImpl(pframeHandle);
+    const list = await pframe.listColumns();
+    const id = list?.[0]?.columnId;
+    if (!id) return [];
+    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000_000 });
+    return [...(response?.values.data ?? [])].map((v) => ({ value: String(v), label: String(v) }));
+  },
+);
+// Computed get/set wrappers so the v-models stay well-typed over the optional
+// BlockData fields (undefined on legacy data → the default), mirroring the
+// customBlockLabel pattern. `k` and replicability are NOT exposed (A-0011): the
+// grouping dropdown alone turns on k=2; the only score knob is the weight `w`.
+const expectedValuesModel = computed<string[]>({
+  get: () => app.model.data.expectedValues ?? [],
+  set: (v) => {
+    app.model.data.expectedValues = v;
+  },
+});
+// Presented as the REPRODUCIBILITY weight (up = more cross-donor
+// reproducibility). The stored arg `scoreWeight` is w, which weights the
+// STRENGTH term (peak) in starScore = w·pct(peak) + (1−w)·pct(support), so the
+// displayed reproducibility weight is 1 − w; convert on both ends. Default 0.5
+// maps to 0.5.
+const reproducibilityWeightModel = computed<number>({
+  get: () => 1 - (app.model.data.scoreWeight ?? 0.5),
+  set: (v) => {
+    app.model.data.scoreWeight = 1 - v;
+  },
+});
 
 const factsFor = (ref: PlRef | undefined) => {
   if (!ref) return undefined;
@@ -66,11 +115,6 @@ function onPickDataset(ref: PlRef | undefined) {
   app.model.data.datasetFacts = factsFor(ref);
   app.model.data.datasetLabel = labelFor(ref);
   app.model.data.processLightChain = false;
-  // NOTE: exportSampleId is NOT cleared here — a different dataset from the
-  // same clonotyping run can share the exact sample list, and we want to
-  // keep the pick in that case. Validity is reconciled reactively below
-  // (watch on exportSampleOptions), which only drops the pick when the new
-  // list genuinely lacks it.
 }
 
 // Which chain(s) are detected on the dataset pick. The dataset itself
@@ -106,30 +150,10 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Reconcile the exported-sample pick against the current dataset's sample
-// list. Drop it ONLY when the loaded list genuinely lacks it (e.g. the new
-// dataset has different samples); keep it when the new dataset shares the
-// same samples (heavy vs light from one clonotyping run). The readiness
-// guard is essential: while the list is undefined/empty (startup, or the
-// gap right after a dataset change before options recompute) we do nothing,
-// so a valid pick is never wiped during the not-ready window.
-//
-// This is NOT a hairpin: exportSampleOptions depends on the dataset
-// (datasetRef), not on exportSampleId, so this write cannot feed back into the
-// watched output; and the write is deterministic, so it's idempotent across
-// clients.
-watch(
-  () => app.model.outputs.exportSampleOptions,
-  (options) => {
-    if (!options || options.length === 0) return; // not ready — leave the pick alone
-    const current = app.model.data.exportSampleId;
-    if (current === undefined) return;
-    if (!options.some((o) => o.value === current)) {
-      app.model.data.exportSampleId = undefined;
-    }
-  },
-  { immediate: true },
-);
+// Parallel modes (A-0010 v2): fast-STAR runs on every processed chain, so its
+// per-chain nb_freq threshold is always shown when that chain is active
+// (heavyActive / lightActive). full-STAR is added automatically wherever the
+// chain has Generation Probability — no method toggle, no disable-light.
 </script>
 
 <template>
@@ -147,21 +171,21 @@ watch(
     </template>
   </PlDropdownRef>
 
-  <!-- Heavy-chain threshold. Visible iff a heavy chain is present on
-       the dataset (bulk-heavy or SC IG). -->
+  <!-- Heavy-chain fast-STAR threshold. fast-STAR runs on every chain, so this
+       is always shown when heavy is processed. -->
   <PlNumberField
     v-if="heavyActive"
     v-model="app.model.data.thresholdH"
-    label="Heavy-chain threshold"
+    label="Heavy-chain threshold (fast-STAR)"
     :min="0"
     :max="1"
     :step="0.0001"
     required
   >
     <template #tooltip>
-      Frequency cutoff for the convergence call. Clonotypes with a neighbour-frequency above this
-      value are flagged as convergent. Default 0.000961 corresponds to ≈5% false-discovery rate on
-      human IgH (Abbate et al. 2024). Recalibrate visually on the histogram for non-human or non-IgH
+      fast-STAR neighbour-frequency cutoff: clonotypes above it are flagged as a fast-STAR hit.
+      fast-STAR runs on every chain. Default 0.000961 ≈ 5% false-discovery rate on human IgH (Abbate
+      et al. 2024); recalibrate visually on the per-sample distribution for non-human or non-IgH
       data.
     </template>
   </PlNumberField>
@@ -178,19 +202,18 @@ watch(
     <PlTooltip class="info" position="top">
       <template #tooltip>
         The selected single-cell input contains both heavy and light chains. Check to also analyze
-        the light chain — emits a parallel light-chain hit column and histogram. Unchecked = heavy
-        only.
+        the light chain — emits a parallel light-chain family. full-STAR is added automatically
+        wherever the light chain has Generation Probability. Unchecked = heavy only.
       </template>
     </PlTooltip>
   </PlCheckbox>
 
-  <!-- Light-chain threshold. Visible iff LC processing is active:
-       bulk-light dataset, or SC + LC checkbox ticked. No default
-       value. -->
+  <!-- Light-chain fast-STAR threshold. Shown when the light chain is processed
+       (fast-STAR runs on every chain). No default — required. -->
   <PlNumberField
     v-if="lightActive"
     v-model="app.model.data.thresholdL"
-    label="Light-chain threshold"
+    label="Light-chain threshold (fast-STAR)"
     :min="0"
     :max="1"
     :step="0.0001"
@@ -198,31 +221,110 @@ watch(
     required
   >
     <template #tooltip>
-      Frequency cutoff for the light-chain convergence call. No default — light-chain diversity is
-      lower (no D segment, shorter CDR3) and has no published FDR calibration, so the
-      heavy-calibrated value (0.000961) typically over-flags. Set explicitly and recalibrate
-      visually on the light-chain histogram.
+      fast-STAR neighbour-frequency cutoff for the light chain. Light-chain diversity is lower (no D
+      segment, shorter CDR3) and has no published FDR calibration, so the heavy-calibrated value
+      (0.000961) typically over-flags. Recalibrate visually on the per-sample distribution.
     </template>
   </PlNumberField>
 
-  <!-- Single-sample export. Picks which sample's convergence columns
-       get exported (collapsed to a clonotype-only axis) for Antibody
-       Lead Selection. No default — unset exports nothing. Options come
-       from the upstream dataset's samples, so the picker is usable
-       before the first run. -->
-  <PlAlert v-if="app.model.data.datasetRef" type="info">
-    Convergence is exported for one sample at a time, on a per-clonotype basis. Pick a sample to
-    make its convergence available to downstream blocks.
-  </PlAlert>
-  <PlDropdown
-    v-if="app.model.data.datasetRef"
-    v-model="app.model.data.exportSampleId"
-    :options="app.model.outputs.exportSampleOptions ?? []"
-    label="Sample to export"
-    clearable
-  />
+  <!-- Convergence context (A-0011): the biological metadata that shapes the
+       clonotype-only aggregated export — an expected-convergence sample filter
+       and an independence (replicate) grouping. Grouped in a section, default
+       open. Defaults (all empty) = every sample an independent, eligible unit,
+       convergent in >= 1. -->
+  <!-- Convergence context: collapsible section, OPEN by default. Standalone
+       PlAccordionSection can't default-open (an injected accordion manager
+       drives it), so wrap in PlAccordion multiple → the section's v-model
+       controls its open state. -->
+  <PlAccordion :multiple="true">
+    <PlAccordionSection v-model="convergenceContextOpen" label="Convergence context">
+      <!-- Expected-convergence filter: pick the metadata column whose values
+           pinpoint where convergence is expected, then which of its values to
+           keep. Restricts the EXPORTED aggregate; the per-sample table keeps
+           all samples. Empty = use all samples. The column + its values are a
+           tight pair (small gap) so it's obvious the values belong to the
+           column above; Replicate keeps normal spacing. -->
+      <div :class="$style.filterPair">
+        <PlDropdown
+          v-model="app.model.data.expectedFilterRef"
+          :options="metadataColumnOptions"
+          label="Convergence expected at"
+          clearable
+        >
+          <template #tooltip>
+            Restrict the exported aggregate to samples where convergence is biologically expected.
+            Pick the metadata column (e.g. timepoint) whose values mark where convergence is
+            expected; choose the values below. Empty = use all samples.
+          </template>
+        </PlDropdown>
+        <!-- Always visible; inactive until a column is picked (no column → no
+             values to choose). -->
+        <PlDropdownMulti
+          v-model="expectedValuesModel"
+          :options="expectedValueOptions.value ?? []"
+          label="Selected values"
+          :disabled="!app.model.data.expectedFilterRef"
+        />
+      </div>
+      <PlDropdown
+        v-model="app.model.data.groupingRef"
+        :options="metadataColumnOptions"
+        label="Replicate"
+        clearable
+      >
+        <template #tooltip>
+          Which samples are independent replicates (e.g. a donor or animal column). This is what
+          turns on the <b>reproducibility</b> signal: samples sharing a replicate collapse together,
+          a clone must be convergent in ≥ 2 replicates to count as a hit, and cross-replicate
+          recurrence feeds the score (see Reproducibility weight). Empty = every sample treated as
+          independent, convergent in ≥ 1, and reproducibility is not used.
+        </template>
+      </PlDropdown>
+    </PlAccordionSection>
+  </PlAccordion>
 
   <PlAccordionSection label="Advanced settings">
+    <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced
+         so full-STAR runs on the default without prompting for a statistical
+         parameter (A-0015). Ignored in the fast-STAR fallback. -->
+    <PlNumberField
+      v-model="app.model.data.alpha"
+      label="FDR target (alpha)"
+      :min="0"
+      :max="1"
+      :step="0.001"
+    >
+      <template #tooltip>
+        full-STAR false-discovery-rate target for the Benjamini–Hochberg call across each sample's
+        clonotypes. Lower = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies
+        only when Generation Probability is available (full-STAR); ignored in the fast-STAR
+        fallback.
+      </template>
+    </PlNumberField>
+
+    <!-- Reproducibility weight (A-0011): the displayed value is 1 − w (see the
+         reproducibilityWeightModel computed). The one score knob; default 0.5.
+         The reproducibility term only takes effect when a Replicate column is
+         set. -->
+    <PlNumberField
+      v-model="reproducibilityWeightModel"
+      label="Reproducibility weight"
+      :min="0"
+      :max="1"
+      :step="0.05"
+    >
+      <template #tooltip>
+        The exported per-clonotype score blends two signals.
+        <b>Strength</b> — how convergent a clone is in its single strongest sample (its peak −log10
+        p-value). <b>Reproducibility</b> — in how many independent replicates the clone is
+        convergent (cross-replicate recurrence).
+        <b>score = (1 − w) · strength + w · reproducibility</b>, where w is this weight (0.5 =
+        equal; 1 = reproducibility only; 0 = strength only). Reproducibility is only computed when a
+        <b>Replicate</b> column is set — without one, every sample is its own unit, the score is
+        strength alone, and this weight has no effect.
+      </template>
+    </PlNumberField>
+
     <!-- Cluster filter. Off by default. When on, an additional
          fastStarClusterFiltered column marks hits that ALSO lie in a
          Hamming/Levenshtein-1 cluster of size >= clusterMin
@@ -266,3 +368,14 @@ watch(
     </PlNumberField>
   </PlAccordionSection>
 </template>
+
+<style module>
+/* Tight column→values pair: the "Selected values" multiselect sits close under
+   "Convergence expected at" so it reads as that column's values, while the
+   surrounding controls (Replicate, etc.) keep normal spacing. */
+.filterPair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+</style>
