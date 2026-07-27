@@ -122,8 +122,9 @@ self.body(func(inputs) {
 		// uniq_nucl is derived from neighbours.tsv's nSeqCDR3 (== the nUniqueNt
 		// compute-neighbours reports), so compute-neighbours stays byte-identical
 		// (its pinned cache survives alpha tweaks). full_star.py emits raw Pvalue
-		// + its BH hit ("starHit"); the pt step below turns those into
-		// fullStarScore = -log10(Pvalue) + fullStar.
+		// (kept for M1/QC) + fullStarScore (= -log10 Pvalue, floored per-sample so
+		// the strongest / Pgen==0 clones stay finite and on-scale) + its BH hit
+		// ("starHit"); the pt step below passes fullStarScore + fullStar through.
 		fullStarCmd := exec.builder().
 			software(fullStarSw).
 			cpu(1).
@@ -153,8 +154,10 @@ self.body(func(inputs) {
 			alias("fastStar")
 	]
 	if hasPgen {
+		// full_star.py already derived the floored fullStarScore; pass it through
+		// (do NOT recompute -log10 here — that reintroduces +inf on Pvalue==0).
 		callCols = append(callCols,
-			pt.col("Pvalue").cast("Float64").log10().negate().alias("fullStarScore"),
+			pt.col("fullStarScore").cast("Float64").alias("fullStarScore"),
 			pt.col("starHit").alias("fullStar"))
 	}
 	callDf := callWf.frame(baseTsv, { xsvType: "tsv", inferSchema: false }).withColumns(callCols...)

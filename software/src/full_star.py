@@ -159,17 +159,19 @@ def main() -> int:
         log(prefix, "empty input; emitting empty output")
         return 0
 
-    # Testable = has a null model (Pgen present) AND a neighbour count. Pgen is
-    # allowNA upstream (OLGA could not compute it for some clonotypes); such
-    # clones cannot be tested, so they are excluded from BH (m) and stay
-    # "Not hit".
+    # Testable = a neighbour count AND a Pgen value (not null). Pgen is allowNA
+    # upstream (OLGA could not compute it for some clonotypes) → those (NaN) stay
+    # untestable, excluded from BH (m), "Not hit". Pgen == 0 is DIFFERENT: OLGA
+    # computed a zero generation probability — a valid null (Lambda = 0 → rate
+    # a = 2*(0 + 0.1) = 0.2 via the pseudocount, output_MC.py) that yields the
+    # MOST significant calls — so Pgen == 0 IS testable and must not be excluded.
     neigh = pd.to_numeric(df[args.neighbours_column], errors="coerce")
     pgen = pd.to_numeric(df[args.pgen_column], errors="coerce")
-    testable = neigh.notna() & pgen.notna() & (pgen > 0)
+    testable = neigh.notna() & pgen.notna()
     n_test = int(testable.sum())
     n_skip = len(df) - n_test
     if n_skip > 0:
-        log(prefix, f"{n_skip} clones without usable Pgen — excluded from the test, marked Not hit")
+        log(prefix, f"{n_skip} clones without a Pgen value (NaN) — excluded from the test, marked Not hit")
 
     if n_test == 0:
         df.to_csv(args.output, sep="\t", index=False)
@@ -197,6 +199,22 @@ def main() -> int:
     rows = sub["_row"].to_numpy()
     df.loc[df.index[rows], "Pvalue"] = pvals
     df.loc[df.index[rows[hits]], "starHit"] = "Hit"
+
+    # fullStarScore = -log10(Pvalue) — the block's rankable convergence score
+    # (A-0012). Two numerical hazards hit the STRONGEST clones (including the
+    # Pgen==0 ones now tested): the Poisson tail underflows to exactly 0.0, and
+    # -log10(0) = +inf. Floor each sample's Pvalue at its smallest POSITIVE value
+    # before -log10, so those clones land at the sample's max-finite score — the
+    # top of the real range, on-scale for the per-sample histogram — instead of
+    # an off-scale spike or +inf. Raw Pvalue is emitted untouched (above) for M1.
+    pv = df["Pvalue"].to_numpy(dtype=float)  # NaN on untestable rows
+    tested_mask = ~np.isnan(pv)
+    score = np.full(len(pv), np.nan)
+    if tested_mask.any():
+        pos = pv[tested_mask] > 0
+        floor = float(pv[tested_mask][pos].min()) if pos.any() else 1e-300
+        score[tested_mask] = -np.log10(np.maximum(pv[tested_mask], floor))
+    df["fullStarScore"] = score
 
     log(prefix, f"tested {n_test} clones; {int(hits.sum())} full-STAR hits at alpha={args.alpha}")
     df.to_csv(args.output, sep="\t", index=False)
