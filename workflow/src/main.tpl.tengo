@@ -6,31 +6,35 @@
 //                       (chain domain from args.chainLName)
 // At least one must be populated (gated by the args lambda).
 //
-// Per-chain pipeline — fully per-sample. One `pframes.processColumn` fan-out
-// per chain runs all stages inside the per-sample body
-// (:per-sample-neighbours), so each sample is content-addressed and a
-// subset project recovers shared samples from cache:
+// Per-chain pipeline — per-sample fan-out, then one clonotype-only aggregation.
+// One `pframes.processColumn` fan-out per chain runs Stages 1-3 inside the
+// per-sample body (:per-sample-neighbours), so each sample is content-addressed
+// and a subset project recovers shared samples from cache:
 //   Stage 1 — expensive STAR neighbour-density run; cache survives
 //             hit-call tweaks (cacheHours, CID excludes threshold/alpha/Pgen).
-//   Stage 2 — hit calling. full-STAR (FDR-controlled Poisson test vs the Pgen
-//             null, Benjamini-Hochberg at alpha) is PRIMARY when a Pgen column
-//             resolved for the chain; fast-STAR (threshold) is the FALLBACK
-//             when Pgen is absent (A-0010). Both emit unified starHit +
-//             starScore; the `method` domain records which ran (A-0012).
+//   Stage 2 — hit calling, both modes SIDE BY SIDE (A-0003). fast-STAR (the
+//             nbFreq threshold) runs on every chain and emits nbFreq +
+//             fastStar; full-STAR (FDR-controlled Poisson test vs the Pgen
+//             null, Benjamini-Hochberg at alpha) is ADDED on a chain whose
+//             Pgen resolved (A-0010) and emits fullStarScore + fullStar. The
+//             method lives in the column NAME — there is no method domain.
 //   Stage 3 — paper's binder cluster filter, only when
-//             args.applyClusterFilter; method-agnostic (refines whichever
-//             starHit set exists); emits starHitClusterFiltered + clusterSize;
-//             starHit is NOT modified.
+//             args.applyClusterFilter; refines the fast-STAR hit set and
+//             emits fastStarClusterFiltered + clusterSize; fastStar itself is
+//             NOT modified.
+//   Stage 4 — aggregation to the clonotype-only axis (A-0011), one run of
+//             aggregate.py per emitted mode, outside the per-sample fan-out.
 // The per-sample outputs (convergence columns + per-sample log + per-sample
 // status) are reassembled here, keyed by the sampleId.
 //
 // Output channels:
-//   outputs.* — the multi-sample (sampleId, clonotypeKey) p-frames that
-//               feed this block's own table + histograms; never pooled.
-//   exports.* — the clonotype-only aggregated convergence family for the
-//               in-vivo score / lead selection (A-0006). NOT YET EMITTED —
-//               the aggregation function is an open question (Q-0002); v1's
-//               single-sample export is removed.
+//   outputs.* — the multi-sample (sampleId, clonotypeKey) p-frames that feed
+//               this block's own per-sample table + charts, plus the
+//               clonotype-only aggregated family the Main table shows.
+//   exports.* — the clonotype-only aggregated convergence family (score, hit,
+//               reproducibility per mode) for the repertoire score / lead
+//               selection (A-0006), plus the per-sample neighbours column.
+//               v1's single-sample export is removed.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 assets := import("@platforma-sdk/workflow-tengo:assets")
@@ -178,11 +182,12 @@ wf.body(func(args) {
 	// runChainPipeline — closure for one chain. Packs the chain's aa+nt CDR3
 	// (and, when a Pgen sibling resolved, the per-clonotype Pgen) into a single
 	// String column per (sampleId, clonotypeKey), then fans out per sample via
-	// processColumn: Stage 1 (neighbours) → Stage 2 (full-STAR when Pgen is
-	// present, else fast-STAR fallback) → optional Stage 3 (cluster filter)
+	// processColumn: Stage 1 (neighbours) → Stage 2 (fast-STAR always, plus
+	// full-STAR when this chain has Pgen) → optional Stage 3 (cluster filter)
 	// inside each per-sample body. Reassembles the per-sample outputs into a
-	// pframe of convergence PColumns chain-tagged with `chainName` and
-	// method-tagged. Returns the pframe.
+	// pframe of convergence PColumns chain-tagged with `chainName`, then runs
+	// Stage 4 (aggregation to the clonotype axis) once per emitted mode.
+	// Returns the per-sample pframe, the aggregated families and the stats.
 	runChainPipeline := func(anchorRef, aaKey, ntKey, labelKey, cloneLabelKey, pgenKey, hasPgen, chainName, threshold, scLetter) {
 		// withChain appends the chain qualifier as " / Heavy" /
 		// " / Light" in dual-chain mode; returns the base label
@@ -498,19 +503,27 @@ wf.body(func(args) {
 		// ---- Stage 4: aggregate to the clonotype-only axis (A-0011), PER MODE ----
 		// Each emitted mode collapses independently: fast-STAR (nbFreq/fastStar)
 		// always, full-STAR (fullStarScore/fullStar) when this chain has Pgen. The
-		// aggregation function (peak/support percentile blend + >=k BH hit) is the
-		// same for both — only the input score/hit columns differ (A-0011 v2). The
-		// aggregate software is parameterised by --score-column/--hit-column/--method
-		// and names its output columns to match. `neighbours` is NOT aggregated.
-		aggReplicabilityK := is_undefined(args.replicabilityK) ? 1 : args.replicabilityK
-		scoreWeight := is_undefined(args.scoreWeight) ? 0.5 : args.scoreWeight
-
-		// Sample-metadata TSV (sampleId + optional expected / unit), built once and
-		// shared across the per-mode aggregations.
+		// two-level shape is shared (within-unit collapse → across-unit aggregate)
+		// but the statistic is per mode: full-STAR combines p-values (Bonferroni
+		// within a unit, Fisher across units, chi2 → BH for the hit), fast-STAR
+		// takes max within a unit and the upper median across them, thresholded.
+		// The aggregate software is parameterised by --method plus the mode's
+		// --score-column/--hit-column/--reproducibility-column, and names its
+		// output columns to match. `neighbours` is NOT aggregated (A-0012).
+		//
+		// Sample-universe TSV (one row per dataset sample: sampleId + optional
+		// expected / unit), built once and shared across the per-mode aggregations.
+		// The sample LABEL column supplies the universe: it is keyed by sampleId
+		// alone and covers every sample of the dataset, including ones that
+		// produced no convergence rows (QC-skipped). That is what lets aggregate.py
+		// count the reproducibility denominator D over the whole eligible cohort
+		// with QC-failed units kept (A-0011), rather than over the samples that
+		// happen to appear in the results.
 		metaTsv := undefined
-		if !is_undefined(args.expectedFilterRef) || !is_undefined(args.groupingRef) {
+		if len(labelCols) > 0 {
 			metaBuilder := pframes.tsvFileBuilder()
 			metaBuilder.setAxisHeader(anchorSpec.axesSpec[0].name, "sampleId")
+			metaBuilder.add({ spec: labelCols[0].spec, data: labelCols[0].data }, { header: "sampleLabel" })
 			if !is_undefined(args.expectedFilterRef) {
 				ef := columns.getColumn("expectedFilter")
 				metaBuilder.add({ spec: ef.spec, data: ef.data }, { header: "expected" })
@@ -523,8 +536,8 @@ wf.body(func(args) {
 		}
 
 		// aggregateMode — run aggregate.py for one mode; returns aggregated.tsv
-		// (columns clonotypeKey + scoreCol + hitCol, named after the mode).
-		aggregateMode := func(scoreCol, hitCol, methodName) {
+		// (columns clonotypeKey + scoreCol + hitCol + reproCol, named after the mode).
+		aggregateMode := func(scoreCol, hitCol, reproCol, methodName) {
 			cmd := exec.builder().
 				software(aggregateSw).
 				cpu(1).
@@ -535,9 +548,8 @@ wf.body(func(args) {
 				arg("--method").arg(methodName).
 				arg("--score-column").arg(scoreCol).
 				arg("--hit-column").arg(hitCol).
+				arg("--reproducibility-column").arg(reproCol).
 				arg("--alpha").arg(string(alpha)).
-				arg("--k").arg(string(aggReplicabilityK)).
-				arg("--weight").arg(string(scoreWeight)).
 				addFile("per_sample.tsv", perSampleTsv).
 				saveFile("aggregated.tsv")
 			if methodName == "fast-STAR" {
@@ -570,67 +582,119 @@ wf.body(func(args) {
 			annotations: { "pl7.app/label": "clonotypeKey" }
 		}
 
-		// Exported score = the AGGREGATED reproducibility blend (A-0011): a percentile
-		// in [0,1] (NOT the per-sample nbFreq / -log10 p), so it drops the per-sample
-		// format / threshold-line annotations. The column keeps its mode NAME so
-		// consumers resolve it by name (A-0012/A-0013).
-		blendDesc := "Aggregated convergence score on the clonotype axis: a weighted blend of the clone's peak per-donor convergence and its cross-donor support, each percentile-ranked across clonotypes (in [0,1]; higher = more convergent and/or more reproducible). The strength-vs-reproducibility weight is a block setting."
-		hitDescAgg := "Whether this clone is called convergent across the repertoire (aggregated to the clonotype axis): Benjamini-Hochberg across clonotypes at the FDR target alpha (>= k replicates when a replicate grouping is set)."
+		// Exported columns keep their mode NAME, so consumers resolve them by name
+		// (A-0012/A-0013). The aggregated value stays on the per-sample statistic's
+		// own scale — fast-STAR's is the upper-median nbFreq (so it keeps v1's
+		// percent format AND the threshold line, which now cuts the aggregated
+		// value), full-STAR's is the Fisher sum of -log10 p (unbounded, no fixed
+		// threshold — the cutoff is the FDR call). Reproducibility is a ratio in
+		// [0,1] shown as a percentage.
+		reproDescFor := func(modeLabel, hitDef) {
+			return "Share of the eligible donor cohort in which this clone is a per-sample " + modeLabel + " hit (" + hitDef + "). The denominator is the same for every clonotype — donors with at least one sample passing the expected-at filter — so values are comparable across clones; a clone hit in a single donor of many scores low, not 100%. Without a replicate grouping the cohort is counted over samples."
+		}
 
 		exportPfBuilder := pframes.pFrameBuilder()
 		poolExportPfBuilder := pframes.pFrameBuilder()
 
-		// addMode — import one mode's aggregated TSV; add its score + hit to both the
-		// model-facing (exportPf) and pool (poolExportPf) families.
-		addMode := func(aggTsv, scoreCol, hitCol, scoreLabel, hitLabel) {
+		// addMode — import one mode's aggregated TSV and add its score, hit and
+		// reproducibility to both the model-facing (exportPf) and pool
+		// (poolExportPf) families. `cols` is the xsv.importFile column list.
+		addMode := func(aggTsv, cols) {
 			frame := xsv.importFile(aggTsv, "tsv", {
 				axes: [{ column: "clonotypeKey", spec: exportCloneAxis }],
-				columns: [
-					{ column: scoreCol, spec: {
-						name: "pl7.app/vdj/convergence/" + scoreCol,
-						valueType: "Double",
-						domain: convDomain,
-						annotations: {
-							"pl7.app/label": withChain(scoreLabel),
-							"pl7.app/table/visibility": "default",
-							"pl7.app/isScore": "true",
-							"pl7.app/score/rankingOrder": "decreasing",
-							"pl7.app/description": blendDesc
-						}
-					}},
-					{ column: hitCol, spec: {
-						name: "pl7.app/vdj/convergence/" + hitCol,
-						valueType: "String",
-						domain: convDomain,
-						annotations: {
-							"pl7.app/label": withChain(hitLabel),
-							"pl7.app/description": hitDescAgg,
-							"pl7.app/isDiscreteFilter": "true",
-							"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
-							"pl7.app/isScore": "true",
-							"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
-						}
-					}}
-				],
+				columns: cols,
 				storageFormat: "Parquet",
 				partitionKeyLength: 0
 			}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
-			exportPfBuilder.add(scoreCol, trace.inject(frame[scoreCol].spec), frame[scoreCol].data)
-			exportPfBuilder.add(hitCol, trace.inject(frame[hitCol].spec), frame[hitCol].data)
-			poolExportPfBuilder.add(scoreCol, trace.inject(frame[scoreCol].spec), frame[scoreCol].data)
-			poolExportPfBuilder.add(hitCol, trace.inject(frame[hitCol].spec), frame[hitCol].data)
+			for c in cols {
+				name := c.column
+				exportPfBuilder.add(name, trace.inject(frame[name].spec), frame[name].data)
+				poolExportPfBuilder.add(name, trace.inject(frame[name].spec), frame[name].data)
+			}
 		}
 
-		// fast-STAR: always.
-		fastAggTsv := aggregateMode("nbFreq", "fastStar", "fast-STAR")
-		addMode(fastAggTsv, "nbFreq", "fastStar", "Convergent neighbour frequency", "Convergent hit (fast-STAR)")
+		// aggHitSpec — the aggregated Hit/Not-hit column, shared shape across modes.
+		aggHitSpec := func(hitCol, hitLabel, hitDesc) {
+			return { column: hitCol, spec: {
+				name: "pl7.app/vdj/convergence/" + hitCol,
+				valueType: "String",
+				domain: convDomain,
+				annotations: {
+					"pl7.app/label": withChain(hitLabel),
+					"pl7.app/description": hitDesc,
+					"pl7.app/table/visibility": "default",
+					"pl7.app/isDiscreteFilter": "true",
+					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+					"pl7.app/isScore": "true",
+					"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
+				}
+			}}
+		}
+
+		// aggReproSpec — the reproducibility ratio, shared shape across modes.
+		aggReproSpec := func(reproCol, reproLabel, reproDesc) {
+			return { column: reproCol, spec: {
+				name: "pl7.app/vdj/convergence/" + reproCol,
+				valueType: "Double",
+				domain: convDomain,
+				annotations: {
+					"pl7.app/label": withChain(reproLabel),
+					"pl7.app/table/visibility": "default",
+					"pl7.app/isScore": "true",
+					"pl7.app/score/rankingOrder": "decreasing",
+					"pl7.app/format": ".0~%",
+					"pl7.app/description": reproDesc
+				}
+			}}
+		}
+
+		// fast-STAR: always. Aggregated nbFreq = the upper median across the units
+		// the clone is present in — still a neighbour frequency, so it keeps v1's
+		// annotations (percent format, threshold line) and the hit is that value
+		// against the same threshold.
+		fastAggTsv := aggregateMode("nbFreq", "fastStar", "fastStarReproducibility", "fast-STAR")
+		addMode(fastAggTsv, [
+			{ column: "nbFreq", spec: {
+				name: "pl7.app/vdj/convergence/nbFreq",
+				valueType: "Double",
+				domain: convDomain,
+				annotations: {
+					"pl7.app/label": withChain("Convergent neighbour frequency"),
+					"pl7.app/table/visibility": "default",
+					"pl7.app/isScore": "true",
+					"pl7.app/score/rankingOrder": "decreasing",
+					"pl7.app/format": ".3~%",
+					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
+					"pl7.app/description": "fast-STAR convergence score aggregated to the clonotype: the typical (upper-median) convergent neighbour frequency across the independent units this clone appears in. Higher = denser one-mutation neighbourhood. The fast-STAR threshold is applied to this aggregated value."
+				}
+			}},
+			aggHitSpec("fastStar", "Convergent hit (fast-STAR)", "Whether the clone's aggregated (upper-median) convergent neighbour frequency exceeds the fast-STAR threshold. A threshold call, not FDR-controlled."),
+			aggReproSpec("fastStarReproducibility", "Convergent hit reproducibility (fast-STAR)", reproDescFor("fast-STAR", "neighbour frequency above the threshold"))
+		])
 		statsFast := statsFor(fastAggTsv, "fastStar")
 
-		// full-STAR: added when this chain has Pgen.
+		// full-STAR: added when this chain has Pgen. Score and hit are two faces of
+		// one statistic — Fisher's combination of the per-donor p-values, and that
+		// combination's own chi2 p-value put through BH across clonotypes.
 		statsFull := undefined
 		if hasPgen {
-			fullAggTsv := aggregateMode("fullStarScore", "fullStar", "full-STAR")
-			addMode(fullAggTsv, "fullStarScore", "fullStar", "Convergent hit score (full-STAR)", "Convergent hit (full-STAR)")
+			fullAggTsv := aggregateMode("fullStarScore", "fullStar", "fullStarReproducibility", "full-STAR")
+			addMode(fullAggTsv, [
+				{ column: "fullStarScore", spec: {
+					name: "pl7.app/vdj/convergence/fullStarScore",
+					valueType: "Double",
+					domain: convDomain,
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit score (full-STAR)"),
+						"pl7.app/table/visibility": "default",
+						"pl7.app/isScore": "true",
+						"pl7.app/score/rankingOrder": "decreasing",
+						"pl7.app/description": "full-STAR convergence score aggregated to the clonotype: Fisher's combination of the clone's per-donor p-values, summed as -log10 p. Higher = more convergent than recombination alone predicts, and reproduced across more independent donors. No fixed threshold — the cutoff is the FDR call."
+					}
+				}},
+				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Whether this clone is called convergent across the repertoire: Fisher's combined p-value over its donors, Benjamini-Hochberg-controlled across all clonotypes at the FDR target alpha."),
+				aggReproSpec("fullStarReproducibility", "Convergent hit reproducibility (full-STAR)", reproDescFor("full-STAR", "the FDR-controlled within-sample call"))
+			])
 			statsFull = statsFor(fullAggTsv, "fullStar")
 		}
 

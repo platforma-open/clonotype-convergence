@@ -4,9 +4,9 @@ import { DEFAULT_ALPHA, DEFAULT_NMIN } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
 // Default distribution chart state (A-0015 v2). One state per selector-driven
-// page. Linear Y for the aggregated page (the blend is a percentile in [0,1] —
-// no long tail); log Y for the per-sample page (nbFreq / -log10 p is
-// long-tailed). Shared by init() and the v4 backfill migration.
+// page. Log Y on both: the aggregated scores stay on their per-sample
+// statistic's scale (the upper-median nbFreq; Fisher's sum of -log10 p), so
+// both pages plot long-tailed values. Shared by init() and the migrations.
 const distGraphState = (title: string, scale: "linear" | "log"): GraphMakerState => ({
   title,
   template: "bins",
@@ -44,15 +44,16 @@ export const blockDataModel = new DataModelBuilder()
     },
   )
   // v3 — backfill the fields added for the aggregated export (A-0011/A-0015):
-  // the starScore weight, the expected-values multiselect, the aggregated-table
-  // state, and the two aggregated-score histogram states. Blocks created at v2
-  // (before these existed) otherwise have them undefined, which crashes
-  // GraphMaker (undefined graph state). Existing values are preserved.
+  // the expected-values multiselect and the aggregated-table state. Blocks
+  // created at v2 (before these existed) otherwise have them undefined, which
+  // crashes GraphMaker (undefined graph state). Existing values are preserved.
+  // (This step also used to backfill a starScore weight; the aggregation no
+  // longer has a weight — A-0011 v5 — so the field is gone. Legacy data may
+  // still carry it; it is simply unused.)
   .migrate<BlockData>("v3", (prev) => {
     const p = prev as Partial<BlockData>;
     return {
       ...prev,
-      scoreWeight: p.scoreWeight ?? 0.5,
       expectedValues: p.expectedValues ?? [],
       aggregatedTableState: p.aggregatedTableState ?? createPlDataTableStateV2(),
     };
@@ -66,8 +67,7 @@ export const blockDataModel = new DataModelBuilder()
     const p = prev as Partial<BlockData>;
     return {
       ...prev,
-      graphStateAggregated:
-        p.graphStateAggregated ?? distGraphState("Score distribution", "linear"),
+      graphStateAggregated: p.graphStateAggregated ?? distGraphState("Score distribution", "log"),
       graphStatePerSample:
         p.graphStatePerSample ?? distGraphState("Per-sample distribution", "log"),
     };
@@ -96,14 +96,12 @@ export const blockDataModel = new DataModelBuilder()
     applyClusterFilter: false,
     clusterMin: 10,
     // Clonotype-only aggregation (A-0011). Defaults = the default path: no
-    // metadata refs, every sample an independent eligible unit, k = 1. The
-    // expected-values multiselect + the starScore weight are initialised so
-    // their v-model bindings are well-typed. `w` default 0.5 (50/50).
+    // metadata refs, every sample an independent eligible unit. The
+    // expected-values multiselect is initialised so its v-model binding is
+    // well-typed. `alpha` above is the only statistical knob.
     expectedValues: [],
-    scoreWeight: 0.5,
     // Two selector-driven distribution chart states (A-0015 v2) — see
-    // distGraphState. Aggregated = the exported blend (linear Y); per-sample =
-    // the long-tailed per-sample statistic (log Y).
-    graphStateAggregated: distGraphState("Score distribution", "linear"),
+    // distGraphState. Both plot long-tailed scores, so both default to log Y.
+    graphStateAggregated: distGraphState("Score distribution", "log"),
     graphStatePerSample: distGraphState("Per-sample distribution", "log"),
   }));

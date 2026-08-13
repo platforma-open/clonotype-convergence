@@ -1,9 +1,11 @@
 """Stage 2 (full-STAR) — FDR-controlled convergence hit call.
 
-Wraps statbiophys/STAR's Output_MC (vendored to ./output_MC.py). This is
-the block's PRIMARY hit call in v2, used whenever a per-clonotype
-generation probability (Pgen) is available; the fast-STAR threshold
-(per-sample-neighbours Stage 2) is the fallback when it is not.
+Wraps statbiophys/STAR's Output_MC (vendored to ./output_MC.py). full-STAR is
+ADDED on a chain whose per-clonotype generation probability (Pgen) is available
+and is the preferred signal there; fast-STAR (the nbFreq threshold, applied in
+per-sample-neighbours) is the always-on baseline that runs on every chain
+regardless. The two are emitted side by side under distinct column names
+(A-0003/A-0010) — this stage never replaces the fast-STAR call.
 
 Runs AFTER compute_neighbours (Stage 1), which stays untouched — full-STAR
 plugs into the hit-calling stage only (the counting/calling seam). One
@@ -32,11 +34,14 @@ byte-identical (cache preserved). --uniq-nucl / --status-json remain for
 standalone / M1 use.
 
 Output TSV = the input TSV with two columns appended:
-    Pvalue   — the raw Poisson-tail p-value from output_MC. The block derives
-               starScore = -log10(Pvalue) downstream (kept raw here for
-               reference fidelity and so the transform is visible in the
-               workflow).
+    Pvalue   — the raw Poisson-tail p-value from output_MC, kept untransformed
+               for reference fidelity (M1 reproduces STAR on this value).
     starHit  — "Hit" / "Not hit" (Benjamini-Hochberg selection at alpha).
+
+plus fullStarScore = -log10(Pvalue), floored per sample (see below). The
+workflow renames starHit → the `fullStar` PColumn and passes fullStarScore
+through unchanged; the internal names are kept because the per-sample template
+is content-addressed on them.
 
 Clones with a null/NA Pgen cannot be tested (no null model): they are
 EXCLUDED from the BH set (do not count toward m) and emitted "Not hit". An

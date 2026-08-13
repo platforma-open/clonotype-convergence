@@ -23,10 +23,10 @@ export type UpstreamFacts = {
   hasAbundance: boolean;
   clonotypeKeyAxisName: string;
   /** Whether a per-clonotype Pgen column (from the Generation Probability
-   *  block) is available for the heavy / light chain. Decides full-STAR
-   *  (present) vs the fast-STAR fallback (absent), and gates the per-chain
-   *  fast-STAR threshold. Captured at pick time (snapshot). Derived from the
-   *  presence of the matching Pgen ref below (single source of truth). */
+   *  block) is available for the heavy / light chain. Decides whether full-STAR
+   *  is ADDED on that chain (A-0010) — fast-STAR runs either way. Captured at
+   *  pick time (snapshot). Derived from the presence of the matching Pgen ref
+   *  below (single source of truth). */
   hasPgenHeavy: boolean;
   hasPgenLight: boolean;
   /** PlRef to the Generation Probability block's per-clonotype Pgen column
@@ -96,7 +96,7 @@ export type BlockArgs = {
 
   // ---- Clonotype-only aggregation (A-0011) ---------------------------------
   // Optional metadata-driven refinements of the exported aggregate; all absent
-  // → the default path (every sample an independent, eligible unit; k=1).
+  // → the default path (every sample an independent, eligible unit).
   /** PlRef to a sampleId-keyed metadata column (`pl7.app/metadata`) whose
    *  selected values mark the biologically-expected (post-exposure) samples.
    *  Its presence in args establishes the samples-block dependency (like the
@@ -106,15 +106,11 @@ export type BlockArgs = {
   /** Values of `expectedFilterRef` that count as expected. */
   expectedValues?: string[];
   /** PlRef to a sampleId-keyed metadata column marking independent units
-   *  (e.g. donor) — drives the two-level aggregation. */
+   *  (e.g. donor) — drives the two-level aggregation: the units full-STAR's
+   *  evidence is combined across, the units fast-STAR's median is taken over,
+   *  and the units the reproducibility ratio counts. Unset → every sample is
+   *  its own unit. `alpha` is the only statistical knob (A-0011). */
   groupingRef?: PlRef;
-  /** Replicability: independent units a clonotype must be a hit in. NOT
-   *  user-exposed (A-0011/A-0015) — set to 2 when a grouping is present, else
-   *  the workflow uses 1. */
-  replicabilityK?: number;
-  /** starScore strength↔reproducibility weight `w` ∈ [0,1] (A-0011):
-   *  w·pct(peak) + (1−w)·pct(support). Default 0.5. */
-  scoreWeight?: number;
 
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
@@ -178,17 +174,16 @@ export type BlockData = {
   clusterMin?: number;
 
   // Clonotype-only aggregation controls (A-0011). All optional; unset → the
-  // default aggregation (every sample an independent, eligible unit; k = 1).
+  // default aggregation (every sample an independent, eligible unit).
   /** Sample-metadata column marking biologically-expected samples. */
   expectedFilterRef?: PlRef;
   /** Selected expected values of `expectedFilterRef`. */
   expectedValues?: string[];
   /** Sample-metadata column marking independent units (e.g. donor). Setting it
-   *  turns on cross-donor reproducibility (k=2) + the support half of starScore
-   *  (A-0011); no separate toggle or k field. */
+   *  makes a donor's samples collapse together before the cross-donor
+   *  aggregation and defines the reproducibility denominator (A-0011); no
+   *  separate toggle, threshold or weight. */
   groupingRef?: PlRef;
-  /** starScore strength↔reproducibility weight `w` (Advanced, default 0.5). */
-  scoreWeight?: number;
 
   // UI-only state (never projects to args).
   settingsOpen?: boolean;

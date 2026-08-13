@@ -9,8 +9,10 @@ const app = useApp();
 
 // Aggregated distribution (A-0015 v2): one selector-driven histogram over the
 // exported clonotype-only scores across chain × mode (nbFreq / fullStarScore).
-// The user picks the score; grouping is its matching hit. No threshold line on
-// the aggregated blend (the values are percentiles, not the per-sample nbFreq).
+// The user picks the score; grouping is its matching hit. Both aggregated
+// scores stay on their per-sample statistic's scale, so nbFreq keeps its
+// threshold line (the fast-STAR hit cuts exactly that aggregated value) while
+// fullStarScore has none — its cutoff is the FDR call.
 const defaultOptions = computed(() =>
   distributionDefaults(app.model.outputs.aggregatedDistributionPfPcols),
 );

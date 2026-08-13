@@ -88,6 +88,36 @@ function buildSkippedSamples<A, U>(
   return { belowMin, noCdr3, allEmpty, nMin };
 }
 
+// The fast-STAR family the block's own tables hide on a chain that also carries
+// full-STAR (A-0015). Table visibility only — the columns are still emitted,
+// exported to the pool, and offered by the chart pickers, so the two calls stay
+// comparable; the tables just foreground the FDR-controlled one.
+const FAST_STAR_COLUMN_NAMES = new Set([
+  "pl7.app/vdj/convergence/nbFreq",
+  "pl7.app/vdj/convergence/fastStar",
+  "pl7.app/vdj/convergence/fastStarReproducibility",
+]);
+
+// Per chain: does this spec belong to the fast-STAR family of a chain that has
+// full-STAR? Chain identity follows the emission convention — SC columns carry
+// the scClonotypeChain letter, bulk columns the chain name (workflow
+// `convDomain`) — so heavy and light are decided independently, and a chain
+// without Pgen keeps its fast-STAR columns visible.
+function hidesFastStar(args: BlockArgs, spec: PColumnSpec): boolean {
+  if (!FAST_STAR_COLUMN_NAMES.has(spec.name)) return false;
+  const scLetter = spec.domain?.["pl7.app/vdj/scClonotypeChain"];
+  if (scLetter !== undefined) {
+    if (scLetter === args.chainHScLetter) return args.hasPgenHeavy === true;
+    if (scLetter === args.chainLScLetter) return args.hasPgenLight === true;
+    return false;
+  }
+  const chain = spec.domain?.["pl7.app/vdj/chain"];
+  if (chain === undefined) return false;
+  if (chain === args.chainHName) return args.hasPgenHeavy === true;
+  if (chain === args.chainLName) return args.hasPgenLight === true;
+  return false;
+}
+
 export const platforma = BlockModelV3.create(blockDataModel)
   .args((data): BlockArgs => {
     if (!data.datasetRef || !data.datasetFacts) {
@@ -198,8 +228,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
     // ---- Clonotype-only aggregation (A-0011) ----------------------
     // The metadata refs, projected here, establish the samples-block dependency
-    // so the workflow can resolve the columns; all optional (absent → default
-    // aggregation). k >= 2 replicability needs a grouping (else k = 1).
+    // so the workflow can resolve the columns; both optional (absent → the
+    // default path: every sample its own independent, eligible unit). There is
+    // no other aggregation knob — `alpha` drives both BH levels.
     if (data.expectedFilterRef) {
       args.expectedFilterRef = data.expectedFilterRef;
       if (data.expectedValues && data.expectedValues.length > 0) {
@@ -207,12 +238,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
       }
     }
     if (data.groupingRef) {
-      // A grouping alone turns on cross-donor reproducibility (k=2) and the
-      // support half of starScore (A-0011) — no separate toggle / k field.
       args.groupingRef = data.groupingRef;
-      args.replicabilityK = 2;
     }
-    args.scoreWeight = data.scoreWeight ?? 0.5;
     return args;
   })
 
@@ -548,7 +575,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
 
-  // mainTable. Anchored on the dataset's starHit column —
+  // mainTable — the per-sample QC table. Anchored on the chain's fastStar
+  // column (emitted on every chain, so it is the one reliable anchor) —
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
@@ -574,10 +602,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const starHitSpec = pCols?.find(
+    const hitAnchorSpec = pCols?.find(
       (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
     )?.spec;
-    if (!starHitSpec) return undefined;
+    if (!hitAnchorSpec) return undefined;
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -586,9 +614,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // runs in wasm/Rust, which has no negative lookahead), so we filter by
     // the block domain here. This block's id sits on the anchor's own
     // domain (pl7.app/block).
-    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
+    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
     const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
+      anchors: { main: hitAnchorSpec },
       selector: {
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment
@@ -646,7 +674,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
-          // First rule wins. Hide per-sample-only columns (axes exactly
+          // First rule wins. On a chain that has full-STAR, its fast-STAR
+          // columns are hidden here (A-0015) — full-STAR is the foregrounded
+          // signal; the columns remain exported and chartable.
+          {
+            match: (spec: PColumnSpec) => hidesFastStar(args, spec),
+            visibility: "hidden",
+          },
+          // Hide per-sample-only columns (axes exactly
           // [sampleId]) — chiefly the Sample label that the table's
           // automatic axis-label discovery re-adds for the array-form
           // `columns`. The sample sheet pins one sampleId at a time,
@@ -683,8 +718,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
   })
 
   // Clonotype-only aggregated table (A-0011) — the DEFAULT (Main) view and the
-  // downstream-consumable shape (A-0015): one row per clonotype (starScore +
-  // starHit, no sampleId axis → no sample sheet). Anchored on the populated
+  // downstream-consumable shape (A-0015): one row per clonotype (each emitted
+  // mode's score, hit and reproducibility; no sampleId axis → no sample
+  // sheet). Anchored on the populated
   // chain (heavy if present, else light); in dual-chain SC only the heavy family
   // is tabled here (the light family still exports to the pool).
   .outputWithStatus("aggregatedTable", (ctx) => {
@@ -695,7 +731,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (!ref) return undefined;
     if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    // Anchor on this block's aggregated (clonotype-only) starHit column.
+    // Anchor on this block's aggregated (clonotype-only) fastStar column — the
+    // one column every chain emits, whether or not full-STAR was added.
     // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
     // run the field isn't ready yet, and a plain resolve marks the render
     // context UNSTABLE, so outputWithStatus reports "loading" and the table
@@ -705,10 +742,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
     const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const starHitSpec = pCols?.find(
+    const hitAnchorSpec = pCols?.find(
       (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
     )?.spec;
-    if (!starHitSpec) return undefined;
+    if (!hitAnchorSpec) return undefined;
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
     // axis: pull every column sharing the clonotypeKey axis from the pool
@@ -717,9 +754,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // default, convergence columns default-visible. maxHops:0 keeps
     // enrichment to the anchor's own axis (no linker hops into cluster/space
     // axis systems).
-    const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
+    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
     const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
+      anchors: { main: hitAnchorSpec },
       selector: {
         mode: "enrichment",
         maxHops: 0,
@@ -761,6 +798,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: [
+          // First rule wins. On a chain that has full-STAR, hide that chain's
+          // aggregated fast-STAR columns (A-0015): the table shows
+          // fullStarScore / fullStar / fullStarReproducibility, while the
+          // fast-STAR trio stays exported and available in the column panel.
+          {
+            match: (spec: PColumnSpec) => hidesFastStar(args, spec),
+            visibility: "hidden",
+          },
           // Force the clonotype-id label (Clone ID) default-visible — some
           // MiXCR builds annotate it "optional".
           {

@@ -1,15 +1,18 @@
 """Stage 3 — paper's "binder" cluster filter (optional, gated by
 args.applyClusterFilter).
 
-Method-agnostic: reads the unified hit column (`starHit`, "Hit"/"Not hit")
-produced by whichever hit-calling stage ran — full-STAR (BH) OR fast-STAR
-(threshold). Per sample, runs DBSCAN with the vendored Levenshtein-1 metric
-on the `starHit=="Hit"` subset and identifies clones whose cluster reaches
---cluster-min. Emits an **additive** new column `fastStarClusterFiltered`
-("Hit" for survivors, "Not hit" for everyone else — a strict subset of
-`starHit`'s "Hit" set). `starHit` itself is NOT modified. Surviving rows
-additionally get a `clusterSize` column populated with the size of their
-natural Levenshtein-1 cluster (non-hit rows get 0).
+Refines the FAST-STAR hit set: the workflow invokes it with
+`--hit-column fastStar`, so it reads that column ("Hit"/"Not hit"), not
+full-STAR's. Per sample, runs DBSCAN with the vendored Levenshtein-1 metric on
+the hit subset and identifies clones whose cluster reaches --cluster-min. Emits
+an **additive** new column `fastStarClusterFiltered` ("Hit" for survivors, "Not
+hit" for everyone else — a strict subset of the input hit set); the input hit
+column itself is NOT modified. Surviving rows additionally get a `clusterSize`
+column populated with the size of their natural Levenshtein-1 cluster (non-hit
+rows get 0).
+
+The column is parameterised (`--hit-column`), so the same code could refine any
+Hit/Not-hit call; only fast-STAR's is wired today.
 
 Output TSV has the input schema + `fastStarClusterFiltered` + `clusterSize`.
 This template stays pure: caching is keyed on (hitCallOutput, clusterMin),

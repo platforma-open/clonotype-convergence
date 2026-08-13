@@ -1,57 +1,65 @@
 """Stage 4 — aggregate the per-sample convergence signal to the clonotype-only axis.
 
-Implements A-0011. The block computes convergence PER SAMPLE (Stages 1-3); the
-downstream in-vivo score / lead selection consume a CLONOTYPE-ONLY signal
+Implements A-0011 v5. The block computes convergence PER SAMPLE (Stages 1-3); the
+downstream repertoire score / lead selection consume a CLONOTYPE-ONLY signal
 (A-0006), so a clonotype seen in several samples is collapsed to one value per
-column. Only `starScore` and `starHit` are aggregated/exported here; `neighbours`
-stays a per-sample inner/QC value (A-0012 follow-up).
+column. Each emitted mode aggregates INDEPENDENTLY (A-0003): the workflow calls
+this once per mode with that mode's per-sample score/hit columns, and `--method`
+selects the statistic. `neighbours` is never aggregated — it stays a per-sample
+inner/QC value (A-0012).
 
-Aggregation is always WITHIN ONE MODE (A-0003): a run is full-STAR or fast-STAR,
-never both, so `--method` selects the interpretation of the per-sample score.
+Three exported values per mode: a score, a hit, and a reproducibility ratio.
 
 Two-level shape (A-0011), mirroring the within-sample discipline one level up:
 
     per-sample rows
       → (eligibility)        keep technically-good ∩ biologically-expected samples
       → unit assignment      unit = independence-grouping value, else the sampleId
-      → Level 1 collapse     one value per (clonotype, unit)   [--within-unit]
-      → Level 2 aggregate    one value per clonotype           [max / BH]
+      → Level 1 collapse     one value per (clonotype, unit)
+      → Level 2 aggregate    one value per clonotype
 
-Rules are intentionally parameterised (the exact semantics are still settling in
-Q-0009); each lives in its own small function so it can be swapped without
-restructuring.
+  Level 1 (identity when every sample is its own unit, i.e. m = 1):
+      fast-STAR  nbFreq_unit = max over the unit's samples — within a unit,
+                 variation across samples is signal (the response peak).
+      full-STAR  p_unit = min(1, m · min p)  (Bonferroni over the unit's m
+                 samples). Computed in -log10 space, where it is exactly
+                 score_unit = max(0, max(score) - log10(m)). The SAME p_unit
+                 feeds both the score contribution and the Fisher combination —
+                 one number, both faces.
 
-  starScore  → a reproducibility-aware blend of two percentile ranks across the
-               dataset's clonotypes (A-0011):
-                   starScore = w * pct(peak) + (1 - w) * pct(support)
-               peak    = the clone's strongest per-unit convergence
-                         (max(-log10 p) full-STAR, max(nbFreq) fast-STAR);
-               support = the count of independent units (donors) in which it is
-                         a convergent hit — a count, NOT a fraction;
-               pct(.)  = percentile-rank into (0, 1]; `w` = --weight in [0, 1].
-               No independence grouping → support is undefined → starScore =
-               pct(peak) alone. Private / low-support clones are downranked
-               (shrunk, never emptied).
-  starHit    → full-STAR: per clonotype take the k-th ordered per-unit p-value
-               (k=1 ⇒ min-p, with a multiplicity correction over its units),
-               then Benjamini-Hochberg across all clonotypes at `--alpha`.
-               fast-STAR: count of per-unit hits >= k (k=1 ⇒ max(nbFreq) >
-               threshold).
+  Level 2, over the units the clonotype is PRESENT in (no zero-filling):
+      full-STAR  score = Σ -log10 p_unit         (Fisher, in -log10 form)
+                 hit   = X = -2 Σ ln p_unit ~ χ²(2k) → combined p
+                         → Benjamini-Hochberg across all clonotypes at --alpha.
+                 Score and hit are two faces of one statistic; at k = 1 the χ²
+                 tail returns the unit's own p unchanged.
+      fast-STAR  score = the upper median: the ⌊n/2⌋+1-th smallest nbFreq_unit
+                 across the n present units (Wilkinson's r-th ordered statistic).
+                 Identity at n <= 2, robust from n = 3. Always an actual unit's
+                 observation, never an interpolation.
+                 hit   = that aggregated nbFreq > --threshold (no p, no BH).
 
-`support` (the donor-hit count) is computed internally — it feeds the starScore
-blend and the >= k hit call — but is NOT exported as its own column (A-0012 /
-A-0014 export only starScore + starHit).
+  Reproducibility (both modes): hit-donors / D.
+      hit-donors = units in which the clonotype is a per-sample hit of that mode
+                   (any-of within the unit).
+      D          = units with at least one sample surviving the expected-at
+                   filter — a per-dataset CONSTANT, the same for every clonotype
+                   and both modes, which is what makes the ratio comparable
+                   across clonotypes. QC-failed units are KEPT in D, so it is
+                   counted over the sample universe in --metadata (which lists
+                   every sample of the dataset, including ones that produced no
+                   convergence rows), not over the samples present in --input.
 
-`--k >= 2` (replicability) needs the independence grouping and >= k units; a
-clone in fewer than k units is "Not hit" for the replicability claim (the k=1
-call is never blocked — full-STAR always produces, A-0011).
+`alpha` is the only exposed statistical knob (plus fast-STAR's threshold): no
+weight, no percentile, no replicability `k`.
 
 Input TSV: the reassembled per-sample convergence table — one row per
-(sampleId, clonotypeKey) with `starScore` (Double; -log10 p for full-STAR,
-nbFreq for fast-STAR; blank when a clone was untestable in that sample) and
-`starHit` ("Hit"/"Not hit"). Optional `--metadata` TSV maps sampleId → an
-`expected` column (biological eligibility) and/or a `unit` column (independence
-grouping). Output TSV: one row per clonotype with `starScore` + `starHit`.
+(sampleId, clonotypeKey) with the mode's score column (Double; -log10 p for
+full-STAR, nbFreq for fast-STAR; blank when a clone was untestable in that
+sample) and hit column ("Hit"/"Not hit"). Optional `--metadata` TSV is the
+sample universe: one row per dataset sample, `sampleId` plus an optional
+`expected` column (biological eligibility) and/or `unit` column (independence
+grouping). Output TSV: one row per clonotype with score + hit + reproducibility.
 
 Structured stdout, one event per line, prefixed ``[chain <chain>]``.
 """
@@ -65,6 +73,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2
+
+# ln(10): converts a -log10 p to the natural-log form Fisher's statistic needs.
+LN10 = float(np.log(10.0))
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,34 +88,20 @@ def parse_args() -> argparse.Namespace:
     # full-STAR knob (BH FDR target across clonotypes); fast-STAR knob (nbFreq cutoff).
     parser.add_argument("--alpha", type=float, default=0.005)
     parser.add_argument("--threshold", type=float, default=None)
-    # Replicability: independent units a clonotype must be a hit in.
-    parser.add_argument("--k", type=int, default=1)
-    # Optional sample metadata: sampleId + optional `expected` / `unit` columns.
+    # Sample universe: sampleId + optional `expected` / `unit` columns. One row
+    # per dataset sample, including samples that produced no convergence rows —
+    # that is what makes D count QC-failed units (A-0011).
     parser.add_argument("--metadata", type=Path, default=None)
     # JSON list of `expected` values that count as biologically eligible; when
     # given, samples whose `expected` value is outside the list are dropped from
-    # the EXPORTED aggregate (the block's own per-sample table keeps them).
+    # the EXPORTED aggregate (the block's own per-sample table keeps them) and
+    # from D.
     parser.add_argument("--expected-values", dest="expected_values", default=None)
-    # starScore strength<->reproducibility weight (A-0011): w in [0,1] for
-    # starScore = w*pct(peak) + (1-w)*pct(support). Default 0.5 (50/50).
-    parser.add_argument("--weight", type=float, default=0.5)
-    parser.add_argument(
-        "--within-unit",
-        dest="within_unit",
-        default="peak",
-        choices=["peak", "mean"],
-        help="Level-1 collapse of correlated samples in one unit (Q-0009).",
-    )
-    parser.add_argument(
-        "--multiplicity",
-        default="sidak",
-        choices=["sidak", "bonferroni", "none"],
-        help="full-STAR k=1 correction of min-p over a clone's units.",
-    )
     parser.add_argument("--clonotype-column", dest="clonotype_column", default="clonotypeKey")
     parser.add_argument("--sample-column", dest="sample_column", default="sampleId")
     parser.add_argument("--score-column", dest="score_column", default="starScore")
     parser.add_argument("--hit-column", dest="hit_column", default="starHit")
+    parser.add_argument("--reproducibility-column", dest="repro_column", default="reproducibility")
     return parser.parse_args()
 
 
@@ -114,32 +112,48 @@ def log(prefix: str, msg: str) -> None:
 # --- rule functions (each independently swappable) --------------------------
 
 
-def collapse_within_unit(scores: np.ndarray, rule: str) -> float:
-    """Level 1 — collapse the scores of correlated samples in one unit to a
-    single per-unit score. `peak` (the default) keeps the unit's strongest
-    signal (== min p for full-STAR, since score = -log10 p); `mean` suits
-    technical replicates. Exact choice is a Q-0009 parameter."""
-    if rule == "mean":
-        return float(np.mean(scores))
-    return float(np.max(scores))  # peak
+def bonferroni_unit_score(scores: np.ndarray) -> float:
+    """Level 1, full-STAR — one unit p from the unit's m sample p-values:
+    ``p_unit = min(1, m * min p)``, expressed in -log10 space where it is
+    ``max(0, max(score) - log10(m))``. Identity at m = 1.
+
+    The correction prices the width of the search (not knowing in advance which
+    of the unit's samples peaks); the smallest of m p-values is not itself a
+    p-value, and both the Fisher combination and BH downstream read p_unit as a
+    probability. Working in log space keeps the strongest clones exact — their
+    raw p underflows to 0.0 upstream."""
+    m = len(scores)
+    best = float(np.max(scores))
+    if m <= 1:
+        return best
+    return max(0.0, best - float(np.log10(m)))
 
 
-def combine_unit_pvalues(unit_p: np.ndarray, k: int, multiplicity: str) -> float | None:
-    """Level 2 (full-STAR) — one combined p per clonotype from its per-unit
-    p-values. k=1: min-p with a multiplicity correction over the clone's units.
-    k>=2: the k-th ordered p (replicability); None when the clone spans < k
-    units (cannot support the replicability claim)."""
-    n = len(unit_p)
-    if k <= 1:
-        p_min = float(np.min(unit_p))
-        if multiplicity == "none" or n <= 1:
-            return p_min
-        if multiplicity == "bonferroni":
-            return min(p_min * n, 1.0)
-        return 1.0 - (1.0 - p_min) ** n  # sidak
-    if n < k:
-        return None
-    return float(np.sort(unit_p)[k - 1])
+def upper_median(values: np.ndarray) -> float:
+    """Level 2, fast-STAR — the ⌊n/2⌋+1-th smallest of the n per-unit values
+    (Wilkinson's r-th ordered statistic at the upper-median rank).
+
+    The reported value is always an actual unit's observation, never an
+    interpolation, and the rule is the identity at n <= 2 (so single- and
+    two-unit clonotypes are never diluted); robustness engages from n = 3.
+    nbFreq is not size-adjusted, so across units a lone spike is more likely a
+    shallow-sampling artifact than biology — hence the typical unit, not the
+    peak."""
+    ordered = np.sort(values)
+    return float(ordered[len(ordered) // 2])
+
+
+def fisher_combined_p(unit_scores: np.ndarray) -> float:
+    """Level 2, full-STAR — the combined p behind the Fisher score.
+
+    ``X = -2 Σ ln p_unit = 2·ln(10)·Σ (-log10 p_unit) ~ χ²(2k)`` under the null,
+    k = the number of independent units. The exported score is the same sum in
+    -log10 form, so score and hit are two faces of one statistic. At k = 1 the
+    χ²(2) tail is ``exp(-X/2) = p``, i.e. the identity — a one-unit clonotype's
+    combined p IS its per-sample p."""
+    k = len(unit_scores)
+    x = 2.0 * LN10 * float(np.sum(unit_scores))
+    return float(chi2.sf(x, 2 * k))
 
 
 def bh_hit_mask(pvalues: np.ndarray, alpha: float) -> np.ndarray:
@@ -172,134 +186,148 @@ def main() -> int:
     args = parse_args()
     prefix = f"[chain {args.chain}]"
 
-    df = pd.read_csv(args.input, sep="\t")
     clone_c, sample_c = args.clonotype_column, args.sample_column
-    score_c, hit_c = args.score_column, args.hit_column
+    # The sample column is read as text on BOTH sides (here and for --metadata):
+    # it is joined against the universe, and a numeric sampleId inferred as a
+    # float on one side only ("12345" vs "12345.0") would silently join nothing.
+    df = pd.read_csv(args.input, sep="\t", dtype={sample_c: str, clone_c: str})
+    score_c, hit_c, repro_c = args.score_column, args.hit_column, args.repro_column
     required = {clone_c, sample_c, score_c, hit_c}
     missing = required - set(df.columns)
     if missing:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
+    is_full = args.method == "full-STAR"
+    if not is_full and args.threshold is None:
+        print("error: fast-STAR aggregation requires --threshold")
+        return 2
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Output columns are named after the MODE being aggregated (A-0012 v2): the
-    # workflow calls this once per emitted mode with --score-column/--hit-column
-    # = nbFreq/fastStar (fast-STAR) or fullStarScore/fullStar (full-STAR), and
-    # the aggregated result carries those same names. Internally the blend/hit
-    # are computed as starScore/starHit and renamed on write. `support` (donor-
-    # hit count) is computed internally (feeds the blend + the k-call) but is NOT
-    # emitted.
-    out_cols = [clone_c, score_c, hit_c]
+    # Output columns are named after the MODE being aggregated (A-0012): the
+    # workflow calls this once per emitted mode with --score-column/--hit-column/
+    # --reproducibility-column = nbFreq/fastStar/fastStarReproducibility
+    # (fast-STAR) or fullStarScore/fullStar/fullStarReproducibility (full-STAR),
+    # and the aggregated result carries those same names.
+    out_cols = [clone_c, score_c, hit_c, repro_c]
+
+    def emit_empty(reason: str) -> int:
+        pd.DataFrame(columns=out_cols).to_csv(args.output, sep="\t", index=False)
+        log(prefix, reason)
+        return 0
 
     log(prefix, f"input rows (sample x clonotype): {len(df)}")
     if len(df) == 0:
-        pd.DataFrame(columns=out_cols).to_csv(args.output, sep="\t", index=False)
-        log(prefix, "empty input; emitting empty output")
-        return 0
+        return emit_empty("empty input; emitting empty output")
 
-    # --- metadata: eligibility filter + unit assignment ---------------------
-    # `has_grouping` gates the support term of starScore (A-0011): without an
-    # independence grouping, support is undefined → starScore = pct(peak) alone.
-    has_grouping = False
-    df["_unit"] = df[sample_c].astype(str)  # default: each sample is its own unit
+    # --- the sample universe: unit assignment + eligibility -----------------
+    # `universe` is one row per DATASET sample (sampleId, unit), independent of
+    # whether that sample produced convergence rows — QC-failed samples are in
+    # it, which is what A-0011 requires for D. Without --metadata the per-sample
+    # table is the only universe available (standalone / test use).
+    expected_values = set(json.loads(args.expected_values)) if args.expected_values else None
     if args.metadata is not None and args.metadata.exists():
         meta = pd.read_csv(args.metadata, sep="\t", dtype=str)
-        if sample_c in meta.columns:
-            df = df.merge(meta, on=sample_c, how="left", suffixes=("", "_meta"))
-            if "unit" in meta.columns:
-                has_grouping = True
-                # Fall back to sampleId where the grouping value is missing.
-                grp = df["unit"].astype("string")
-                df["_unit"] = grp.fillna(df[sample_c].astype(str)).astype(str)
-                log(prefix, "independence grouping active")
-            if args.expected_values is not None and "expected" in meta.columns:
-                expected = set(json.loads(args.expected_values))
-                before = df[sample_c].nunique()
-                df = df[df["expected"].astype("string").isin(expected)]
-                after = df[sample_c].nunique()
-                log(prefix, f"expected-sample filter: kept {after}/{before} samples")
+        if sample_c not in meta.columns:
+            print(f"error: metadata TSV missing the '{sample_c}' column")
+            return 2
+        universe = meta[[c for c in (sample_c, "unit", "expected") if c in meta.columns]].copy()
+    else:
+        universe = pd.DataFrame({sample_c: df[sample_c].astype(str).unique()})
+    universe[sample_c] = universe[sample_c].astype(str)
+    universe = universe.drop_duplicates(subset=[sample_c])
 
+    has_grouping = "unit" in universe.columns
+    if has_grouping:
+        # Fall back to the sampleId where the grouping value is missing.
+        universe["_unit"] = (
+            universe["unit"].astype("string").fillna(universe[sample_c]).astype(str)
+        )
+        log(prefix, "independence grouping active")
+    else:
+        universe["_unit"] = universe[sample_c]
+
+    if expected_values is not None and "expected" in universe.columns:
+        before = len(universe)
+        universe = universe[universe["expected"].astype("string").isin(expected_values)]
+        log(prefix, f"expected-sample filter: kept {len(universe)}/{before} samples")
+    elif expected_values is not None:
+        log(prefix, "expected-sample filter requested but no 'expected' column; keeping all samples")
+
+    # D — the eligible-unit cohort: units with >= 1 sample surviving the
+    # expected-at filter. A per-dataset constant, common to every clonotype and
+    # both modes; QC-failed units are kept (they are in the universe even
+    # though they contributed no rows).
+    cohort_d = int(universe["_unit"].nunique())
+    log(prefix, f"eligible cohort D (units): {cohort_d}")
+    if cohort_d == 0:
+        return emit_empty("no samples remain after eligibility; emitting empty output")
+
+    # Restrict the per-sample rows to the eligible samples and attach their unit.
+    df[sample_c] = df[sample_c].astype(str)
+    df = df.merge(universe[[sample_c, "_unit"]], on=sample_c, how="inner")
     if len(df) == 0:
-        pd.DataFrame(columns=out_cols).to_csv(args.output, sep="\t", index=False)
-        log(prefix, "no samples remain after eligibility; emitting empty output")
-        return 0
+        return emit_empty("no convergence rows in the eligible samples; emitting empty output")
 
     # A per-sample row contributes only if it carries a numeric score (a clone
-    # untestable in a sample has a blank starScore and is not evidence).
+    # untestable in a sample has a blank score and is not evidence). Absence is
+    # never zero-filled: aggregation runs over the units the clone is present in.
     df["_score"] = pd.to_numeric(df[score_c], errors="coerce")
     df["_hit"] = df[hit_c].astype(str) == "Hit"
     scored = df[df["_score"].notna()].copy()
-    log(prefix, f"units: {df['_unit'].nunique()}; scored rows: {len(scored)}")
+    log(prefix, f"units with data: {df['_unit'].nunique()}; scored rows: {len(scored)}")
+    if len(scored) == 0:
+        return emit_empty("no scored rows; emitting empty output")
 
     # --- Level 1: collapse each (clonotype, unit) to one per-unit value -----
+    collapse = bonferroni_unit_score if is_full else (lambda s: float(np.max(s)))
     per_unit = (
         scored.groupby([clone_c, "_unit"])
         .agg(
-            unit_score=("_score", lambda s: collapse_within_unit(s.to_numpy(dtype=float), args.within_unit)),
+            unit_score=("_score", lambda s: collapse(s.to_numpy(dtype=float))),
             unit_hit=("_hit", "any"),
         )
         .reset_index()
     )
 
     # --- Level 2: one value per clonotype -----------------------------------
-    is_full = args.method == "full-STAR"
-    threshold = args.threshold
-    if not is_full and threshold is None:
-        print("error: fast-STAR aggregation requires --threshold")
-        return 2
+    grouped = per_unit.groupby(clone_c)
+    clones = []
+    scores = []
+    combined_p = []
+    hit_units = []
+    for clone, g in grouped:
+        unit_scores = g["unit_score"].to_numpy(dtype=float)
+        clones.append(clone)
+        hit_units.append(int(g["unit_hit"].sum()))
+        if is_full:
+            # Fisher: the sum IS the score; its χ² tail IS the hit's p-value.
+            scores.append(float(np.sum(unit_scores)))
+            combined_p.append(fisher_combined_p(unit_scores))
+        else:
+            scores.append(upper_median(unit_scores))
 
-    # peak = strongest per-unit score; support = number of hit units (donors).
-    per_clone = (
-        per_unit.groupby(clone_c)
-        .agg(peak=("unit_score", "max"), support=("unit_hit", "sum"))
-        .reset_index()
-    )
-    per_clone["support"] = per_clone["support"].astype(int)
+    per_clone = pd.DataFrame({clone_c: clones, "_score": scores})
+    per_clone[repro_c] = np.asarray(hit_units, dtype=float) / cohort_d
 
-    # starHit — the >= k partial conjunction with Benjamini-Hochberg across
-    # clonotypes (full-STAR) or a per-unit hit count / threshold (fast-STAR).
     if is_full:
-        # score = -log10 p ⇒ p = 10^-score. One combined p per clonotype
-        # (min-p x multiplicity for k=1, k-th ordered p for k>=2; None when the
-        # clone spans < k units → untestable → Not hit).
-        per_unit["_p"] = np.power(10.0, -per_unit["unit_score"].to_numpy(dtype=float))
-        combined = {
-            clone: combine_unit_pvalues(g["_p"].to_numpy(dtype=float), args.k, args.multiplicity)
-            for clone, g in per_unit.groupby(clone_c)
-        }
-        per_clone["_combined_p"] = per_clone[clone_c].map(combined)
-        testable = per_clone["_combined_p"].notna().to_numpy()
-        per_clone["starHit"] = "Not hit"
-        hits = bh_hit_mask(per_clone.loc[testable, "_combined_p"].to_numpy(dtype=float), args.alpha)
-        per_clone.loc[per_clone.index[testable][hits], "starHit"] = "Hit"
+        pvals = np.asarray(combined_p, dtype=float)
+        hits = bh_hit_mask(pvals, args.alpha)
+        per_clone["_hit"] = np.where(hits, "Hit", "Not hit")
         log(
             prefix,
-            f"BH across {int(testable.sum())} testable clonotypes at alpha={args.alpha}: "
-            f"{int(hits.sum())} hits",
+            f"BH across {len(pvals)} clonotypes at alpha={args.alpha}: {int(hits.sum())} hits",
         )
-    elif args.k >= 2:
-        per_clone["starHit"] = np.where(per_clone["support"] >= args.k, "Hit", "Not hit")
     else:
-        per_clone["starHit"] = np.where(per_clone["peak"] > threshold, "Hit", "Not hit")
+        per_clone["_hit"] = np.where(per_clone["_score"] > args.threshold, "Hit", "Not hit")
+        log(prefix, f"fast-STAR threshold {args.threshold} on the aggregated score")
 
-    # starScore — reproducibility-aware blend of two percentile ranks across
-    # clonotypes (A-0011): w*pct(peak) + (1-w)*pct(support). Without an
-    # independence grouping, support is undefined → pct(peak) alone. Both terms
-    # monotone-increasing, so the score rewards strength AND cross-donor recurrence.
-    # rank(pct=True) maps to (0, 1] (ties averaged).
-    pct_peak = per_clone["peak"].rank(pct=True)
-    if has_grouping:
-        pct_support = per_clone["support"].rank(pct=True)
-        per_clone["starScore"] = args.weight * pct_peak + (1.0 - args.weight) * pct_support
-        log(prefix, f"starScore = {args.weight}*pct(peak) + {1.0 - args.weight}*pct(support)")
-    else:
-        per_clone["starScore"] = pct_peak
-        log(prefix, "starScore = pct(peak) (no grouping → support undefined)")
-
+    # Stable sort: the output bytes are the input of a pure import step, so ties
+    # must not reorder run to run (that would break dedup downstream).
     result = (
-        per_clone[[clone_c, "starScore", "starHit"]]
-        .sort_values("starScore", ascending=False)
-        .rename(columns={"starScore": score_c, "starHit": hit_c})
+        per_clone[[clone_c, "_score", "_hit", repro_c]]
+        .sort_values("_score", ascending=False, kind="stable")
+        .rename(columns={"_score": score_c, "_hit": hit_c})
     )
     result.to_csv(args.output, sep="\t", index=False)
     log(prefix, f"aggregated to {len(result)} clonotypes; {int((result[hit_c] == 'Hit').sum())} hits")
