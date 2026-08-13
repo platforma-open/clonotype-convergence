@@ -1,4 +1,4 @@
-import type { BlockData } from "./types";
+import type { BlockData, UpstreamFacts } from "./types";
 
 /**
  * Chain / axis / anchor constants and small helpers shared between the
@@ -73,6 +73,21 @@ export function isLight(chain: string | undefined): boolean {
 // renders the trace label only when needed to disambiguate, so a single
 // block's labels are unchanged; without these settings two blocks on the
 // same dataset with different settings collapse to identical labels.
+// Pgen availability is DEFINED by ref presence — `discoverUpstreamFacts` sets
+// `hasPgen* = (pgenRef* !== undefined)` so args and the workflow can never
+// disagree. Read it through these helpers rather than the stored boolean: a
+// snapshot written by an older build can carry `hasPgen: false` next to a live
+// ref (undefined values are dropped crossing the model → UI boundary, so a
+// merge could update the flag without clearing the ref), and trusting the flag
+// there silently downgrades the run to fast-STAR while a usable Pgen ref sits
+// in the block's own data.
+export function pgenHeavyAvailable(facts: UpstreamFacts | undefined): boolean {
+  return facts?.pgenRefHeavy !== undefined;
+}
+export function pgenLightAvailable(facts: UpstreamFacts | undefined): boolean {
+  return facts?.pgenRefLight !== undefined;
+}
+
 export function getDefaultBlockLabel(data: BlockData): string {
   const parts: string[] = [];
 
@@ -84,7 +99,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
     // full-STAR uses alpha and hides the threshold, so surfacing it would
     // misrepresent the run. Mixed methods are designed out (args throws), so
     // the primary chain's Pgen availability decides for both.
-    const runsFallback = primaryIsHeavy ? !facts.hasPgenHeavy : !facts.hasPgenLight;
+    const runsFallback = primaryIsHeavy ? !pgenHeavyAvailable(facts) : !pgenLightAvailable(facts);
     if (runsFallback) {
       const primaryThreshold = primaryIsHeavy ? data.thresholdH : data.thresholdL;
       if (primaryThreshold !== undefined) {

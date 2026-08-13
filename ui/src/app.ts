@@ -73,17 +73,26 @@ function syncPgenAvailability(model: AppModel) {
       // go DOWN while idle, when an empty lookup means gen-prob really is gone.
       // A dataset re-pick rewrites the snapshot wholesale either way, so a
       // genuine removal is never stuck behind this latch.
-      // Per chain: adopt the reading when it FINDS Pgen (fresh ref included);
-      // when it finds none, accept that only if the loss is trusted, else keep
-      // what we had.
+      // Per chain, pick the REF first, then derive the flag from it. The
+      // invariant `hasPgen === (ref !== undefined)` is what keeps args and the
+      // workflow in agreement (facts.ts), and it must be restored on every
+      // write here — the previous `{ ...facts, ...status }` spread broke it:
+      // `undefined` values do not survive the model → UI boundary, so a status
+      // that found nothing arrived as `{ hasPgen*: false }` with the ref keys
+      // ABSENT. The spread then flipped the flags and left the stale refs in
+      // place, producing `hasPgenHeavy: false` next to a live pgenRefHeavy —
+      // a block that holds a usable Pgen ref and still runs fast-STAR only,
+      // because the args lambda gates the ref on the flag.
       const trustLoss = isRunning !== true;
-      const keep = <T>(found: boolean, fresh: T, previous: T): T =>
-        found ? fresh : trustLoss ? fresh : previous;
+      const pickRef = (found: boolean, fresh?: PlRef, previous?: PlRef): PlRef | undefined =>
+        found ? fresh : trustLoss ? undefined : previous;
+      const refHeavy = pickRef(status.hasPgenHeavy, status.pgenRefHeavy, facts.pgenRefHeavy);
+      const refLight = pickRef(status.hasPgenLight, status.pgenRefLight, facts.pgenRefLight);
       const next = {
-        hasPgenHeavy: keep(status.hasPgenHeavy, status.hasPgenHeavy, facts.hasPgenHeavy),
-        hasPgenLight: keep(status.hasPgenLight, status.hasPgenLight, facts.hasPgenLight),
-        pgenRefHeavy: keep(status.hasPgenHeavy, status.pgenRefHeavy, facts.pgenRefHeavy),
-        pgenRefLight: keep(status.hasPgenLight, status.pgenRefLight, facts.pgenRefLight),
+        pgenRefHeavy: refHeavy,
+        pgenRefLight: refLight,
+        hasPgenHeavy: refHeavy !== undefined,
+        hasPgenLight: refLight !== undefined,
       };
 
       if (

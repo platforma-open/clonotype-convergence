@@ -23,6 +23,8 @@ import {
   inputAnchorSpecs,
   isHeavy,
   isLight,
+  pgenHeavyAvailable,
+  pgenLightAvailable,
   SC_AXIS,
   SC_BCR_RECEPTOR,
   SC_LETTER_FROM_CHAIN,
@@ -236,10 +238,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (chainH) {
       args.chainH = chainH;
       args.chainHName = chainHName;
-      args.hasPgenHeavy = facts.hasPgenHeavy;
+      args.hasPgenHeavy = pgenHeavyAvailable(facts);
       // full-STAR is added when Pgen is present; the ref establishes the gen-prob
       // dependency so the workflow can resolve Pgen data by ref.
-      if (facts.hasPgenHeavy) args.pgenRefHeavy = facts.pgenRefHeavy;
+      if (pgenHeavyAvailable(facts)) args.pgenRefHeavy = facts.pgenRefHeavy;
       // fast-STAR always runs → its threshold is always projected.
       args.thresholdH = data.thresholdH;
       if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
@@ -247,8 +249,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (chainL) {
       args.chainL = chainL;
       args.chainLName = chainLName;
-      args.hasPgenLight = facts.hasPgenLight;
-      if (facts.hasPgenLight) args.pgenRefLight = facts.pgenRefLight;
+      args.hasPgenLight = pgenLightAvailable(facts);
+      if (pgenLightAvailable(facts)) args.pgenRefLight = facts.pgenRefLight;
       args.thresholdL = data.thresholdL;
       if (lightIsSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[chainLName!];
     }
@@ -425,8 +427,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef);
     if (!facts) return undefined;
     return {
-      hasPgenHeavy: facts.hasPgenHeavy,
-      hasPgenLight: facts.hasPgenLight,
+      hasPgenHeavy: pgenHeavyAvailable(facts),
+      hasPgenLight: pgenLightAvailable(facts),
       pgenRefHeavy: facts.pgenRefHeavy,
       pgenRefLight: facts.pgenRefLight,
     };
