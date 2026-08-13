@@ -7,24 +7,28 @@
   "files": [],
   "type": "module",
   "scripts": {
-    "test": "vitest --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "fmt": "ts-builder format",
+    "check": "ts-builder check --target block-test"
   },
   "dependencies": {
-    "this-block": "workspace:@platforma-open/milaboratories.clonotype-convergence@*",
     "@platforma-open/milaboratories.clonotype-convergence.model": "workspace:*",
-    "@platforma-open/milaboratories.samples-and-data": "catalog:",
-    "@platforma-open/milaboratories.samples-and-data.model": "catalog:",
+    "@platforma-open/milaboratories.generation-probability.block": "catalog:",
     "@platforma-open/milaboratories.mixcr-clonotyping-2": "catalog:",
     "@platforma-open/milaboratories.mixcr-clonotyping-2.model": "catalog:",
-    "@platforma-open/milaboratories.generation-probability.block": "catalog:",
+    "@platforma-open/milaboratories.samples-and-data": "catalog:",
+    "@platforma-open/milaboratories.samples-and-data.model": "catalog:",
     "@platforma-sdk/model": "catalog:",
-    "canonicalize": "catalog:"
+    "canonicalize": "catalog:",
+    "this-block": "workspace:@platforma-open/milaboratories.clonotype-convergence@*"
   },
   "devDependencies": {
-    "@platforma-sdk/test": "catalog:"
+    "@milaboratories/ts-builder": "catalog:",
+    "@milaboratories/ts-configs": "catalog:",
+    "@platforma-sdk/test": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
-    "typescript": "*",
-    "vitest": "*"
+    "typescript": "*"
   }
 }

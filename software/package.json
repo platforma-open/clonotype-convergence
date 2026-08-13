@@ -2,17 +2,19 @@
   "name": "@platforma-open/milaboratories.clonotype-convergence.software",
   "version": "1.2.0",
   "description": "Block Software",
+  "files": [
+    "./dist/**/*"
+  ],
   "type": "module",
   "scripts": {
-    "do-pack": "shx rm -f *.tgz && pl-pkg build && pnpm pack && shx mv platforma-open*.tgz package.tgz",
+    "do-pack": "shx rm -f *.tgz && block-tools software build && pnpm pack && shx mv platforma-open*.tgz package.tgz",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "build": "pl-pkg build",
-    "prepublishOnly": "pl-pkg prepublish"
+    "build": "block-tools software build"
   },
   "devDependencies": {
     "@platforma-open/milaboratories.runenv-python-3": "catalog:",
-    "@platforma-sdk/package-builder": "catalog:"
+    "@platforma-sdk/block-tools": "catalog:"
   },
   "block-software": {
     "artifacts": {
