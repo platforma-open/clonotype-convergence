@@ -697,6 +697,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
       return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     };
 
+    // Nullable in this SDK line: nothing resolvable yet -> no table.
+    if (!discovered) return undefined;
+
     return createPlDataTableV3(ctx, {
       primaryColumns: discovered.primary.filter(keep),
       columns: discovered.secondary.filter(keep),
@@ -812,6 +815,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
       if (thisBlockId === undefined) return true;
       return spec.domain?.["pl7.app/block"] === thisBlockId;
     };
+
+    // Nullable in this SDK line: nothing resolvable yet -> no table.
+    if (!discovered) return undefined;
 
     return createPlDataTableV3(ctx, {
       primaryColumns: discovered.primary.filter(keep),

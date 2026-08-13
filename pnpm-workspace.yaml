@@ -10,10 +10,15 @@ catalog:
   "@milaboratories/ts-builder": 1.6.2
   "@milaboratories/ts-configs": 1.4.0
   "@platforma-sdk/workflow-tengo": 6.8.2
+  # model / ui-vue / test are held at 1.80.2 to MATCH THE DESKTOP RUNTIME
+  # (the app reports `sdkVersions: desktop 1.80.2`). A block built against a
+  # newer SDK than the app that renders it feeds newer model output to an older
+  # table component. `require-latest` gates only block-tools, so holding these
+  # back is CI-safe; re-raise them when the desktop moves.
   "@platforma-sdk/block-tools": 2.12.13
-  "@platforma-sdk/model": 1.81.1
-  "@platforma-sdk/ui-vue": 1.81.1
-  "@platforma-sdk/test": 1.81.2
+  "@platforma-sdk/model": 1.80.2
+  "@platforma-sdk/ui-vue": 1.80.2
+  "@platforma-sdk/test": 1.80.2
   "@platforma-sdk/tengo-builder": 4.0.22
   "@platforma-sdk/package-builder": 3.14.2
   "@platforma-sdk/blocks-deps-updater": 2.2.0
@@ -31,7 +36,9 @@ catalog:
   "@platforma-open/milaboratories.generation-probability.block": 1.0.0
 
   "@milaboratories/graph-maker": 1.4.8
-  "@milaboratories/helpers": 1.14.5
+  # Must equal the version @platforma-sdk/model pulls (1.80.2 -> 1.14.4).
+  # A second copy makes the model build fail TS2742 on the `platforma` export.
+  "@milaboratories/helpers": 1.14.4
 
   "canonicalize": 2.1.0
 
