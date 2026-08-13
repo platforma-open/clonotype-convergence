@@ -246,7 +246,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
     // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
-    // Parallel modes (A-0003/A-0010 v2): fast-STAR runs on every processed
+    // Parallel modes (A-0003/A-0010): fast-STAR runs on every processed
     // chain; full-STAR is ADDED on a chain when its Pgen is available. No
     // shared-method constraint and no disable-light — heavy and light are
     // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
@@ -574,7 +574,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
-  // Per-sample distribution p-frame (A-0015 v2): the per-sample convergence
+  // Per-sample distribution p-frame (A-0015): the per-sample convergence
   // columns for BOTH chains combined (heavy `convergencePf` + light
   // `lightConvergencePf`), so the single selector-driven Per-sample chart page
   // can offer every per-sample score across chain × mode. Each chain's pframe
@@ -845,7 +845,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // Aggregated distribution p-frame (A-0015 v2): the exported clonotype-only
+  // Aggregated distribution p-frame (A-0015): the exported clonotype-only
   // convergence columns for BOTH chains combined (heavy + light aggregated
   // families), so the single selector-driven Aggregated chart page can offer
   // every aggregated score across chain × mode. Absent chains resolve to [].
@@ -892,7 +892,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
 
-  // Sections (A-0015 v2): the aggregated clonotype-only table is the default
+  // Sections (A-0015): the aggregated clonotype-only table is the default
   // (Main) view; the per-sample table is a separate QC section. The per-chain
   // histogram routes are replaced by TWO selector-driven chart pages — an
   // Aggregated distribution and a Per-sample distribution — each offering every

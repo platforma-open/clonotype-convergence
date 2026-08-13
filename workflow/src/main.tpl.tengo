@@ -203,7 +203,7 @@ wf.body(func(args) {
 
 		// fast-STAR runs on every chain; full-STAR is ADDED when this chain has
 		// Pgen (`hasPgen`, threaded from args via the caller — A-0009/A-0010).
-		// Both modes emit side by side (A-0003 v2).
+		// Both modes emit side by side (A-0003).
 
 		// ---- Per-sample dedup ----
 		// Pack the CDR3 sequences into ONE String value per (sampleId,
@@ -259,7 +259,7 @@ wf.body(func(args) {
 			data: packedData
 		}
 
-		// Convergence output column specs (A-0012 v2). fast-STAR and full-STAR are
+		// Convergence output column specs (A-0012). fast-STAR and full-STAR are
 		// emitted SIDE BY SIDE under distinct v1-style names — the method lives in
 		// the NAME, not a domain key. fast-STAR (always): neighbours (inner), nbFreq
 		// (score), fastStar (hit) — exact v1 identity so v1 consumers resolve

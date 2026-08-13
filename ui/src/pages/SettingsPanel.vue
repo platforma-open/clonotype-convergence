@@ -52,7 +52,7 @@ const expectedValueOptions = useWatchFetch(
 );
 // Computed get/set wrapper so the v-model stays well-typed over the optional
 // BlockData field (undefined on legacy data → the default), mirroring the
-// customBlockLabel pattern. The aggregation exposes NO other knob (A-0011 v5):
+// customBlockLabel pattern. The aggregation exposes NO other knob (A-0011):
 // the score is a named method with no weight and no percentile, and the FDR
 // target `alpha` in Advanced settings is the only statistical parameter.
 const expectedValuesModel = computed<string[]>({
@@ -164,7 +164,7 @@ const fullStarHint = computed<string | undefined>(() => {
   return `Add a Generation Probability block${onlyOne} to also get full-STAR — an FDR-controlled convergence call.`;
 });
 
-// Parallel modes (A-0010 v2): fast-STAR runs on every processed chain, so its
+// Parallel modes (A-0010): fast-STAR runs on every processed chain, so its
 // per-chain nb_freq threshold is always shown when that chain is active
 // (heavyActive / lightActive). full-STAR is added automatically wherever the
 // chain has Generation Probability — no method toggle, no disable-light.

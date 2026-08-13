@@ -107,7 +107,7 @@ self.body(func(inputs) {
 		cacheHours(24).
 		run()
 
-	// Stage 2 — hit calling, PARALLEL modes (A-0003/A-0010 v2). fast-STAR runs on
+	// Stage 2 — hit calling, PARALLEL modes (A-0003/A-0010). fast-STAR runs on
 	// EVERY chain (the always-on baseline); full-STAR is ADDED when this chain's
 	// Pgen is present. Both emit side by side with distinct v1-style names
 	// (A-0012): fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);

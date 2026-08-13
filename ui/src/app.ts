@@ -17,7 +17,7 @@ export const sdkPlugin = defineAppV3(platforma, (app) => {
       // "/" → the aggregated, clonotype-only table (A-0015) — the shape
       // downstream consumes, shown first.
       "/": () => MainPage,
-      // Two selector-driven distribution charts (A-0015 v2): aggregated (the
+      // Two selector-driven distribution charts (A-0015): aggregated (the
       // exported clonotype-only scores) and per-sample. Each offers every score
       // across chain × mode via the Y-axis predicate.
       "/distribution/aggregated": () => AggregatedDistributionPage,
@@ -40,15 +40,17 @@ const sameRef = (a: PlRef | undefined, b: PlRef | undefined): boolean =>
 // Pgen availability + refs must live in `data`. We seed them into
 // `data.datasetFacts` at dataset-pick time, but gen-prob can be added, removed,
 // or re-created (new blockId) afterwards — which used to leave a dead ref and
-// silently produce 0 hits under full-STAR. This watcher mirrors the LIVE
+// silently produce 0 hits under full-STAR. This watcher feeds the LIVE
 // `pgenStatus` output (re-discovered from the current pool every render) back
-// into the snapshot's Pgen fields whenever they drift, so args always carries
-// the current ref/method with no re-pick. Only the Pgen fields are touched; the
-// stable chain/CDR3/axis facts stay as snapshotted. The equality guard avoids
-// spurious writes (and the re-run they'd trigger) when nothing changed, and an
-// undefined status (no dataset / transient churn) is ignored rather than
-// clobbering the last good snapshot. No loop: `pgenStatus` derives from
-// `datasetRef` + the pool, not from the fields written here.
+// into the snapshot's Pgen fields, so a chain gains full-STAR with no re-pick.
+// It is NOT a plain mirror — see the latch below: a reading that finds Pgen is
+// always adopted, one that finds none only while the block is idle. Only the
+// Pgen fields are touched; the stable chain/CDR3/axis facts stay as
+// snapshotted. The equality guard avoids spurious writes (and the re-run they'd
+// trigger) when nothing changed, and an undefined status (no dataset /
+// transient churn) is ignored rather than clobbering the last good snapshot.
+// No loop: `pgenStatus` derives from `datasetRef` + the pool, not from the
+// fields written here.
 function syncPgenAvailability(model: AppModel) {
   watch(
     () => [model.outputs.pgenStatus, model.outputs.isRunning] as const,

@@ -7,7 +7,7 @@ const app = useApp();
 type HitStats = { above: number; total: number };
 type StatSection = { heading: string; stats: HitStats };
 
-// Per chain × per emitted mode (A-0015 v2): fast-STAR always, full-STAR where it
+// Per chain × per emitted mode (A-0015): fast-STAR always, full-STAR where it
 // ran. Counts are over the aggregated, clonotype-only export (one row per
 // clonotype): `above` = clones called convergent across the repertoire,
 // `total` = clonotypes.

@@ -1,6 +1,6 @@
 """Stage 4 — aggregate the per-sample convergence signal to the clonotype-only axis.
 
-Implements A-0011 v5. The block computes convergence PER SAMPLE (Stages 1-3); the
+Implements A-0011. The block computes convergence PER SAMPLE (Stages 1-3); the
 downstream repertoire score / lead selection consume a CLONOTYPE-ONLY signal
 (A-0006), so a clonotype seen in several samples is collapsed to one value per
 column. Each emitted mode aggregates INDEPENDENTLY (A-0003): the workflow calls
@@ -39,8 +39,8 @@ Two-level shape (A-0011), mirroring the within-sample discipline one level up:
                  observation, never an interpolation.
                  hit   = that aggregated nbFreq > --threshold (no p, no BH).
 
-  Reproducibility (both modes): hit-donors / D.
-      hit-donors = units in which the clonotype is a per-sample hit of that mode
+  Reproducibility (both modes): hit-units / D.
+      hit-units  = units in which the clonotype is a per-sample hit of that mode
                    (any-of within the unit).
       D          = units with at least one sample surviving the expected-at
                    filter — a per-dataset CONSTANT, the same for every clonotype

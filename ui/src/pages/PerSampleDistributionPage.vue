@@ -7,7 +7,7 @@ import { distributionDefaults, isScoreColumn } from "../distribution";
 
 const app = useApp();
 
-// Per-sample distribution (A-0015 v2): one selector-driven histogram over the
+// Per-sample distribution (A-0015): one selector-driven histogram over the
 // per-sample convergence scores across chain × mode (nbFreq / fullStarScore).
 // The user picks the score; grouping is its matching hit. A threshold line
 // appears when a fast-STAR score (nbFreq, which carries the threshold

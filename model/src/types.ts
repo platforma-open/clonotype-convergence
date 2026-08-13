@@ -195,7 +195,7 @@ export type BlockData = {
   aggregatedTableState: PlDataTableStateV2;
 
   /** Aggregated (clonotype-only) distribution chart state — one selector-driven
-   *  page over every aggregated score across chain × mode (A-0015 v2). */
+   *  page over every aggregated score across chain × mode (A-0015). */
   graphStateAggregated: GraphMakerState;
   /** Per-sample distribution chart state — one selector-driven page over every
    *  per-sample score across chain × mode. */

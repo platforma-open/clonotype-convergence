@@ -3,7 +3,7 @@ import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model
 import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
-// Default distribution chart state (A-0015 v2). One state per selector-driven
+// Default distribution chart state (A-0015). One state per selector-driven
 // page. Log Y on both: the aggregated scores stay on their per-sample
 // statistic's scale (the upper-median nbFreq; Fisher's sum of -log10 p), so
 // both pages plot long-tailed values. Shared by init() and the migrations.
@@ -48,7 +48,7 @@ export const blockDataModel = new DataModelBuilder()
   // created at v2 (before these existed) otherwise have them undefined, which
   // crashes GraphMaker (undefined graph state). Existing values are preserved.
   // (This step also used to backfill a starScore weight; the aggregation no
-  // longer has a weight — A-0011 v5 — so the field is gone. Legacy data may
+  // longer has a weight — A-0011 — so the field is gone. Legacy data may
   // still carry it; it is simply unused.)
   .migrate<BlockData>("v3", (prev) => {
     const p = prev as Partial<BlockData>;
@@ -100,7 +100,7 @@ export const blockDataModel = new DataModelBuilder()
     // expected-values multiselect is initialised so its v-model binding is
     // well-typed. `alpha` above is the only statistical knob.
     expectedValues: [],
-    // Two selector-driven distribution chart states (A-0015 v2) — see
+    // Two selector-driven distribution chart states (A-0015) — see
     // distGraphState. Both plot long-tailed scores, so both default to log Y.
     graphStateAggregated: distGraphState("Score distribution", "log"),
     graphStatePerSample: distGraphState("Per-sample distribution", "log"),

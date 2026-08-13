@@ -23,11 +23,12 @@ export const inputAnchorSpecs = [
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
 // Raw per-clonotype generation probability from the Generation Probability
-// block — full-STAR's input and the fast-STAR fallback trigger (A-0009).
+// block — full-STAR's input, and what decides per chain whether full-STAR is
+// added at all (A-0009/A-0010). fast-STAR is unaffected: it runs either way.
 export const PGEN_NAME = "pl7.app/vdj/generationProbability";
 
 // Default full-STAR FDR target (STAR's default; A-0008). Shared by the data
-// model's init() and the args lambda's fallback default.
+// model's init() and the args lambda's default when the field is absent.
 export const DEFAULT_ALPHA = 0.005;
 
 // Default sample-size floor. Shared by the data model's init() and
@@ -100,7 +101,7 @@ export function getDefaultBlockLabel(data: BlockData): string {
   if (facts) {
     const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
     const primaryIsHeavy = facts.chains.some(isHeavy);
-    // The threshold labels a chain ONLY in the fast-STAR fallback (no Pgen);
+    // The threshold labels a chain ONLY where full-STAR is absent (no Pgen);
     // full-STAR uses alpha and hides the threshold, so surfacing it would
     // misrepresent the run. Mixed methods are designed out (args throws), so
     // the primary chain's Pgen availability decides for both.
