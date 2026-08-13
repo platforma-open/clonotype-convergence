@@ -35,6 +35,11 @@ export const DEFAULT_ALPHA = 0.005;
 // left at this default.
 export const DEFAULT_NMIN = 100;
 
+/** Heavy-chain fast-STAR threshold default (~5% FDR on human IgH, Abbate et
+ *  al. 2024). The LIGHT chain deliberately has no default — any light
+ *  threshold the user enters is by definition a custom setting. */
+export const DEFAULT_THRESHOLD_H = 0.000961;
+
 // MiXCR chain DOMAIN values. Heavy = "IGHeavy"; light family
 // includes IGLight (κ + λ combined) plus IGKappa / IGLambda when MiXCR
 // surfaces them separately. TCR domain values are TCRAlpha/TCRBeta/
@@ -101,13 +106,20 @@ export function getDefaultBlockLabel(data: BlockData): string {
     // the primary chain's Pgen availability decides for both.
     const runsFallback = primaryIsHeavy ? !pgenHeavyAvailable(facts) : !pgenLightAvailable(facts);
     if (runsFallback) {
+      // Only CUSTOM settings belong in the label — the same rule nMin and alpha
+      // below follow. The heavy threshold has a default, so it is surfaced only
+      // when the user changed it; the light chain has no default, so any value
+      // there is custom by construction.
       const primaryThreshold = primaryIsHeavy ? data.thresholdH : data.thresholdL;
-      if (primaryThreshold !== undefined) {
-        let thr = `thr ${primaryThreshold}`;
-        if (isSC && data.processLightChain && data.thresholdL !== undefined) {
-          thr += ` / L thr ${data.thresholdL}`;
-        }
-        parts.push(thr);
+      const primaryIsCustom = primaryIsHeavy
+        ? primaryThreshold !== undefined && primaryThreshold !== DEFAULT_THRESHOLD_H
+        : primaryThreshold !== undefined;
+      const lightIsCustom = isSC && data.processLightChain && data.thresholdL !== undefined;
+      if (primaryIsCustom || lightIsCustom) {
+        const bits: string[] = [];
+        if (primaryIsCustom) bits.push(`thr ${primaryThreshold}`);
+        if (lightIsCustom) bits.push(`L thr ${data.thresholdL}`);
+        parts.push(bits.join(" / "));
       }
     } else if (data.alpha !== undefined && data.alpha !== DEFAULT_ALPHA) {
       // full-STAR: disambiguate blocks by their FDR target when non-default.

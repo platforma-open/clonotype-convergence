@@ -1,6 +1,7 @@
 import type {
   ColumnRecipe,
   ColumnVisibilityRule,
+  PColumnSpec,
   InferOutputsType,
   PFrameHandle,
   PlRef,
@@ -110,44 +111,94 @@ const regex = (value: string) => ({ type: "regex" as const, value });
 const EXACT_LABEL = exact("pl7.app/label");
 const CONVERGENCE_FAMILY = regex("^pl7\\.app/vdj/convergence/");
 const MATCH_ANY = regex(".*");
-const KEY_COLUMN_NAMES = [
-  "pl7.app/sampleId",
-  "pl7.app/vdj/clonotypeKey",
-  "pl7.app/vdj/scClonotypeKey",
-].map(exact);
+// Visibility rules are built from the columns ACTUALLY PRESENT in the table,
+// never speculatively. The SDK's rule evaluator discards the ENTIRE rule set
+// when any single rule matches zero columns (`evaluateRules`: `if
+// (hitIds.length === 0) return result;`), so one rule aimed at something
+// absent silently drops every column back to its own annotation — which is how
+// upstream MiXCR columns ended up default-visible in a table that only wants
+// its convergence family shown.
+type ChainTag = { key: string; value: string };
 
-// One rule per chain that carries full-STAR (A-0015), demoting that chain's
-// fast-STAR columns to OPTIONAL: off by default, but still listed in the
-// table's Manage Columns panel like any other pool column. Not "hidden" —
-// that level drops a column from the panel entirely, which is not what
-// "foreground full-STAR" means.
-//
-// Chain identity follows the emission convention — SC columns carry the
-// scClonotypeChain letter, bulk columns the chain name (workflow
-// `convDomain`) — so heavy and light are decided independently, and a chain
-// without Pgen emits no rule and keeps its fast-STAR columns default-visible.
-function fastStarOptionalRules(args: BlockArgs): ColumnVisibilityRule[] {
-  const chains: { key: string; value: string | undefined }[] = [
-    args.hasPgenHeavy === true
-      ? args.chainHScLetter !== undefined
-        ? { key: "pl7.app/vdj/scClonotypeChain", value: args.chainHScLetter }
-        : { key: "pl7.app/vdj/chain", value: args.chainHName }
-      : { key: "", value: undefined },
-    args.hasPgenLight === true
-      ? args.chainLScLetter !== undefined
-        ? { key: "pl7.app/vdj/scClonotypeChain", value: args.chainLScLetter }
-        : { key: "pl7.app/vdj/chain", value: args.chainLName }
-      : { key: "", value: undefined },
-  ];
-  return chains
-    .filter((c) => c.key !== "" && c.value !== undefined)
-    .map((c) => ({
-      match: {
+/** Chain-domain tags of the chains that carry full-STAR. SC columns carry the
+ *  scClonotypeChain letter, bulk columns the chain name (workflow convDomain). */
+function fullStarChainTags(args: BlockArgs): ChainTag[] {
+  const tags: ChainTag[] = [];
+  if (args.hasPgenHeavy === true) {
+    if (args.chainHScLetter !== undefined) {
+      tags.push({ key: "pl7.app/vdj/scClonotypeChain", value: args.chainHScLetter });
+    } else if (args.chainHName !== undefined) {
+      tags.push({ key: "pl7.app/vdj/chain", value: args.chainHName });
+    }
+  }
+  if (args.hasPgenLight === true) {
+    if (args.chainLScLetter !== undefined) {
+      tags.push({ key: "pl7.app/vdj/scClonotypeChain", value: args.chainLScLetter });
+    } else if (args.chainLName !== undefined) {
+      tags.push({ key: "pl7.app/vdj/chain", value: args.chainLName });
+    }
+  }
+  return tags;
+}
+
+/**
+ * Table visibility for this block's tables:
+ *  - a chain that has full-STAR demotes its fast-STAR trio to OPTIONAL (still
+ *    listed in Manage Columns) so full-STAR is the foregrounded signal (A-0015);
+ *  - the convergence family and the clone-id label stay DEFAULT;
+ *  - everything enrichment dragged in from the pool starts OPTIONAL;
+ *  - `perSampleOnly` additionally HIDES columns keyed on sampleId alone (the
+ *    per-sample table pins one sample, so they'd repeat one value per row).
+ * Each rule is emitted only when the table really contains a column it matches.
+ */
+function visibilityRules(
+  args: BlockArgs,
+  specs: PColumnSpec[],
+  opts: { perSampleOnly?: boolean } = {},
+): ColumnVisibilityRule[] {
+  if (specs.length === 0) return [];
+  const rules: ColumnVisibilityRule[] = [];
+
+  const isFastStar = (s: PColumnSpec) => FAST_STAR_COLUMN_NAMES.includes(s.name);
+  const inChain = (s: PColumnSpec, t: ChainTag) => s.domain?.[t.key] === t.value;
+  const demoted = fullStarChainTags(args).filter((t) =>
+    specs.some((s) => isFastStar(s) && inChain(s, t)),
+  );
+  if (demoted.length > 0) {
+    rules.push({
+      match: demoted.map((t) => ({
         name: FAST_STAR_COLUMN_NAMES.map(exact),
-        domain: { [c.key]: [exact(c.value!)] },
-      },
-      visibility: "optional" as const,
-    }));
+        domain: { [t.key]: [exact(t.value)] },
+      })),
+      visibility: "optional",
+    });
+  }
+
+  if (opts.perSampleOnly) {
+    const perSampleOnly = (s: PColumnSpec) =>
+      s.axesSpec.length === 1 && s.axesSpec[0]?.name === "pl7.app/sampleId";
+    if (specs.some(perSampleOnly)) {
+      rules.push({
+        match: {
+          axes: [{ name: [exact("pl7.app/sampleId")] }],
+          partialAxesMatch: false,
+        },
+        visibility: "hidden",
+      });
+    }
+  }
+
+  const keepsDefault = (s: PColumnSpec) =>
+    s.name === "pl7.app/label" || s.name.startsWith("pl7.app/vdj/convergence/");
+  if (specs.some(keepsDefault)) {
+    rules.push({
+      match: [{ name: [EXACT_LABEL] }, { name: [CONVERGENCE_FAMILY] }],
+      visibility: "default",
+    });
+  }
+
+  rules.push({ match: { name: [MATCH_ANY] }, visibility: "optional" });
+  return rules;
 }
 
 export const platforma = BlockModelV3.create(blockDataModel)
@@ -702,43 +753,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // Nullable in this SDK line: nothing resolvable yet -> no table.
     if (!discovered) return undefined;
 
+    const primaryKept = discovered.primary.filter(keep);
+    const secondaryKept = discovered.secondary.filter(keep);
+    const keptSpecs = [...primaryKept, ...secondaryKept].map((r) => r.getSpec());
+
     return createPlDataTableV3(ctx, {
-      primaryColumns: discovered.primary.filter(keep),
-      columns: discovered.secondary.filter(keep),
+      primaryColumns: primaryKept,
+      columns: secondaryKept,
       tableState: ctx.data.mainTableState,
       displayOptions: {
-        visibility: [
-          // First rule wins. On a chain that has full-STAR, its fast-STAR
-          // columns drop to optional here (A-0015) — full-STAR is the
-          // foregrounded signal, but the fast-STAR trio stays one click away
-          // in Manage Columns, and is still exported and chartable.
-          ...fastStarOptionalRules(args),
-          // Hide per-sample-only columns (axes exactly [sampleId]) — chiefly
-          // the Sample label that the table's automatic axis-label discovery
-          // re-adds. The sample sheet pins one sampleId at a time, so they'd
-          // just repeat the picked value on every row. Must come before the
-          // `pl7.app/label` rule below, which would otherwise force the Sample
-          // label visible.
-          {
-            match: {
-              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-              partialAxesMatch: false,
-            },
-            visibility: "hidden",
-          },
-          // Force `pl7.app/label` (clonotype-id label) to default-visible —
-          // some MiXCR builds emit it with `visibility: "optional"` in its own
-          // annotations, so without this rule the Clone ID column shows up
-          // hidden on server runs. The Sample label is already caught by the
-          // rule above (first match wins).
-          { match: { name: [EXACT_LABEL] }, visibility: "default" },
-          // The block's own signal and the key columns keep their annotated
-          // visibility; everything else enrichment dragged in starts optional
-          // (hidden, but available in the column panel).
-          { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
-          { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
-          { match: { name: [MATCH_ANY] }, visibility: "optional" },
-        ],
+        visibility: visibilityRules(args, keptSpecs, { perSampleOnly: true }),
       },
     });
   })
@@ -821,28 +845,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // Nullable in this SDK line: nothing resolvable yet -> no table.
     if (!discovered) return undefined;
 
+    const primaryKept = discovered.primary.filter(keep);
+    const secondaryKept = discovered.secondary.filter(keep);
+    const keptSpecs = [...primaryKept, ...secondaryKept].map((r) => r.getSpec());
+
     return createPlDataTableV3(ctx, {
-      primaryColumns: discovered.primary.filter(keep),
-      columns: discovered.secondary.filter(keep),
+      primaryColumns: primaryKept,
+      columns: secondaryKept,
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
-        visibility: [
-          // First rule wins. On a chain that has full-STAR, that chain's
-          // aggregated fast-STAR columns drop to optional (A-0015): the table
-          // shows fullStarScore / fullStar / fullStarReproducibility by
-          // default, while the fast-STAR trio stays available in Manage
-          // Columns and is still exported.
-          ...fastStarOptionalRules(args),
-          // Force the clonotype-id label (Clone ID) default-visible — some
-          // MiXCR builds annotate it "optional".
-          { match: { name: [EXACT_LABEL] }, visibility: "default" },
-          // The convergence signal and the key columns keep their annotated
-          // visibility; everything else starts optional (hidden, available in
-          // the column panel).
-          { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
-          { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
-          { match: { name: [MATCH_ANY] }, visibility: "optional" },
-        ],
+        visibility: visibilityRules(args, keptSpecs),
       },
     });
   })

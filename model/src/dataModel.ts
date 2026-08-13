@@ -1,6 +1,6 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
-import { DEFAULT_ALPHA, DEFAULT_NMIN } from "./chains";
+import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
 // Default distribution chart state (A-0015 v2). One state per selector-driven
@@ -87,7 +87,7 @@ export const blockDataModel = new DataModelBuilder()
     // value over-flags the lower-diversity light chain, so the user must enter
     // it explicitly. Until they do, a processed light chain leaves the block
     // non-runnable (the args gate throws → Run disabled).
-    thresholdH: 0.000961,
+    thresholdH: DEFAULT_THRESHOLD_H,
     nMin: DEFAULT_NMIN,
     // full-STAR FDR target (Benjamini–Hochberg). STAR default 0.005.
     alpha: DEFAULT_ALPHA,
