@@ -20,6 +20,16 @@ catalog:
 
   "@platforma-open/milaboratories.runenv-python-3": 1.10.1
 
+  # other blocks used in tests (author-managed section)
+  "@platforma-open/milaboratories.samples-and-data": 1.18.1
+  "@platforma-open/milaboratories.samples-and-data.model": 2.8.1
+  # 2.19.1 is the newest MiXCR that this SDK generation's test runtime can load:
+  # 2.20+ declares the `requiresColumnsCollection` runtime flag, which the
+  # middle layer pinned by @platforma-sdk/test 1.79.x rejects.
+  "@platforma-open/milaboratories.mixcr-clonotyping-2": 2.19.1
+  "@platforma-open/milaboratories.mixcr-clonotyping-2.model": 1.26.0
+  "@platforma-open/milaboratories.generation-probability.block": 1.0.0
+
   "@milaboratories/graph-maker": 1.4.8
   "@milaboratories/helpers": 1.14.2
 

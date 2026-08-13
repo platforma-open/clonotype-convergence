@@ -10,7 +10,15 @@
     "test": "vitest --passWithNoTests"
   },
   "dependencies": {
-    "this-block": "workspace:@platforma-open/milaboratories.clonotype-convergence@*"
+    "this-block": "workspace:@platforma-open/milaboratories.clonotype-convergence@*",
+    "@platforma-open/milaboratories.clonotype-convergence.model": "workspace:*",
+    "@platforma-open/milaboratories.samples-and-data": "catalog:",
+    "@platforma-open/milaboratories.samples-and-data.model": "catalog:",
+    "@platforma-open/milaboratories.mixcr-clonotyping-2": "catalog:",
+    "@platforma-open/milaboratories.mixcr-clonotyping-2.model": "catalog:",
+    "@platforma-open/milaboratories.generation-probability.block": "catalog:",
+    "@platforma-sdk/model": "catalog:",
+    "canonicalize": "catalog:"
   },
   "devDependencies": {
     "@platforma-sdk/test": "catalog:"
