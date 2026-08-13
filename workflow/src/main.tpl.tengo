@@ -590,7 +590,7 @@ wf.body(func(args) {
 		// threshold — the cutoff is the FDR call). Reproducibility is a ratio in
 		// [0,1] shown as a percentage.
 		reproDescFor := func(modeLabel, hitDef) {
-			return "Share of the eligible donor cohort in which this clone is a per-sample " + modeLabel + " hit (" + hitDef + "). The denominator is the same for every clonotype — donors with at least one sample passing the expected-at filter — so values are comparable across clones; a clone hit in a single donor of many scores low, not 100%. Without a replicate grouping the cohort is counted over samples."
+			return "How broadly this clone is a hit: the share of the dataset's replicates in which it is a per-sample " + modeLabel + " hit (" + hitDef + "). The denominator is the same for every clonotype, so the value compares between clones."
 		}
 
 		exportPfBuilder := pframes.pFrameBuilder()
@@ -665,7 +665,7 @@ wf.body(func(args) {
 					"pl7.app/score/rankingOrder": "decreasing",
 					"pl7.app/format": ".3~%",
 					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
-					"pl7.app/description": "fast-STAR convergence score aggregated to the clonotype: the typical (upper-median) convergent neighbour frequency across the independent units this clone appears in. Higher = denser one-mutation neighbourhood. The fast-STAR threshold is applied to this aggregated value."
+					"pl7.app/description": "fast-STAR convergence score aggregated to the clonotype: the typical (upper-median) convergent neighbour frequency across the replicates this clone appears in. Higher = denser one-mutation neighbourhood. The fast-STAR threshold is applied to this aggregated value."
 				}
 			}},
 			aggHitSpec("fastStar", "Convergent hit (fast-STAR)", "Whether the clone's aggregated (upper-median) convergent neighbour frequency exceeds the fast-STAR threshold. A threshold call, not FDR-controlled."),
@@ -674,7 +674,7 @@ wf.body(func(args) {
 		statsFast := statsFor(fastAggTsv, "fastStar")
 
 		// full-STAR: added when this chain has Pgen. Score and hit are two faces of
-		// one statistic — Fisher's combination of the per-donor p-values, and that
+		// one statistic — Fisher's combination of the per-replicate p-values, and that
 		// combination's own chi2 p-value put through BH across clonotypes.
 		statsFull := undefined
 		if hasPgen {
@@ -689,10 +689,10 @@ wf.body(func(args) {
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isScore": "true",
 						"pl7.app/score/rankingOrder": "decreasing",
-						"pl7.app/description": "full-STAR convergence score aggregated to the clonotype: Fisher's combination of the clone's per-donor p-values, summed as -log10 p. Higher = more convergent than recombination alone predicts, and reproduced across more independent donors. No fixed threshold — the cutoff is the FDR call."
+						"pl7.app/description": "full-STAR convergence score aggregated to the clonotype: Fisher's combination of the clone's p-values across the replicates it appears in, summed as -log10 p. Higher = more convergent than recombination alone predicts, and supported by more independent evidence. No fixed threshold — the cutoff is the FDR call."
 					}
 				}},
-				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Whether this clone is called convergent across the repertoire: Fisher's combined p-value over its donors, Benjamini-Hochberg-controlled across all clonotypes at the FDR target alpha."),
+				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Whether this clone is called convergent across the dataset: its Fisher-combined p-value, Benjamini-Hochberg-controlled across all clonotypes at the FDR target alpha."),
 				aggReproSpec("fullStarReproducibility", "Convergent hit reproducibility (full-STAR)", reproDescFor("full-STAR", "the FDR-controlled within-sample call"))
 			])
 			statsFull = statsFor(fullAggTsv, "fullStar")
