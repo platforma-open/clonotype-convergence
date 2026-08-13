@@ -27,7 +27,7 @@ import { SamplesAndDataBlockPointer } from "@platforma-open/milaboratories.sampl
 import { createPlDataTableStateV2, uniquePlId } from "@platforma-sdk/model";
 import { awaitStableState, blockTest } from "@platforma-sdk/test";
 import canonicalize from "canonicalize";
-import { blockSpec as convergenceBlockPointer } from "this-block";
+import { ClonotypeConvergenceBlockPointer } from "this-block";
 
 const CONV_PREFIX = "pl7.app/vdj/convergence/";
 const AGGREGATED_FAST = [
@@ -65,45 +65,45 @@ async function setUpSamplesAndData(project: any, helpers: any) {
   await project.mutateBlockStorage(sndBlockId, {
     operation: "update-block-data",
     value: {
-    suggestedImport: false,
-    h5adFilesToPreprocess: [],
-    seuratFilesToPreprocess: [],
-    metadata: [
-      {
-        id: metaColumnDonorId,
-        label: "Donor",
-        global: false,
-        valueType: "String",
-        // Two samples of Donor-02 → one unit holding m = 2 samples.
-        data: { [s652]: "Donor-01", [s663]: "Donor-02", [s664]: "Donor-02" },
-      },
-      {
-        id: metaColumnTimepointId,
-        label: "Timepoint",
-        global: false,
-        valueType: "String",
-        data: { [s652]: "Day 7", [s663]: "Day 0", [s664]: "Day 7" },
-      },
-    ],
-    sampleIds: [s652, s663, s664],
-    sampleLabelColumnLabel: "Sample Name",
-    sampleLabels: { [s652]: "SRR11233652", [s663]: "SRR11233663", [s664]: "SRR11233664" },
-    datasets: [
-      {
-        id: datasetId,
-        label: "Dataset 1",
-        content: {
-          type: "Fastq",
-          readIndices: ["R1", "R2"],
-          gzipped: true,
-          data: {
-            [s652]: { R1: handles.s652R1, R2: handles.s652R2 },
-            [s663]: { R1: handles.s663R1, R2: handles.s663R2 },
-            [s664]: { R1: handles.s664R1, R2: handles.s664R2 },
+      suggestedImport: false,
+      h5adFilesToPreprocess: [],
+      seuratFilesToPreprocess: [],
+      metadata: [
+        {
+          id: metaColumnDonorId,
+          label: "Donor",
+          global: false,
+          valueType: "String",
+          // Two samples of Donor-02 → one unit holding m = 2 samples.
+          data: { [s652]: "Donor-01", [s663]: "Donor-02", [s664]: "Donor-02" },
+        },
+        {
+          id: metaColumnTimepointId,
+          label: "Timepoint",
+          global: false,
+          valueType: "String",
+          data: { [s652]: "Day 7", [s663]: "Day 0", [s664]: "Day 7" },
+        },
+      ],
+      sampleIds: [s652, s663, s664],
+      sampleLabelColumnLabel: "Sample Name",
+      sampleLabels: { [s652]: "SRR11233652", [s663]: "SRR11233663", [s664]: "SRR11233664" },
+      datasets: [
+        {
+          id: datasetId,
+          label: "Dataset 1",
+          content: {
+            type: "Fastq",
+            readIndices: ["R1", "R2"],
+            gzipped: true,
+            data: {
+              [s652]: { R1: handles.s652R1, R2: handles.s652R2 },
+              [s663]: { R1: handles.s663R1, R2: handles.s663R2 },
+              [s664]: { R1: handles.s664R1, R2: handles.s664R2 },
+            },
           },
         },
-      },
-    ],
+      ],
     },
   });
 
@@ -117,8 +117,12 @@ async function setUpSamplesAndData(project: any, helpers: any) {
  *  it is driven through its block data (BlockArgs + tableState + runMode). */
 async function runClonotyping(project: any, helpers: any) {
   const clonotypingBlockId = await project.addBlock("MiXCR Clonotyping", clonotypingBlockSpec);
-  const state = await awaitStableState(project.getBlockState(clonotypingBlockId), 200000);
-  const outputs = state.outputs as Record<string, any>;
+  // awaitStableState is generic over the block's state and resolves `unknown`
+  // for an untyped upstream block, so the shape is asserted here.
+  const state = (await awaitStableState(project.getBlockState(clonotypingBlockId), 200000)) as {
+    outputs?: Record<string, any>;
+  };
+  const outputs = state.outputs ?? {};
   const inputOptions = outputs.inputOptions?.value ?? outputs.inputOptions ?? [];
   if (inputOptions.length === 0) throw new Error("MiXCR offered no input dataset");
 
@@ -233,7 +237,7 @@ blockTest(
 
     const convergenceBlockId = await project.addBlock(
       "Clonotype Convergence",
-      convergenceBlockPointer,
+      ClonotypeConvergenceBlockPointer,
     );
     const discovered = await awaitStableState(project.getBlockState(convergenceBlockId), 300000);
     const discoveredOutputs = discovered.outputs as Record<string, any>;
@@ -272,8 +276,8 @@ blockTest(
       (o) => {
         const cols = val(o, "aggregatedDistributionPfPcols");
         return (
-          Array.isArray(cols)
-          && AGGREGATED_FAST.every((n) => cols.some((c: any) => c.spec.name === n))
+          Array.isArray(cols) &&
+          AGGREGATED_FAST.every((n) => cols.some((c: any) => c.spec.name === n))
         );
       },
       300000,
@@ -349,6 +353,5 @@ blockTest(
         `reproducibility ${v} is a multiple of 1/D with D = 2 donors`,
       ).toBe(true);
     }
-
   },
 );
