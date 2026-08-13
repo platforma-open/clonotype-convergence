@@ -51,20 +51,50 @@ const sameRef = (a: PlRef | undefined, b: PlRef | undefined): boolean =>
 // `datasetRef` + the pool, not from the fields written here.
 function syncPgenAvailability(model: AppModel) {
   watch(
-    () => model.outputs.pgenStatus,
-    (status) => {
+    () => [model.outputs.pgenStatus, model.outputs.isRunning] as const,
+    ([status, isRunning]) => {
       if (!status) return;
       const facts = model.data.datasetFacts;
       if (!facts) return;
+
+      // A "no Pgen" reading is only trusted when the block is idle.
+      //
+      // While the block runs, the result pool is being rebuilt around it and
+      // the Pgen lookup can momentarily come back empty. Writing that reading
+      // through was visible three ways: the page subtitle flipped to the
+      // fast-STAR form (`thr …` instead of `alpha …`), the block went stale
+      // with no setting touched (the write changes args), and — the one that
+      // actually costs results — a Run committed inside that window carries
+      // hasPgen=false, so full-STAR is silently skipped and the run looks
+      // perfectly successful with fast-STAR-only output.
+      //
+      // Availability is therefore latched: it may always go UP (gen-prob added,
+      // or re-created under a new blockId → adopt the fresh ref), but may only
+      // go DOWN while idle, when an empty lookup means gen-prob really is gone.
+      // A dataset re-pick rewrites the snapshot wholesale either way, so a
+      // genuine removal is never stuck behind this latch.
+      // Per chain: adopt the reading when it FINDS Pgen (fresh ref included);
+      // when it finds none, accept that only if the loss is trusted, else keep
+      // what we had.
+      const trustLoss = isRunning !== true;
+      const keep = <T>(found: boolean, fresh: T, previous: T): T =>
+        found ? fresh : trustLoss ? fresh : previous;
+      const next = {
+        hasPgenHeavy: keep(status.hasPgenHeavy, status.hasPgenHeavy, facts.hasPgenHeavy),
+        hasPgenLight: keep(status.hasPgenLight, status.hasPgenLight, facts.hasPgenLight),
+        pgenRefHeavy: keep(status.hasPgenHeavy, status.pgenRefHeavy, facts.pgenRefHeavy),
+        pgenRefLight: keep(status.hasPgenLight, status.pgenRefLight, facts.pgenRefLight),
+      };
+
       if (
-        facts.hasPgenHeavy === status.hasPgenHeavy &&
-        facts.hasPgenLight === status.hasPgenLight &&
-        sameRef(facts.pgenRefHeavy, status.pgenRefHeavy) &&
-        sameRef(facts.pgenRefLight, status.pgenRefLight)
+        facts.hasPgenHeavy === next.hasPgenHeavy &&
+        facts.hasPgenLight === next.hasPgenLight &&
+        sameRef(facts.pgenRefHeavy, next.pgenRefHeavy) &&
+        sameRef(facts.pgenRefLight, next.pgenRefLight)
       ) {
         return;
       }
-      model.data.datasetFacts = { ...facts, ...status };
+      model.data.datasetFacts = { ...facts, ...next };
     },
     { immediate: true, deep: true },
   );
