@@ -46,7 +46,7 @@
       "logo": "file:../logos/block-logo.png",
       "url": "https://github.com/platforma-open/clonotype-convergence",
       "support": "mailto:support@milaboratories.com",
-      "description": "Detect antigen-driven clonotype convergence in a single BCR repertoire (fast-STAR).",
+      "description": "Detect antigen-driven clonotype convergence in BCR repertoires: fast-STAR always, plus the FDR-controlled full-STAR where generation probability is available.",
       "longDescription": "file:../docs/description.md",
       "changelog": "file:../CHANGELOG.md",
       "tags": [
