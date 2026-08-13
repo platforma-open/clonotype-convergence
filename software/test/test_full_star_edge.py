@@ -82,3 +82,58 @@ def test_missing_pgen_stays_untestable(tmp_path):
     assert pd.isna(d["Pvalue"])
     assert pd.isna(d["fullStarScore"])
     assert d["starHit"] == "Not hit"
+
+
+# --- the output schema must not depend on the data (early-return paths) ------
+# The workflow vertically concatenates the per-sample outputs and then projects
+# `fullStarScore`. A sample that returns early without emitting that column
+# fails the concat with ColumnNotFoundError and takes every other sample's
+# result down with it, so the column set must be identical on every path.
+
+EXPECTED_APPENDED = ["Pvalue", "starHit", "fullStarScore"]
+
+
+def _run_rows(tmp_path, rows, tag):
+    inp = tmp_path / f"{tag}_in.tsv"
+    pd.DataFrame(rows, columns=["aaSeqCDR3", "Neighbours", "Pgen"]).to_csv(
+        inp, sep="\t", index=False
+    )
+    out = tmp_path / f"{tag}_out.tsv"
+    subprocess.run(
+        [
+            sys.executable, str(SRC / "full_star.py"),
+            "--input", str(inp),
+            "--output", str(out),
+            "--alpha", str(ALPHA),
+            "--chain", "IGHeavy",
+            "--uniq-nucl", str(UNIQ_NUCL),
+            "--neighbours-column", "Neighbours",
+            "--pgen-column", "Pgen",
+        ],
+        cwd=str(SRC),
+        check=True,
+    )
+    return pd.read_csv(out, sep="\t")
+
+
+def test_empty_sample_still_emits_the_full_column_set(tmp_path):
+    # A sample skipped upstream (below nMin, or no usable CDR3) arrives empty.
+    df = _run_rows(tmp_path, [], "empty")
+    assert len(df) == 0
+    for col in EXPECTED_APPENDED:
+        assert col in df.columns, f"{col} missing on the empty-input path"
+
+
+def test_sample_without_testable_clones_still_emits_the_full_column_set(tmp_path):
+    # Every clone has a missing Pgen (OLGA produced nothing for this sample):
+    # nothing is testable, but the schema must still match the tested path.
+    rows = [
+        {"aaSeqCDR3": A, "Neighbours": 10, "Pgen": ""},
+        {"aaSeqCDR3": B, "Neighbours": 3, "Pgen": ""},
+    ]
+    df = _run_rows(tmp_path, rows, "untestable")
+    assert len(df) == 2
+    for col in EXPECTED_APPENDED:
+        assert col in df.columns, f"{col} missing on the no-testable-clones path"
+    assert df["fullStarScore"].isna().all()
+    assert (df["starHit"] == "Not hit").all()

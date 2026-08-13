@@ -155,8 +155,14 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     # Default columns for every row; overwritten for the testable subset below.
+    # ALL THREE must be assigned before any early return: the workflow
+    # vertically concatenates the per-sample outputs and then projects
+    # `fullStarScore`, so a sample that returns early (empty input, or no
+    # testable clone) without the column fails the whole chain with
+    # ColumnNotFoundError — one skipped sample breaks every other sample's run.
     df["Pvalue"] = np.nan
     df["starHit"] = "Not hit"
+    df["fullStarScore"] = np.nan
 
     if len(df) == 0:
         # Skipped sample — header-only passthrough, columns appended.
