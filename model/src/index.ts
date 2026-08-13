@@ -114,12 +114,17 @@ const KEY_COLUMN_NAMES = [
   "pl7.app/vdj/scClonotypeKey",
 ].map(exact);
 
-// One hidden-rule per chain that carries full-STAR (A-0015). Chain identity
-// follows the emission convention — SC columns carry the scClonotypeChain
-// letter, bulk columns the chain name (workflow `convDomain`) — so heavy and
-// light are decided independently, and a chain without Pgen emits no rule and
-// keeps its fast-STAR columns visible.
-function fastStarHiddenRules(args: BlockArgs): ColumnVisibilityRule[] {
+// One rule per chain that carries full-STAR (A-0015), demoting that chain's
+// fast-STAR columns to OPTIONAL: off by default, but still listed in the
+// table's Manage Columns panel like any other pool column. Not "hidden" —
+// that level drops a column from the panel entirely, which is not what
+// "foreground full-STAR" means.
+//
+// Chain identity follows the emission convention — SC columns carry the
+// scClonotypeChain letter, bulk columns the chain name (workflow
+// `convDomain`) — so heavy and light are decided independently, and a chain
+// without Pgen emits no rule and keeps its fast-STAR columns default-visible.
+function fastStarOptionalRules(args: BlockArgs): ColumnVisibilityRule[] {
   const chains: { key: string; value: string | undefined }[] = [
     args.hasPgenHeavy === true
       ? args.chainHScLetter !== undefined
@@ -139,7 +144,7 @@ function fastStarHiddenRules(args: BlockArgs): ColumnVisibilityRule[] {
         name: FAST_STAR_COLUMN_NAMES.map(exact),
         domain: { [c.key]: [exact(c.value!)] },
       },
-      visibility: "hidden" as const,
+      visibility: "optional" as const,
     }));
 }
 
@@ -699,9 +704,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
       displayOptions: {
         visibility: [
           // First rule wins. On a chain that has full-STAR, its fast-STAR
-          // columns are hidden here (A-0015) — full-STAR is the foregrounded
-          // signal; the columns remain exported and chartable.
-          ...fastStarHiddenRules(args),
+          // columns drop to optional here (A-0015) — full-STAR is the
+          // foregrounded signal, but the fast-STAR trio stays one click away
+          // in Manage Columns, and is still exported and chartable.
+          ...fastStarOptionalRules(args),
           // Hide per-sample-only columns (axes exactly [sampleId]) — chiefly
           // the Sample label that the table's automatic axis-label discovery
           // re-adds. The sample sheet pins one sampleId at a time, so they'd
@@ -813,11 +819,12 @@ export const platforma = BlockModelV3.create(blockDataModel)
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: [
-          // First rule wins. On a chain that has full-STAR, hide that chain's
-          // aggregated fast-STAR columns (A-0015): the table shows
-          // fullStarScore / fullStar / fullStarReproducibility, while the
-          // fast-STAR trio stays exported and available in the column panel.
-          ...fastStarHiddenRules(args),
+          // First rule wins. On a chain that has full-STAR, that chain's
+          // aggregated fast-STAR columns drop to optional (A-0015): the table
+          // shows fullStarScore / fullStar / fullStarReproducibility by
+          // default, while the fast-STAR trio stays available in Manage
+          // Columns and is still exported.
+          ...fastStarOptionalRules(args),
           // Force the clonotype-id label (Clone ID) default-visible — some
           // MiXCR builds annotate it "optional".
           { match: { name: [EXACT_LABEL] }, visibility: "default" },
