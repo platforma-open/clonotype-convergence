@@ -37,7 +37,7 @@ import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
 // Shared chain constants/helpers, so the UI imports them instead of redefining.
-export { isHeavy, isLight, SC_AXIS } from "./chains";
+export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } from "./chains";
 
 // chainL is only populated when the user makes it explicit:
 //  - bulk-light dataset (its only chain → chainL ← the dataset), or
@@ -448,20 +448,6 @@ export const platforma = BlockModelV3.create(blockDataModel)
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
-  })
-
-  // Per-chain: was this chain PROCESSED but full-STAR NOT computed (no Pgen)?
-  // (A-0010 v2) — fast-STAR always runs, full-STAR is added per chain, so the
-  // banner is per chain: "full-STAR not computed for this chain; showing
-  // fast-STAR only". Read from activeArgs (what actually ran), so it reflects
-  // the current results, not the pending edit state.
-  .output("fullStarMissingHeavy", (ctx) => {
-    const a = ctx.activeArgs as BlockArgs | undefined;
-    return a?.chainH !== undefined && a.hasPgenHeavy === false;
-  })
-  .output("fullStarMissingLight", (ctx) => {
-    const a = ctx.activeArgs as BlockArgs | undefined;
-    return a?.chainL !== undefined && a.hasPgenLight === false;
   })
 
   // LIVE Generation Probability availability for the picked dataset (A-0010).

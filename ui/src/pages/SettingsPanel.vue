@@ -4,6 +4,7 @@ import { PFrameImpl } from "@platforma-sdk/model";
 import {
   PlAccordion,
   PlAccordionSection,
+  PlAlert,
   PlCheckbox,
   PlDropdown,
   PlDropdownMulti,
@@ -15,6 +16,8 @@ import {
 import {
   isHeavy,
   isLight,
+  pgenHeavyAvailable,
+  pgenLightAvailable,
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
@@ -140,6 +143,27 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
+// full-STAR availability hint (A-0010/A-0015). Shown here, beside the input
+// pick that determines it, rather than as a banner over the results: a chain
+// without Generation Probability is a complete fast-STAR result, not a
+// failure, so the note is an invitation rather than a warning. Availability is
+// ref presence (the model helpers), never the stored flag. Names the chain
+// only when the other one does have it, so the hint stays one short line.
+const fullStarHint = computed<string | undefined>(() => {
+  const facts = app.model.data.datasetFacts;
+  if (!facts) return undefined;
+  const heavyMissing = heavyActive.value && !pgenHeavyAvailable(facts);
+  const lightMissing = lightActive.value && !pgenLightAvailable(facts);
+  if (!heavyMissing && !lightMissing) return undefined;
+  const onlyOne =
+    heavyActive.value && lightActive.value && heavyMissing !== lightMissing
+      ? heavyMissing
+        ? " for the heavy chain"
+        : " for the light chain"
+      : "";
+  return `Add a Generation Probability block${onlyOne} to also get full-STAR — an FDR-controlled convergence call.`;
+});
+
 // Parallel modes (A-0010 v2): fast-STAR runs on every processed chain, so its
 // per-chain nb_freq threshold is always shown when that chain is active
 // (heavyActive / lightActive). full-STAR is added automatically wherever the
@@ -160,6 +184,10 @@ function onToggleLightCheckbox(v: boolean) {
       receptors aren't supported. For in-vivo (immunised) repertoires only.
     </template>
   </PlDropdownRef>
+
+  <PlAlert v-if="fullStarHint" type="info">
+    {{ fullStarHint }}
+  </PlAlert>
 
   <!-- Heavy-chain fast-STAR threshold. fast-STAR runs on every chain, so this
        is always shown when heavy is processed. -->
