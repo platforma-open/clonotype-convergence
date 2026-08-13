@@ -349,15 +349,19 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // hidden-columns / sort state (so stale column IDs from the old
   // dataset don't haunt the new one).
   .output("mainTableSourceId", (ctx) => {
-    // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
-    // running/loading overlay when it takes the `sourceId: null` branch
-    // (pending: !model.stable); a table with a defined sourceId and no sheets
-    // (the aggregated Main table) would otherwise sit on the not-ready
-    // placeholder for the whole run. The per-sample table gets this for free
-    // because its `sheets` go undefined mid-run; the aggregated table has no
-    // sheets, so the sourceId is its only lever. Returning undefined here routes
-    // it into the pending branch → the running overlay shows.
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    // Pure identity of the data source — it exists to reset the per-source view
+    // state (hidden columns, sort) when the user runs against a different
+    // dataset, so it must stay defined for as long as that source is the one
+    // being shown.
+    //
+    // It used to also return undefined until the outputs were ready, to force
+    // usePlDataTableSettingsV2 into its pending branch and show a running
+    // overlay. That is the table-model's job, not the source id's: the table
+    // outputs are now retentive + withStatus, so during a recompute the
+    // component keeps the last table and reads `stable: false` from the
+    // wrapper. Gating the id here on top of that leaves a settled block stuck
+    // on the pending overlay whenever the readiness read goes momentarily
+    // false.
     const args = ctx.activeArgs as BlockArgs | undefined;
     if (!args) return undefined;
     const ref = args.chainH ?? args.chainL;
@@ -540,23 +544,31 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // `lightConvergencePf`), so the single selector-driven Per-sample chart page
   // can offer every per-sample score across chain × mode. Each chain's pframe
   // bundles its own sample/clone labels; absent chains resolve to [].
-  .outputWithStatus("perSampleDistributionPf", (ctx): PFrameHandle | undefined => {
-    const heavy =
-      ctx.outputs
-        ?.resolve({ field: "convergencePf", assertFieldType: "Input", allowPermanentAbsence: true })
-        ?.getPColumns() ?? [];
-    const light =
-      ctx.outputs
-        ?.resolve({
-          field: "lightConvergencePf",
-          assertFieldType: "Input",
-          allowPermanentAbsence: true,
-        })
-        ?.getPColumns() ?? [];
-    const pCols = [...heavy, ...light];
-    if (pCols.length === 0) return undefined;
-    return ctx.createPFrame(pCols);
-  })
+  .output(
+    "perSampleDistributionPf",
+    (ctx): PFrameHandle | undefined => {
+      const heavy =
+        ctx.outputs
+          ?.resolve({
+            field: "convergencePf",
+            assertFieldType: "Input",
+            allowPermanentAbsence: true,
+          })
+          ?.getPColumns() ?? [];
+      const light =
+        ctx.outputs
+          ?.resolve({
+            field: "lightConvergencePf",
+            assertFieldType: "Input",
+            allowPermanentAbsence: true,
+          })
+          ?.getPColumns() ?? [];
+      const pCols = [...heavy, ...light];
+      if (pCols.length === 0) return undefined;
+      return ctx.createPFrame(pCols);
+    },
+    { retentive: true, withStatus: true },
+  )
   .output("perSampleDistributionPfPcols", (ctx) => {
     const heavy =
       ctx.outputs
@@ -610,133 +622,139 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // heavy when chainH is populated (any mode that processes heavy);
   // light when only chainL is populated (bulk-light mode). For
   // heavy-SC + LC mode, mainTable is heavy and the LC clonotype table
-  // lives on its own page (lightMainTable). Readiness gate avoids
-  // showing partial PFrames mid-run.
-  .outputWithStatus("mainTable", (ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    if (!args) return undefined;
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+  // lives on its own page (lightMainTable). Retentive + withStatus (see the
+  // flags below): a transient unstable read keeps the last table on screen
+  // rather than flipping the value to undefined, which the table component
+  // renders as a loading overlay it never leaves until remount.
+  .output(
+    "mainTable",
+    (ctx) => {
+      const args = ctx.activeArgs as BlockArgs | undefined;
+      if (!args) return undefined;
+      if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
 
-    // Pick which chain's p-frame anchors the main table. Heavy when
-    // populated; else light.
-    const isHeavyAnchored = args.chainH !== undefined;
-    const pframeField = isHeavyAnchored ? "convergencePf" : "lightConvergencePf";
-    const ref = isHeavyAnchored ? args.chainH! : args.chainL;
-    if (!ref) return undefined;
-    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
+      // Pick which chain's p-frame anchors the main table. Heavy when
+      // populated; else light.
+      const isHeavyAnchored = args.chainH !== undefined;
+      const pframeField = isHeavyAnchored ? "convergencePf" : "lightConvergencePf";
+      const ref = isHeavyAnchored ? args.chainH! : args.chainL;
+      if (!ref) return undefined;
+      if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: pframeField,
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    const hitAnchorSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!hitAnchorSpec) return undefined;
+      const pCols = ctx.outputs
+        ?.resolve({
+          field: pframeField,
+          assertFieldType: "Input",
+          allowPermanentAbsence: true,
+        })
+        ?.getPColumns();
+      const hitAnchorSpec = pCols?.find(
+        (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
+      )?.spec;
+      if (!hitAnchorSpec) return undefined;
 
-    // Enrichment pulls every column sharing the anchor's axes from the
-    // result pool — including convergence columns from OTHER convergence
-    // blocks upstream. Discover first, then drop those in JS: an exclude
-    // selector can't express "block != this one" (the spec driver's regex
-    // runs in wasm/Rust, which has no negative lookahead), so we filter by
-    // the block domain here. This block's id sits on the anchor's own
-    // domain (pl7.app/block).
-    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: hitAnchorSpec },
-      selector: {
-        mode: "enrichment",
-        // Direct-only: no cross-domain linker hops. Without this, enrichment
-        // traverses linkers from the clonotype axis into other blocks' axis
-        // systems (e.g. clonotype-clustering's cluster-id axis,
-        // clonotype-space's), pulling their columns AND introducing extra
-        // axes into the table. maxHops:0 keeps enrichment to columns on the
-        // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
-        // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
-        // optional via the visibility rules below.
-        maxHops: 0,
-        // Drop per-sample-only columns (Sample label, donor, dataset,
-        // metadata) — the sample sheet pins one sampleId at a time,
-        // so these columns would just repeat the picked value
-        // on every row. `partialAxesMatch: false` excludes only
-        // columns whose axes are *exactly* [sampleId] (multi-axis
-        // columns that include sampleId stay).
-        exclude: [
-          {
-            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-            partialAxesMatch: false,
-          },
-        ],
-      },
-    });
-
-    // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
-    // and this block's own convergence columns; drop convergence columns
-    // produced by other instances of this block.
-    const keep = (recipe: ColumnRecipe) => {
-      const spec = recipe.getSpec();
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
-      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
-      if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
-      if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
-      // Drop our clonotype-only EXPORT family from the per-sample table — it's
-      // the Main view's shape, and enrichment would broadcast it across samples
-      // (showing "— <sample>" labels). The internal multi-sample columns carry
-      // the sampleId axis; the export columns are clonotype-only, so this keeps
-      // the former and drops the latter.
-      return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
-    };
-
-    return createPlDataTableV3(ctx, {
-      primaryColumns: discovered.primary.filter(keep),
-      columns: discovered.secondary.filter(keep),
-      tableState: ctx.data.mainTableState,
-      displayOptions: {
-        visibility: [
-          // First rule wins. On a chain that has full-STAR, its fast-STAR
-          // columns drop to optional here (A-0015) — full-STAR is the
-          // foregrounded signal, but the fast-STAR trio stays one click away
-          // in Manage Columns, and is still exported and chartable.
-          ...fastStarOptionalRules(args),
-          // Hide per-sample-only columns (axes exactly [sampleId]) — chiefly
-          // the Sample label that the table's automatic axis-label discovery
-          // re-adds. The sample sheet pins one sampleId at a time, so they'd
-          // just repeat the picked value on every row. Must come before the
-          // `pl7.app/label` rule below, which would otherwise force the Sample
-          // label visible.
-          {
-            match: {
+      // Enrichment pulls every column sharing the anchor's axes from the
+      // result pool — including convergence columns from OTHER convergence
+      // blocks upstream. Discover first, then drop those in JS: an exclude
+      // selector can't express "block != this one" (the spec driver's regex
+      // runs in wasm/Rust, which has no negative lookahead), so we filter by
+      // the block domain here. This block's id sits on the anchor's own
+      // domain (pl7.app/block).
+      const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
+      const discovered = discoverTableColumnSnaphots(ctx, {
+        anchors: { main: hitAnchorSpec },
+        selector: {
+          mode: "enrichment",
+          // Direct-only: no cross-domain linker hops. Without this, enrichment
+          // traverses linkers from the clonotype axis into other blocks' axis
+          // systems (e.g. clonotype-clustering's cluster-id axis,
+          // clonotype-space's), pulling their columns AND introducing extra
+          // axes into the table. maxHops:0 keeps enrichment to columns on the
+          // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
+          // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
+          // optional via the visibility rules below.
+          maxHops: 0,
+          // Drop per-sample-only columns (Sample label, donor, dataset,
+          // metadata) — the sample sheet pins one sampleId at a time,
+          // so these columns would just repeat the picked value
+          // on every row. `partialAxesMatch: false` excludes only
+          // columns whose axes are *exactly* [sampleId] (multi-axis
+          // columns that include sampleId stay).
+          exclude: [
+            {
               axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
               partialAxesMatch: false,
             },
-            visibility: "hidden",
-          },
-          // Force `pl7.app/label` (clonotype-id label) to default-visible —
-          // some MiXCR builds emit it with `visibility: "optional"` in its own
-          // annotations, so without this rule the Clone ID column shows up
-          // hidden on server runs. The Sample label is already caught by the
-          // rule above (first match wins).
-          { match: { name: [EXACT_LABEL] }, visibility: "default" },
-          // The block's own signal and the key columns keep their annotated
-          // visibility; everything else enrichment dragged in starts optional
-          // (hidden, but available in the column panel).
-          { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
-          { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
-          { match: { name: [MATCH_ANY] }, visibility: "optional" },
-        ],
-      },
-    });
-  })
+          ],
+        },
+      });
+
+      // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
+      // and this block's own convergence columns; drop convergence columns
+      // produced by other instances of this block.
+      const keep = (recipe: ColumnRecipe) => {
+        const spec = recipe.getSpec();
+        // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
+        // convergence result; showing them in the convergence table is noise.
+        if (
+          spec.name === "pl7.app/vdj/generationProbability" ||
+          spec.name === "pl7.app/vdj/negLog10GenerationProbability"
+        ) {
+          return false;
+        }
+        if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+        if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
+        if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
+        // Drop our clonotype-only EXPORT family from the per-sample table — it's
+        // the Main view's shape, and enrichment would broadcast it across samples
+        // (showing "— <sample>" labels). The internal multi-sample columns carry
+        // the sampleId axis; the export columns are clonotype-only, so this keeps
+        // the former and drops the latter.
+        return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
+      };
+
+      return createPlDataTableV3(ctx, {
+        primaryColumns: discovered.primary.filter(keep),
+        columns: discovered.secondary.filter(keep),
+        tableState: ctx.data.mainTableState,
+        displayOptions: {
+          visibility: [
+            // First rule wins. On a chain that has full-STAR, its fast-STAR
+            // columns drop to optional here (A-0015) — full-STAR is the
+            // foregrounded signal, but the fast-STAR trio stays one click away
+            // in Manage Columns, and is still exported and chartable.
+            ...fastStarOptionalRules(args),
+            // Hide per-sample-only columns (axes exactly [sampleId]) — chiefly
+            // the Sample label that the table's automatic axis-label discovery
+            // re-adds. The sample sheet pins one sampleId at a time, so they'd
+            // just repeat the picked value on every row. Must come before the
+            // `pl7.app/label` rule below, which would otherwise force the Sample
+            // label visible.
+            {
+              match: {
+                axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+                partialAxesMatch: false,
+              },
+              visibility: "hidden",
+            },
+            // Force `pl7.app/label` (clonotype-id label) to default-visible —
+            // some MiXCR builds emit it with `visibility: "optional"` in its own
+            // annotations, so without this rule the Clone ID column shows up
+            // hidden on server runs. The Sample label is already caught by the
+            // rule above (first match wins).
+            { match: { name: [EXACT_LABEL] }, visibility: "default" },
+            // The block's own signal and the key columns keep their annotated
+            // visibility; everything else enrichment dragged in starts optional
+            // (hidden, but available in the column panel).
+            { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
+            { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
+            { match: { name: [MATCH_ANY] }, visibility: "optional" },
+          ],
+        },
+      });
+    },
+    { retentive: true, withStatus: true },
+  )
 
   // Clonotype-only aggregated table (A-0011) — the DEFAULT (Main) view and the
   // downstream-consumable shape (A-0015): one row per clonotype (each emitted
@@ -744,126 +762,134 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // sheet). Anchored on the populated
   // chain (heavy if present, else light); in dual-chain SC only the heavy family
   // is tabled here (the light family still exports to the pool).
-  .outputWithStatus("aggregatedTable", (ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    if (!args) return undefined;
-    const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
-    const ref = args.chainH ?? args.chainL;
-    if (!ref) return undefined;
-    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
+  .output(
+    "aggregatedTable",
+    (ctx) => {
+      const args = ctx.activeArgs as BlockArgs | undefined;
+      if (!args) return undefined;
+      const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
+      const ref = args.chainH ?? args.chainL;
+      if (!ref) return undefined;
+      if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    // Anchor on this block's aggregated (clonotype-only) fastStar column — the
-    // one column every chain emits, whether or not full-STAR was added.
-    // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
-    // run the field isn't ready yet, and a plain resolve marks the render
-    // context UNSTABLE, so outputWithStatus reports "loading" and the table
-    // shows the running overlay. `allowPermanentAbsence: true` would instead
-    // treat the missing field as a stable absence → the not-ready placeholder
-    // stays up during the whole run (this view has no `sheets` to drive the
-    // pending state, so the model status is the only signal). The field always
-    // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const hitAnchorSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!hitAnchorSpec) return undefined;
+      // Anchor on this block's aggregated (clonotype-only) fastStar column — the
+      // one column every chain emits, whether or not full-STAR was added.
+      // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during
+      // a run the field isn't ready yet, and a plain resolve marks the render
+      // context UNSTABLE — which is what the retentive flag reads to keep the
+      // previous table on screen (and what the withStatus wrapper reports as
+      // `stable: false`) instead of blanking. `allowPermanentAbsence: true`
+      // would instead treat the missing field as a stable absence, i.e. a real
+      // "there is no table" answer. The field always exists for the chosen
+      // chain (args.chainH/L gates which one we request).
+      const pCols = ctx.outputs?.resolve(field)?.getPColumns();
+      const hitAnchorSpec = pCols?.find(
+        (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
+      )?.spec;
+      if (!hitAnchorSpec) return undefined;
 
-    // Same enrichment as the per-sample mainTable, but on the clonotype-only
-    // axis: pull every column sharing the clonotypeKey axis from the pool
-    // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
-    // columns) so they're available in the column settings — hidden by
-    // default, convergence columns default-visible. maxHops:0 keeps
-    // enrichment to the anchor's own axis (no linker hops into cluster/space
-    // axis systems).
-    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: hitAnchorSpec },
-      selector: {
-        mode: "enrichment",
-        maxHops: 0,
-        // One row per clonotype: drop any column carrying a sampleId axis (the
-        // per-sample convergence family — including the exported neighbours
-        // column — and per-sample metadata) so enrichment doesn't fan the
-        // table back out over samples. partialAxesMatch:true excludes columns
-        // that merely INCLUDE sampleId, not only exact [sampleId].
-        exclude: [
-          {
-            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-            partialAxesMatch: true,
-          },
-        ],
-      },
-    });
+      // Same enrichment as the per-sample mainTable, but on the clonotype-only
+      // axis: pull every column sharing the clonotypeKey axis from the pool
+      // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
+      // columns) so they're available in the column settings — hidden by
+      // default, convergence columns default-visible. maxHops:0 keeps
+      // enrichment to the anchor's own axis (no linker hops into cluster/space
+      // axis systems).
+      const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
+      const discovered = discoverTableColumnSnaphots(ctx, {
+        anchors: { main: hitAnchorSpec },
+        selector: {
+          mode: "enrichment",
+          maxHops: 0,
+          // One row per clonotype: drop any column carrying a sampleId axis (the
+          // per-sample convergence family — including the exported neighbours
+          // column — and per-sample metadata) so enrichment doesn't fan the
+          // table back out over samples. partialAxesMatch:true excludes columns
+          // that merely INCLUDE sampleId, not only exact [sampleId].
+          exclude: [
+            {
+              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+              partialAxesMatch: true,
+            },
+          ],
+        },
+      });
 
-    // Keep all non-convergence enrichment and this block's own convergence
-    // columns; drop convergence columns produced by other instances of this
-    // block (see mainTable for the same rationale).
-    const keep = (recipe: ColumnRecipe) => {
-      const spec = recipe.getSpec();
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
-      if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
-      if (thisBlockId === undefined) return true;
-      return spec.domain?.["pl7.app/block"] === thisBlockId;
-    };
+      // Keep all non-convergence enrichment and this block's own convergence
+      // columns; drop convergence columns produced by other instances of this
+      // block (see mainTable for the same rationale).
+      const keep = (recipe: ColumnRecipe) => {
+        const spec = recipe.getSpec();
+        // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
+        // convergence result; showing them in the convergence table is noise.
+        if (
+          spec.name === "pl7.app/vdj/generationProbability" ||
+          spec.name === "pl7.app/vdj/negLog10GenerationProbability"
+        ) {
+          return false;
+        }
+        if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
+        if (thisBlockId === undefined) return true;
+        return spec.domain?.["pl7.app/block"] === thisBlockId;
+      };
 
-    return createPlDataTableV3(ctx, {
-      primaryColumns: discovered.primary.filter(keep),
-      columns: discovered.secondary.filter(keep),
-      tableState: ctx.data.aggregatedTableState,
-      displayOptions: {
-        visibility: [
-          // First rule wins. On a chain that has full-STAR, that chain's
-          // aggregated fast-STAR columns drop to optional (A-0015): the table
-          // shows fullStarScore / fullStar / fullStarReproducibility by
-          // default, while the fast-STAR trio stays available in Manage
-          // Columns and is still exported.
-          ...fastStarOptionalRules(args),
-          // Force the clonotype-id label (Clone ID) default-visible — some
-          // MiXCR builds annotate it "optional".
-          { match: { name: [EXACT_LABEL] }, visibility: "default" },
-          // The convergence signal and the key columns keep their annotated
-          // visibility; everything else starts optional (hidden, available in
-          // the column panel).
-          { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
-          { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
-          { match: { name: [MATCH_ANY] }, visibility: "optional" },
-        ],
-      },
-    });
-  })
+      return createPlDataTableV3(ctx, {
+        primaryColumns: discovered.primary.filter(keep),
+        columns: discovered.secondary.filter(keep),
+        tableState: ctx.data.aggregatedTableState,
+        displayOptions: {
+          visibility: [
+            // First rule wins. On a chain that has full-STAR, that chain's
+            // aggregated fast-STAR columns drop to optional (A-0015): the table
+            // shows fullStarScore / fullStar / fullStarReproducibility by
+            // default, while the fast-STAR trio stays available in Manage
+            // Columns and is still exported.
+            ...fastStarOptionalRules(args),
+            // Force the clonotype-id label (Clone ID) default-visible — some
+            // MiXCR builds annotate it "optional".
+            { match: { name: [EXACT_LABEL] }, visibility: "default" },
+            // The convergence signal and the key columns keep their annotated
+            // visibility; everything else starts optional (hidden, available in
+            // the column panel).
+            { match: { name: [CONVERGENCE_FAMILY] }, visibility: "default" },
+            { match: { name: [...KEY_COLUMN_NAMES] }, visibility: "default" },
+            { match: { name: [MATCH_ANY] }, visibility: "optional" },
+          ],
+        },
+      });
+    },
+    { retentive: true, withStatus: true },
+  )
 
   // Aggregated distribution p-frame (A-0015 v2): the exported clonotype-only
   // convergence columns for BOTH chains combined (heavy + light aggregated
   // families), so the single selector-driven Aggregated chart page can offer
   // every aggregated score across chain × mode. Absent chains resolve to [].
-  .outputWithStatus("aggregatedDistributionPf", (ctx): PFrameHandle | undefined => {
-    const heavy =
-      ctx.outputs
-        ?.resolve({
-          field: "heavyAggregatedPf",
-          assertFieldType: "Input",
-          allowPermanentAbsence: true,
-        })
-        ?.getPColumns() ?? [];
-    const light =
-      ctx.outputs
-        ?.resolve({
-          field: "lightAggregatedPf",
-          assertFieldType: "Input",
-          allowPermanentAbsence: true,
-        })
-        ?.getPColumns() ?? [];
-    const pCols = [...heavy, ...light];
-    if (pCols.length === 0) return undefined;
-    return ctx.createPFrame(pCols);
-  })
+  .output(
+    "aggregatedDistributionPf",
+    (ctx): PFrameHandle | undefined => {
+      const heavy =
+        ctx.outputs
+          ?.resolve({
+            field: "heavyAggregatedPf",
+            assertFieldType: "Input",
+            allowPermanentAbsence: true,
+          })
+          ?.getPColumns() ?? [];
+      const light =
+        ctx.outputs
+          ?.resolve({
+            field: "lightAggregatedPf",
+            assertFieldType: "Input",
+            allowPermanentAbsence: true,
+          })
+          ?.getPColumns() ?? [];
+      const pCols = [...heavy, ...light];
+      if (pCols.length === 0) return undefined;
+      return ctx.createPFrame(pCols);
+    },
+    { retentive: true, withStatus: true },
+  )
   .output("aggregatedDistributionPfPcols", (ctx) => {
     const heavy =
       ctx.outputs
