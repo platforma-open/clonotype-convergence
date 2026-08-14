@@ -287,7 +287,7 @@ wf.body(func(args) {
 				annotations: {
 					"pl7.app/label": withChain("Convergent neighbours"),
 					"pl7.app/table/visibility": "default",
-					"pl7.app/description": "Number of CDR3s in this sample differing from this clone by one amino acid. Per sample."
+					"pl7.app/description": "Count of CDR3s in this sample that differ from this clone's CDR3 by exactly one amino acid, weighted by their abundance. Per sample."
 				}
 			}},
 			{ column: "nbFreq", spec: {
@@ -301,7 +301,7 @@ wf.body(func(args) {
 					"pl7.app/score/rankingOrder": "decreasing",
 					"pl7.app/format": ".3~%",
 					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
-					"pl7.app/description": "Convergent neighbours as a share of the sample's CDR3s. Higher = denser one-mutation neighbourhood. Per sample."
+					"pl7.app/description": "Convergent neighbours divided by the number of distinct CDR3s in the sample. Higher = denser one-mutation neighbourhood. Per sample."
 				}
 			}},
 			{ column: "fastStar", spec: {
@@ -310,7 +310,7 @@ wf.body(func(args) {
 				domain: convDomain,
 				annotations: {
 					"pl7.app/label": withChain("Convergent hit (fast-STAR)"),
-					"pl7.app/description": "Whether the neighbour frequency exceeds the fast-STAR threshold. Per sample.",
+					"pl7.app/description": "Hit when this sample's neighbour frequency is above the fast-STAR threshold you set. Per sample.",
 					"pl7.app/table/visibility": "default",
 					"pl7.app/isDiscreteFilter": "true",
 					"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
@@ -330,7 +330,7 @@ wf.body(func(args) {
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isScore": "true",
 						"pl7.app/score/rankingOrder": "decreasing",
-						"pl7.app/description": "How unlikely this clone's neighbour count is under recombination alone, as -log10 p. Higher = more convergent. Per sample."
+						"pl7.app/description": "-log10 of the chance this clone's neighbour count arose from recombination alone, from a Poisson test against its generation probability. Higher = more convergent. Per sample."
 					}
 				}},
 				{ column: "fullStar", spec: {
@@ -339,7 +339,7 @@ wf.body(func(args) {
 					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (full-STAR)"),
-						"pl7.app/description": "Whether this clone is convergent in this sample, FDR-controlled at alpha. Per sample.",
+						"pl7.app/description": "Hit when the clone's p-value survives Benjamini-Hochberg control at the FDR target alpha, across this sample's clonotypes. Per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
@@ -356,7 +356,7 @@ wf.body(func(args) {
 					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "A fast-STAR hit whose CDR3 also sits in a cluster of similar CDR3s of at least the minimum size. Per sample.",
+						"pl7.app/description": "Hit when a fast-STAR hit's CDR3 also sits in a cluster of CDR3s one edit apart, of at least the minimum cluster size. Per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
@@ -368,7 +368,7 @@ wf.body(func(args) {
 					domain: convDomain,
 					annotations: {
 						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Size of the CDR3 cluster (one-edit distance) this clone belongs to. Per sample.",
+						"pl7.app/description": "Number of CDR3s in the one-edit cluster this clone belongs to. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
 				}})
@@ -590,7 +590,7 @@ wf.body(func(args) {
 		// threshold — the cutoff is the FDR call). Reproducibility is a ratio in
 		// [0,1] shown as a percentage.
 		reproDescFor := func(modeLabel, hitDef) {
-			return "Share of the dataset's replicates where this clone is a " + modeLabel + " hit. Comparable between clones."
+			return "Replicates where this clone is a " + modeLabel + " hit (" + hitDef + "), divided by the dataset's total replicate count — so 50% means a hit in half of them."
 		}
 
 		exportPfBuilder := pframes.pFrameBuilder()
@@ -665,10 +665,10 @@ wf.body(func(args) {
 					"pl7.app/score/rankingOrder": "decreasing",
 					"pl7.app/format": ".3~%",
 					"pl7.app/graph/thresholds": string(json.encode([{ value: threshold, label: "Threshold" }])),
-					"pl7.app/description": "Typical neighbour frequency across this clone's replicates. Higher = denser one-mutation neighbourhood."
+					"pl7.app/description": "Middle (upper-median) neighbour frequency of the replicates this clone appears in. Higher = denser one-mutation neighbourhood."
 				}
 			}},
-			aggHitSpec("fastStar", "Convergent hit (fast-STAR)", "Whether the aggregated neighbour frequency exceeds the fast-STAR threshold."),
+			aggHitSpec("fastStar", "Convergent hit (fast-STAR)", "Hit when the aggregated neighbour frequency is above the fast-STAR threshold you set."),
 			aggReproSpec("fastStarReproducibility", "Convergent hit reproducibility (fast-STAR)", reproDescFor("fast-STAR", "neighbour frequency above the threshold"))
 		])
 		statsFast := statsFor(fastAggTsv, "fastStar")
@@ -689,10 +689,10 @@ wf.body(func(args) {
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isScore": "true",
 						"pl7.app/score/rankingOrder": "decreasing",
-						"pl7.app/description": "How significant this clone's convergence is across all its replicates, as -log10 p. Higher = more convergent."
+						"pl7.app/description": "-log10 of this clone's per-replicate p-values combined into one (Fisher's method) over the replicates it appears in. Higher = more convergent."
 					}
 				}},
-				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Whether this clone is convergent across the dataset, FDR-controlled at alpha."),
+				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Hit when the combined p-value survives Benjamini-Hochberg control at the FDR target alpha, across all clonotypes."),
 				aggReproSpec("fullStarReproducibility", "Convergent hit reproducibility (full-STAR)", reproDescFor("full-STAR", "the FDR-controlled within-sample call"))
 			])
 			statsFull = statsFor(fullAggTsv, "fullStar")
