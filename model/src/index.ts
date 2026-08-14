@@ -378,19 +378,20 @@ export const platforma = BlockModelV3.create(blockDataModel)
         { name: "pl7.app/vdj/scFv-sequence" },
       ]);
       if (scFv && scFv.length > 0) return false;
-      // CDR3-readiness gate. Only offer a dataset once its CDR3 sibling
-      // specs are present in the pool. This closes a snapshot-timing race:
-      // right after a block reload the result pool repopulates incrementally
-      // and there is a window where the anchor column is present but its
-      // CDR3 siblings are not yet. Without this gate a user could pick
-      // during that window and the args/alert snapshot (datasetFacts) would
-      // freeze a false "missing CDR3" until re-pick — and a published
-      // version update reloads the same way, so this is user-facing.
-      // discoverUpstreamFacts is the same check factsByRef/the snapshot use,
-      // so an offered dataset always has CDR3 facts ready at pick time;
-      // during the window the dataset simply appears a moment later.
-      const facts = discoverUpstreamFacts(ctx, opt.ref);
-      return !!facts && facts.hasAaCDR3 && facts.hasNtCDR3 && facts.hasAbundance;
+      // NO CDR3-readiness gate here, deliberately. It used to also require the
+      // anchor's aa/nt CDR3 + abundance siblings to be discoverable, to close a
+      // snapshot-timing race. But sibling discovery goes through the result
+      // pool, which returns PARTIAL specs while any block in the project is
+      // running — so the gate silently hid valid datasets for the duration of
+      // an unrelated block's run, which is what an operator hit: two datasets
+      // in the project, one offered, both back once the upstream finished.
+      //
+      // The race it guarded is now harmless: those three flags are consumed
+      // nowhere except that gate — args projects the chain slots and axis name,
+      // not the CDR3 facts — and the workflow asserts the columns for real at
+      // run time. A dataset that genuinely lacks them is therefore offered and
+      // fails loudly on Run, which is better than never appearing at all.
+      return true;
     });
   })
 
