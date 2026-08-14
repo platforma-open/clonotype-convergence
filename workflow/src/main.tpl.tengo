@@ -330,7 +330,7 @@ wf.body(func(args) {
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isScore": "true",
 						"pl7.app/score/rankingOrder": "decreasing",
-						"pl7.app/description": "-log10 of the chance this clone's neighbour count arose from recombination alone, from a Poisson test against its generation probability. Higher = more convergent. Per sample."
+						"pl7.app/description": "-log10 of the p-value from a Poisson test of this clone's neighbour count against its generation probability — the chance that many neighbours arose from recombination alone. Higher = more convergent. Per sample."
 					}
 				}},
 				{ column: "fullStar", spec: {
