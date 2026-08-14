@@ -7,7 +7,7 @@ import { distributionDefaults, isScoreColumn } from "../distribution";
 
 const app = useApp();
 
-// Aggregated distribution (A-0015): one selector-driven histogram over the
+// Aggregated distribution: one selector-driven histogram over the
 // exported clonotype-only scores across chain × mode (nbFreq / fullStarScore).
 // The user picks the score; grouping is its matching hit. Both aggregated
 // scores stay on their per-sample statistic's scale, so nbFreq keeps its

@@ -1,16 +1,16 @@
 """Stage 4 — aggregate the per-sample convergence signal to the clonotype-only axis.
 
-Implements A-0011. The block computes convergence PER SAMPLE (Stages 1-3); the
-downstream repertoire score / lead selection consume a CLONOTYPE-ONLY signal
-(A-0006), so a clonotype seen in several samples is collapsed to one value per
-column. Each emitted mode aggregates INDEPENDENTLY (A-0003): the workflow calls
-this once per mode with that mode's per-sample score/hit columns, and `--method`
-selects the statistic. `neighbours` is never aggregated — it stays a per-sample
-inner/QC value (A-0012).
+The block computes convergence PER SAMPLE (Stages 1-3); the downstream
+repertoire score / lead selection consume a CLONOTYPE-ONLY signal, so a
+clonotype seen in several samples is collapsed to one value per column. Each
+emitted mode aggregates INDEPENDENTLY: the workflow calls this once per mode
+with that mode's per-sample score/hit columns, and `--method` selects the
+statistic. `neighbours` is never aggregated — it stays a per-sample
+inner/QC value.
 
 Three exported values per mode: a score, a hit, and a reproducibility ratio.
 
-Two-level shape (A-0011), mirroring the within-sample discipline one level up:
+Two-level shape, mirroring the within-sample discipline one level up:
 
     per-sample rows
       → (eligibility)        keep technically-good ∩ biologically-expected samples
@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=None)
     # Sample universe: sampleId + optional `expected` / `unit` columns. One row
     # per dataset sample, including samples that produced no convergence rows —
-    # that is what makes D count QC-failed units (A-0011).
+    # that is what makes D count QC-failed units.
     parser.add_argument("--metadata", type=Path, default=None)
     # JSON list of `expected` values that count as biologically eligible; when
     # given, samples whose `expected` value is outside the list are dropped from
@@ -204,7 +204,7 @@ def main() -> int:
         return 2
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Output columns are named after the MODE being aggregated (A-0012): the
+    # Output columns are named after the MODE being aggregated: the
     # workflow calls this once per emitted mode with --score-column/--hit-column/
     # --reproducibility-column = nbFreq/fastStar/fastStarReproducibility
     # (fast-STAR) or fullStarScore/fullStar/fullStarReproducibility (full-STAR),
@@ -223,7 +223,7 @@ def main() -> int:
     # --- the sample universe: unit assignment + eligibility -----------------
     # `universe` is one row per DATASET sample (sampleId, unit), independent of
     # whether that sample produced convergence rows — QC-failed samples are in
-    # it, which is what A-0011 requires for D. Without --metadata the per-sample
+    # it, which is what the D definition requires. Without --metadata the per-sample
     # table is the only universe available (standalone / test use).
     expected_values = set(json.loads(args.expected_values)) if args.expected_values else None
     if args.metadata is not None and args.metadata.exists():

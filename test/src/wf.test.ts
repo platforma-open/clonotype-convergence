@@ -5,7 +5,7 @@
   asserts the part that only an integration run can reach: that the per-sample
   fan-out, the per-mode aggregation stage and the export wiring actually produce
   the clonotype-only convergence family the downstream repertoire score / lead
-  selection consume (A-0006/A-0012).
+  selection consume.
 
   What is checked:
    - the block discovers the MiXCR dataset and its facts (the snapshot the args
@@ -14,7 +14,7 @@
      nbFreq / fastStar / fastStarReproducibility on the CLONOTYPE-only axis
      (no sampleId), plus the per-sample family for the QC table;
    - the reproducibility ratio lands in [0,1] and is a multiple of 1/D over the
-     donor cohort defined by the independence grouping (A-0011);
+     donor cohort defined by the independence grouping;
    - the aggregated Main table and the per-sample QC table both render.
 
   GAP (not covered here): the full-STAR path — it needs the Generation
@@ -283,7 +283,7 @@ blockTest(
       300000,
     );
 
-    // --- the exported, clonotype-only family (A-0006/A-0012) ---------------
+    // --- the exported, clonotype-only family ---------------
     const aggregated = val(outputs, "aggregatedDistributionPfPcols");
     const aggregatedByName = specsByName(aggregated);
     for (const name of AGGREGATED_FAST) {
@@ -330,7 +330,7 @@ blockTest(
     const shape = await ml.driverKit.pFrameDriver.getShape(handle);
     expect(shape.rows, "the aggregated table renders the clonotypes").toBe(fastStats.total);
 
-    // --- the reproducibility ratio (A-0011) --------------------------------
+    // --- the reproducibility ratio --------------------------------
     // D = the donor cohort (2 donors here), so every value is k/2 in [0,1].
     const reproId = (aggregated ?? []).find(
       (c: any) => c.spec.name === `${CONV_PREFIX}fastStarReproducibility`,

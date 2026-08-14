@@ -1,7 +1,7 @@
 import type { PredefinedGraphOption } from "@milaboratories/graph-maker";
 import type { PColumnIdAndSpec } from "@platforma-sdk/model";
 
-// The convergence SCORE columns across chain × mode (A-0015). The two
+// The convergence SCORE columns across chain × mode. The two
 // distribution chart pages offer these as the Y-axis choices; the user picks
 // one, and grouping is its matching hit call.
 const NB_FREQ = "pl7.app/vdj/convergence/nbFreq";

@@ -8,16 +8,16 @@ import PerSampleDistributionPage from "./pages/PerSampleDistributionPage.vue";
 import PerSamplePage from "./pages/PerSamplePage.vue";
 
 export const sdkPlugin = defineAppV3(platforma, (app) => {
-  // Keep the dataset snapshot's Generation Probability fields live (A-0010).
+  // Keep the dataset snapshot's Generation Probability fields live.
   syncPgenAvailability(app.model);
   return {
     // Drives the block's green running line while the workflow computes.
     progress: () => app.model.outputs.isRunning,
     routes: {
-      // "/" → the aggregated, clonotype-only table (A-0015) — the shape
+      // "/" → the aggregated, clonotype-only table — the shape
       // downstream consumes, shown first.
       "/": () => MainPage,
-      // Two selector-driven distribution charts (A-0015): aggregated (the
+      // Two selector-driven distribution charts: aggregated (the
       // exported clonotype-only scores) and per-sample. Each offers every score
       // across chain × mode via the Y-axis predicate.
       "/distribution/aggregated": () => AggregatedDistributionPage,
@@ -35,7 +35,7 @@ type AppModel = ReturnType<typeof useApp>["model"];
 const sameRef = (a: PlRef | undefined, b: PlRef | undefined): boolean =>
   a === b || (a !== undefined && b !== undefined && a.blockId === b.blockId && a.name === b.name);
 
-// Automatic Generation Probability detection (A-0010). The args callback is a
+// Automatic Generation Probability detection. The args callback is a
 // pure function of `data` and can't query the result pool, so the pool-derived
 // Pgen availability + refs must live in `data`. We seed them into
 // `data.datasetFacts` at dataset-pick time, but gen-prob can be added, removed,

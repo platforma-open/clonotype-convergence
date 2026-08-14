@@ -12,17 +12,17 @@
 // and a subset project recovers shared samples from cache:
 //   Stage 1 — expensive STAR neighbour-density run; cache survives
 //             hit-call tweaks (cacheHours, CID excludes threshold/alpha/Pgen).
-//   Stage 2 — hit calling, both modes SIDE BY SIDE (A-0003). fast-STAR (the
+//   Stage 2 — hit calling, both modes SIDE BY SIDE. fast-STAR (the
 //             nbFreq threshold) runs on every chain and emits nbFreq +
 //             fastStar; full-STAR (FDR-controlled Poisson test vs the Pgen
 //             null, Benjamini-Hochberg at alpha) is ADDED on a chain whose
-//             Pgen resolved (A-0010) and emits fullStarScore + fullStar. The
+//             Pgen resolved and emits fullStarScore + fullStar. The
 //             method lives in the column NAME — there is no method domain.
 //   Stage 3 — paper's binder cluster filter, only when
 //             args.applyClusterFilter; refines the fast-STAR hit set and
 //             emits fastStarClusterFiltered + clusterSize; fastStar itself is
 //             NOT modified.
-//   Stage 4 — aggregation to the clonotype-only axis (A-0011), one run of
+//   Stage 4 — aggregation to the clonotype-only axis, one run of
 //             aggregate.py per emitted mode, outside the per-sample fan-out.
 // The per-sample outputs (convergence columns + per-sample log + per-sample
 // status) are reassembled here, keyed by the sampleId.
@@ -33,7 +33,7 @@
 //               clonotype-only aggregated family the Main table shows.
 //   exports.* — the clonotype-only aggregated convergence family (score, hit,
 //               reproducibility per mode) for the repertoire score / lead
-//               selection (A-0006), plus the per-sample neighbours column.
+//               selection, plus the per-sample neighbours column.
 //               v1's single-sample export is removed.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
@@ -142,7 +142,7 @@ wf.prepare(func(args) {
 		}
 	}
 
-	// Optional sample metadata for the clonotype-only aggregation (A-0011),
+	// Optional sample metadata for the clonotype-only aggregation,
 	// dataset-level and sampleId-keyed: the expected-sample eligibility filter
 	// and the independence grouping. Resolved BY REF — the model carries these
 	// PlRefs in args to establish the dependency on the samples block, exactly
@@ -202,8 +202,8 @@ wf.body(func(args) {
 		labelCols := columns.getColumns(labelKey)
 
 		// fast-STAR runs on every chain; full-STAR is ADDED when this chain has
-		// Pgen (`hasPgen`, threaded from args via the caller — A-0009/A-0010).
-		// Both modes emit side by side (A-0003).
+		// Pgen (`hasPgen`, threaded from args via the caller).
+		// Both modes emit side by side.
 
 		// ---- Per-sample dedup ----
 		// Pack the CDR3 sequences into ONE String value per (sampleId,
@@ -259,7 +259,7 @@ wf.body(func(args) {
 			data: packedData
 		}
 
-		// Convergence output column specs (A-0012). fast-STAR and full-STAR are
+		// Convergence output column specs. fast-STAR and full-STAR are
 		// emitted SIDE BY SIDE under distinct v1-style names — the method lives in
 		// the NAME, not a domain key. fast-STAR (always): neighbours (inner), nbFreq
 		// (score), fastStar (hit) — exact v1 identity so v1 consumers resolve
@@ -500,7 +500,7 @@ wf.body(func(args) {
 			pfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
 		}
 
-		// ---- Stage 4: aggregate to the clonotype-only axis (A-0011), PER MODE ----
+		// ---- Stage 4: aggregate to the clonotype-only axis, PER MODE ----
 		// Each emitted mode collapses independently: fast-STAR (nbFreq/fastStar)
 		// always, full-STAR (fullStarScore/fullStar) when this chain has Pgen. The
 		// two-level shape is shared (within-unit collapse → across-unit aggregate)
@@ -509,7 +509,7 @@ wf.body(func(args) {
 		// takes max within a unit and the upper median across them, thresholded.
 		// The aggregate software is parameterised by --method plus the mode's
 		// --score-column/--hit-column/--reproducibility-column, and names its
-		// output columns to match. `neighbours` is NOT aggregated (A-0012).
+		// output columns to match. `neighbours` is NOT aggregated.
 		//
 		// Sample-universe TSV (one row per dataset sample: sampleId + optional
 		// expected / unit), built once and shared across the per-mode aggregations.
@@ -517,7 +517,7 @@ wf.body(func(args) {
 		// alone and covers every sample of the dataset, including ones that
 		// produced no convergence rows (QC-skipped). That is what lets aggregate.py
 		// count the reproducibility denominator D over the whole eligible cohort
-		// with QC-failed units kept (A-0011), rather than over the samples that
+		// with QC-failed units kept, rather than over the samples that
 		// happen to appear in the results.
 		metaTsv := undefined
 		if len(labelCols) > 0 {
@@ -583,7 +583,7 @@ wf.body(func(args) {
 		}
 
 		// Exported columns keep their mode NAME, so consumers resolve them by name
-		// (A-0012/A-0013). The aggregated value stays on the per-sample statistic's
+		//. The aggregated value stays on the per-sample statistic's
 		// own scale — fast-STAR's is the upper-median nbFreq (so it keeps v1's
 		// percent format AND the threshold line, which now cuts the aggregated
 		// value), full-STAR's is the Fisher sum of -log10 p (unbounded, no fixed
@@ -699,8 +699,8 @@ wf.body(func(args) {
 		}
 
 		// Pool export also carries the full per-sample neighbours column (both axes)
-		// — downstream requested the raw per-sample count (deviation from A-0012's
-		// inner-only, per operator).
+		// — downstream requested the raw per-sample count (a deliberate deviation
+		// from keeping it inner-only, per operator).
 		neighboursSpec := perSampleResult.outputSpec("neighbours", "neighbours")
 		neighboursData := perSampleResult.outputData("neighbours", "neighbours")
 		poolExportPfBuilder.add("neighbours", trace.inject(neighboursSpec), neighboursData)
@@ -737,14 +737,14 @@ wf.body(func(args) {
 		// table + histograms only. It is not pooled downstream — consumers
 		// enrich by clonotype key, never by sampleId axis.
 		outputs.convergencePf = pframes.exportFrame(heavy.pf)
-		// Per-mode hit stats (A-0015): fast-STAR always, full-STAR when it ran.
+		// Per-mode hit stats: fast-STAR always, full-STAR when it ran.
 		outputs.heavyFastStats = heavy.statsFast
 		if !is_undefined(heavy.statsFull) {
 			outputs.heavyFullStats = heavy.statsFull
 		}
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
-		// Clonotype-only aggregated family → the result pool (A-0006/A-0011):
+		// Clonotype-only aggregated family → the result pool:
 		// the downstream-consumable convergence signal. exports take the raw
 		// built pframe (not exportFrame — that's for model-facing outputs).
 		exports.heavyConvergence = heavy.poolExportPf

@@ -103,7 +103,7 @@ watch(
   },
 );
 
-// Main table = the AGGREGATED clonotype-only table (A-0015): the shape
+// Main table = the AGGREGATED clonotype-only table: the shape
 // downstream consumes, shown first. No `sheets` — the sampleId axis is
 // collapsed away, so there is no per-sample picker (that lives on the
 // separate Per-sample QC page). `sourceId` derives from `activeArgs` so the

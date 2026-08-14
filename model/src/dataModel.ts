@@ -3,7 +3,7 @@ import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model
 import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
-// Default distribution chart state (A-0015). One state per selector-driven
+// Default distribution chart state. One state per selector-driven
 // page. Log Y on both: the aggregated scores stay on their per-sample
 // statistic's scale (the upper-median nbFreq; Fisher's sum of -log10 p), so
 // both pages plot long-tailed values. Shared by init() and the migrations.
@@ -43,12 +43,12 @@ export const blockDataModel = new DataModelBuilder()
       };
     },
   )
-  // v3 — backfill the fields added for the aggregated export (A-0011/A-0015):
+  // v3 — backfill the fields added for the aggregated export:
   // the expected-values multiselect and the aggregated-table state. Blocks
   // created at v2 (before these existed) otherwise have them undefined, which
   // crashes GraphMaker (undefined graph state). Existing values are preserved.
   // (This step also used to backfill a starScore weight; the aggregation no
-  // longer has a weight — A-0011 — so the field is gone. Legacy data may
+  // longer has a weight, so the field is gone. Legacy data may
   // still carry it; it is simply unused.)
   .migrate<BlockData>("v3", (prev) => {
     const p = prev as Partial<BlockData>;
@@ -83,7 +83,7 @@ export const blockDataModel = new DataModelBuilder()
     // Heavy-chain fast-STAR threshold default 0.000961 (≈5% FDR target on
     // Abbate et al. 2024 human IgH calibration). fast-STAR runs on every chain,
     // so this is always in effect once heavy is processed.
-    // thresholdL deliberately has NO default (A-0015): the heavy-calibrated
+    // thresholdL deliberately has NO default: the heavy-calibrated
     // value over-flags the lower-diversity light chain, so the user must enter
     // it explicitly. Until they do, a processed light chain leaves the block
     // non-runnable (the args gate throws → Run disabled).
@@ -95,12 +95,12 @@ export const blockDataModel = new DataModelBuilder()
     // when the toggle is on.
     applyClusterFilter: false,
     clusterMin: 10,
-    // Clonotype-only aggregation (A-0011). Defaults = the default path: no
+    // Clonotype-only aggregation. Defaults = the default path: no
     // metadata refs, every sample an independent eligible unit. The
     // expected-values multiselect is initialised so its v-model binding is
     // well-typed. `alpha` above is the only statistical knob.
     expectedValues: [],
-    // Two selector-driven distribution chart states (A-0015) — see
+    // Two selector-driven distribution chart states — see
     // distGraphState. Both plot long-tailed scores, so both default to log Y.
     graphStateAggregated: distGraphState("Score distribution", "log"),
     graphStatePerSample: distGraphState("Per-sample distribution", "log"),

@@ -93,7 +93,7 @@ function buildSkippedSamples<A, U>(
 }
 
 // The fast-STAR family the block's own tables hide on a chain that also carries
-// full-STAR (A-0015). Table visibility only — the columns are still emitted,
+// full-STAR. Table visibility only — the columns are still emitted,
 // exported to the pool, and offered by the chart pickers, so the two calls stay
 // comparable; the tables just foreground the FDR-controlled one.
 const FAST_STAR_COLUMN_NAMES = [
@@ -144,7 +144,7 @@ function fullStarChainTags(args: BlockArgs): ChainTag[] {
 /**
  * Table visibility for this block's tables:
  *  - a chain that has full-STAR demotes its fast-STAR trio to OPTIONAL (still
- *    listed in Manage Columns) so full-STAR is the foregrounded signal (A-0015);
+ *    listed in Manage Columns) so full-STAR is the foregrounded signal;
  *  - the convergence family and the clone-id label stay DEFAULT;
  *  - everything enrichment dragged in from the pool starts OPTIONAL;
  *  - `perSampleOnly` additionally HIDES columns keyed on sampleId alone (the
@@ -246,7 +246,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // BCR datasets (a heavy or light chain), so at least one slot is filled.
 
     // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
-    // Parallel modes (A-0003/A-0010): fast-STAR runs on every processed
+    // Parallel modes: fast-STAR runs on every processed
     // chain; full-STAR is ADDED on a chain when its Pgen is available. No
     // shared-method constraint and no disable-light — heavy and light are
     // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
@@ -309,7 +309,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
       args.clusterMin = clusterMin;
     }
 
-    // ---- Clonotype-only aggregation (A-0011) ----------------------
+    // ---- Clonotype-only aggregation ----------------------
     // The metadata refs, projected here, establish the samples-block dependency
     // so the workflow can resolve the columns; both optional (absent → the
     // default path: every sample its own independent, eligible unit). There is
@@ -450,7 +450,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
   })
 
-  // LIVE Generation Probability availability for the picked dataset (A-0010).
+  // LIVE Generation Probability availability for the picked dataset.
   // Re-discovers gen-prob's Pgen from the CURRENT result pool every render (not
   // the pick-time snapshot), so the method + Pgen ref track gen-prob being
   // added / removed / re-created. The args callback can't reach the pool (it
@@ -473,7 +473,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
 
   // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
   // for the aggregation's expected-sample filter and independence grouping
-  // (A-0011). Same discovery idiom as differential-clonotype-abundance.
+  //. Same discovery idiom as differential-clonotype-abundance.
   .output("metadataOptions", (ctx) =>
     ctx.resultPool.getOptions((spec) => isPColumnSpec(spec) && spec.name === "pl7.app/metadata"),
   )
@@ -574,7 +574,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // meaningful to show; the page binds it as a placeholder.
   .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
 
-  // Per-sample distribution p-frame (A-0015): the per-sample convergence
+  // Per-sample distribution p-frame: the per-sample convergence
   // columns for BOTH chains combined (heavy `convergencePf` + light
   // `lightConvergencePf`), so the single selector-driven Per-sample chart page
   // can offer every per-sample score across chain × mode. Each chain's pframe
@@ -753,8 +753,8 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // Clonotype-only aggregated table (A-0011) — the DEFAULT (Main) view and the
-  // downstream-consumable shape (A-0015): one row per clonotype (each emitted
+  // Clonotype-only aggregated table — the DEFAULT (Main) view and the
+  // downstream-consumable shape: one row per clonotype (each emitted
   // mode's score, hit and reproducibility; no sampleId axis → no sample
   // sheet). Anchored on the populated
   // chain (heavy if present, else light); in dual-chain SC only the heavy family
@@ -845,7 +845,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     });
   })
 
-  // Aggregated distribution p-frame (A-0015): the exported clonotype-only
+  // Aggregated distribution p-frame: the exported clonotype-only
   // convergence columns for BOTH chains combined (heavy + light aggregated
   // families), so the single selector-driven Aggregated chart page can offer
   // every aggregated score across chain × mode. Absent chains resolve to [].
@@ -892,7 +892,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     return pCols.map((c) => ({ columnId: c.id, spec: c.spec }));
   })
 
-  // Sections (A-0015): the aggregated clonotype-only table is the default
+  // Sections: the aggregated clonotype-only table is the default
   // (Main) view; the per-sample table is a separate QC section. The per-chain
   // histogram routes are replaced by TWO selector-driven chart pages — an
   // Aggregated distribution and a Per-sample distribution — each offering every

@@ -24,7 +24,7 @@ export type UpstreamFacts = {
   clonotypeKeyAxisName: string;
   /** Whether a per-clonotype Pgen column (from the Generation Probability
    *  block) is available for the heavy / light chain. Decides whether full-STAR
-   *  is ADDED on that chain (A-0010) — fast-STAR runs either way. Captured at
+   *  is ADDED on that chain — fast-STAR runs either way. Captured at
    *  pick time (snapshot). Derived from the presence of the matching Pgen ref
    *  below (single source of truth). */
   hasPgenHeavy: boolean;
@@ -94,7 +94,7 @@ export type BlockArgs = {
    *  full-STAR knob; the workflow also defaults it if absent. */
   alpha: number;
 
-  // ---- Clonotype-only aggregation (A-0011) ---------------------------------
+  // ---- Clonotype-only aggregation ---------------------------------
   // Optional metadata-driven refinements of the exported aggregate; all absent
   // → the default path (every sample an independent, eligible unit).
   /** PlRef to a sampleId-keyed metadata column (`pl7.app/metadata`) whose
@@ -109,7 +109,7 @@ export type BlockArgs = {
    *  (e.g. donor) — drives the two-level aggregation: the units full-STAR's
    *  evidence is combined across, the units fast-STAR's median is taken over,
    *  and the units the reproducibility ratio counts. Unset → every sample is
-   *  its own unit. `alpha` is the only statistical knob (A-0011). */
+   *  its own unit. `alpha` is the only statistical knob. */
   groupingRef?: PlRef;
 
   // Optional cluster filter.
@@ -173,7 +173,7 @@ export type BlockData = {
   applyClusterFilter: boolean;
   clusterMin?: number;
 
-  // Clonotype-only aggregation controls (A-0011). All optional; unset → the
+  // Clonotype-only aggregation controls. All optional; unset → the
   // default aggregation (every sample an independent, eligible unit).
   /** Sample-metadata column marking biologically-expected samples. */
   expectedFilterRef?: PlRef;
@@ -181,7 +181,7 @@ export type BlockData = {
   expectedValues?: string[];
   /** Sample-metadata column marking independent units (e.g. donor). Setting it
    *  makes a donor's samples collapse together before the cross-donor
-   *  aggregation and defines the reproducibility denominator (A-0011); no
+   *  aggregation and defines the reproducibility denominator; no
    *  separate toggle, threshold or weight. */
   groupingRef?: PlRef;
 
@@ -195,7 +195,7 @@ export type BlockData = {
   aggregatedTableState: PlDataTableStateV2;
 
   /** Aggregated (clonotype-only) distribution chart state — one selector-driven
-   *  page over every aggregated score across chain × mode (A-0015). */
+   *  page over every aggregated score across chain × mode. */
   graphStateAggregated: GraphMakerState;
   /** Per-sample distribution chart state — one selector-driven page over every
    *  per-sample score across chain × mode. */

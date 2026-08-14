@@ -30,7 +30,7 @@ const app = useApp();
 // (grouped, not hidden). Local UI state, not persisted.
 const convergenceContextOpen = ref(true);
 
-// ---- Clonotype-only aggregation controls (A-0011) ------------------------
+// ---- Clonotype-only aggregation controls ------------------------
 // Sample-metadata columns offered for the expected-sample filter and the
 // independence grouping (both sampleId-keyed `pl7.app/metadata`).
 const metadataColumnOptions = computed(
@@ -52,7 +52,7 @@ const expectedValueOptions = useWatchFetch(
 );
 // Computed get/set wrapper so the v-model stays well-typed over the optional
 // BlockData field (undefined on legacy data → the default), mirroring the
-// customBlockLabel pattern. The aggregation exposes NO other knob (A-0011):
+// customBlockLabel pattern. The aggregation exposes NO other knob:
 // the score is a named method with no weight and no percentile, and the FDR
 // target `alpha` in Advanced settings is the only statistical parameter.
 const expectedValuesModel = computed<string[]>({
@@ -143,7 +143,7 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// full-STAR availability hint (A-0010/A-0015). Shown here, beside the input
+// full-STAR availability hint. Shown here, beside the input
 // pick that determines it, rather than as a banner over the results: a chain
 // without Generation Probability is a complete fast-STAR result, not a
 // failure, so the note is an invitation rather than a warning. Availability is
@@ -164,7 +164,7 @@ const fullStarHint = computed<string | undefined>(() => {
   return `Add a Generation Probability block${onlyOne} to also get full-STAR — an FDR-controlled convergence call.`;
 });
 
-// Parallel modes (A-0010): fast-STAR runs on every processed chain, so its
+// Parallel modes: fast-STAR runs on every processed chain, so its
 // per-chain nb_freq threshold is always shown when that chain is active
 // (heavyActive / lightActive). full-STAR is added automatically wherever the
 // chain has Generation Probability — no method toggle, no disable-light.
@@ -245,7 +245,7 @@ const fullStarHint = computed<string | undefined>(() => {
     </template>
   </PlNumberField>
 
-  <!-- Convergence context (A-0011): the biological metadata that shapes the
+  <!-- Convergence context: the biological metadata that shapes the
        clonotype-only aggregated export — an expected-convergence sample filter
        and an independence (replicate) grouping. Grouped in a section, default
        open. Defaults (all empty) = every sample an independent, eligible
@@ -305,7 +305,7 @@ const fullStarHint = computed<string | undefined>(() => {
   </PlAccordion>
 
   <PlAccordionSection label="Advanced settings">
-    <!-- full-STAR FDR target. The ONLY statistical knob (A-0011/A-0015); kept
+    <!-- full-STAR FDR target. The ONLY statistical knob; kept
          in Advanced so full-STAR runs on the default without prompting for a
          statistical parameter. Drives both BH passes — within each sample and
          across clonotypes after aggregation. Unused on a chain without Pgen

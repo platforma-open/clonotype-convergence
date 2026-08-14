@@ -24,10 +24,10 @@ export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
 // Raw per-clonotype generation probability from the Generation Probability
 // block — full-STAR's input, and what decides per chain whether full-STAR is
-// added at all (A-0009/A-0010). fast-STAR is unaffected: it runs either way.
+// added at all. fast-STAR is unaffected: it runs either way.
 export const PGEN_NAME = "pl7.app/vdj/generationProbability";
 
-// Default full-STAR FDR target (STAR's default; A-0008). Shared by the data
+// Default full-STAR FDR target (STAR's default). Shared by the data
 // model's init() and the args lambda's default when the field is absent.
 export const DEFAULT_ALPHA = 0.005;
 

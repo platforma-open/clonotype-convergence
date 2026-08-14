@@ -1,4 +1,4 @@
-"""Unit tests for the clonotype-only aggregation engine (aggregate.py, A-0011 v5).
+"""Unit tests for the clonotype-only aggregation engine (aggregate.py).
 
 Synthetic per-sample tables with hand-computable expectations exercise each rule:
 the full-STAR Fisher score and its chi2 -> BH hit, the Bonferroni within-unit
@@ -23,7 +23,7 @@ approx = pytest.approx
 HERE = Path(__file__).parent
 SRC = HERE.parent / "src"
 
-# The column names the workflow passes for each mode (A-0012).
+# The column names the workflow passes for each mode.
 FULL = ["--score-column", "fullStarScore", "--hit-column", "fullStar",
         "--reproducibility-column", "fullStarReproducibility"]
 FAST = ["--score-column", "nbFreq", "--hit-column", "fastStar",

@@ -4,8 +4,8 @@ Wraps statbiophys/STAR's Output_MC (vendored to ./output_MC.py). full-STAR is
 ADDED on a chain whose per-clonotype generation probability (Pgen) is available
 and is the preferred signal there; fast-STAR (the nbFreq threshold, applied in
 per-sample-neighbours) is the always-on baseline that runs on every chain
-regardless. The two are emitted side by side under distinct column names
-(A-0003/A-0010) — this stage never replaces the fast-STAR call.
+regardless. The two are emitted side by side under distinct column names —
+this stage never replaces the fast-STAR call.
 
 Runs AFTER compute_neighbours (Stage 1), which stays untouched — full-STAR
 plugs into the hit-calling stage only (the counting/calling seam). One
@@ -212,7 +212,7 @@ def main() -> int:
     df.loc[df.index[rows[hits]], "starHit"] = "Hit"
 
     # fullStarScore = -log10(Pvalue) — the block's rankable convergence score
-    # (A-0012). Two numerical hazards hit the STRONGEST clones (including the
+    #. Two numerical hazards hit the STRONGEST clones (including the
     # Pgen==0 ones now tested): the Poisson tail underflows to exactly 0.0, and
     # -log10(0) = +inf. Floor each sample's Pvalue at its smallest POSITIVE value
     # before -log10, so those clones land at the sample's max-finite score — the
