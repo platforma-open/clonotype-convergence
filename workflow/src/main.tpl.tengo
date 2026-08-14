@@ -689,7 +689,7 @@ wf.body(func(args) {
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isScore": "true",
 						"pl7.app/score/rankingOrder": "decreasing",
-						"pl7.app/description": "full-STAR convergence score aggregated to the clonotype: Fisher's combination of the clone's p-values across the replicates it appears in, summed as -log10 p. Higher = more convergent than recombination alone predicts, and supported by more independent evidence. No fixed threshold — the cutoff is the FDR call."
+						"pl7.app/description": "full-STAR convergence score aggregated to the clonotype: the significance of Fisher's combination of the clone's p-values across the replicates it appears in, as -log10 of the combined p-value. Higher = more convergent than recombination alone predicts, and supported by more independent evidence. This is the same quantity the hit is called on, so ranking by this score orders clones exactly as the hit does. No fixed threshold — the cutoff is the FDR call."
 					}
 				}},
 				aggHitSpec("fullStar", "Convergent hit (full-STAR)", "Whether this clone is called convergent across the dataset: its Fisher-combined p-value, Benjamini-Hochberg-controlled across all clonotypes at the FDR target alpha."),

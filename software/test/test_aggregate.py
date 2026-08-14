@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from scipy.stats import chi2
 
 approx = pytest.approx
 
@@ -77,9 +78,11 @@ def test_output_columns_are_mode_named(tmp_path):
 # --- full-STAR: Fisher score ------------------------------------------------
 
 
-def test_fisher_score_is_the_sum_of_unit_scores(tmp_path):
-    # Three donors of one sample each → Level 1 is the identity, so the score is
-    # the plain sum of the per-sample -log10 p (SPEC worked example: 8.3+1.5+4.0).
+def test_score_is_the_combined_p_not_the_raw_sum(tmp_path):
+    # Three replicates of one sample each. The raw Fisher sum would be
+    # 8.3+1.5+4.0 = 13.8; the exported score is that combination's own
+    # significance, -log10 of the chi2(6) tail, which is strictly smaller
+    # because three tests had three chances to accumulate -log10 p by chance.
     rows = [
         {"clonotypeKey": "A", "sampleId": "S1", "score": 8.3, "hit": "Hit"},
         {"clonotypeKey": "A", "sampleId": "S2", "score": 1.5, "hit": "Not hit"},
@@ -91,7 +94,56 @@ def test_fisher_score_is_the_sum_of_unit_scores(tmp_path):
         {"sampleId": "S3", "unit": "D3"},
     ]
     res, _ = run_aggregate(tmp_path, rows, metadata=meta)
-    assert res["A"]["fullStarScore"] == approx(13.8)
+    score = res["A"]["fullStarScore"]
+    assert 0 < score < 13.8
+    assert score == approx(-math.log10(chi2.sf(2 * math.log(10) * 13.8, 6)))
+
+
+def test_a_silent_replicate_lowers_the_score(tmp_path):
+    # THE case the operator hit: same evidence, but one clone is also present
+    # in a replicate where it shows nothing (p = 1, contributing 0 to the sum).
+    # Under the raw sum both scored identically while only one was a hit; the
+    # combined p separates them, so score and hit can no longer disagree.
+    rows = [
+        {"clonotypeKey": "ONE", "sampleId": "S1", "score": 4.0, "hit": "Hit"},
+        {"clonotypeKey": "TWO", "sampleId": "S1", "score": 4.0, "hit": "Hit"},
+        {"clonotypeKey": "TWO", "sampleId": "S2", "score": 0.0, "hit": "Not hit"},
+    ]
+    meta = [{"sampleId": "S1", "unit": "D1"}, {"sampleId": "S2", "unit": "D2"}]
+    res, _ = run_aggregate(tmp_path, rows, metadata=meta)
+    assert res["ONE"]["fullStarScore"] == approx(4.0)  # k=1: the unit's own -log10 p
+    assert res["TWO"]["fullStarScore"] < res["ONE"]["fullStarScore"]
+
+
+def test_more_real_evidence_still_scores_higher(tmp_path):
+    # The df penalty must not swamp genuine accumulation: three replicates each
+    # carrying signal beat two carrying the same per-replicate signal.
+    rows = [
+        {"clonotypeKey": "TWO", "sampleId": "S1", "score": 2.0, "hit": "Hit"},
+        {"clonotypeKey": "TWO", "sampleId": "S2", "score": 2.0, "hit": "Hit"},
+        {"clonotypeKey": "THREE", "sampleId": "S1", "score": 2.0, "hit": "Hit"},
+        {"clonotypeKey": "THREE", "sampleId": "S2", "score": 2.0, "hit": "Hit"},
+        {"clonotypeKey": "THREE", "sampleId": "S3", "score": 2.0, "hit": "Hit"},
+    ]
+    meta = [{"sampleId": f"S{i}", "unit": f"D{i}"} for i in (1, 2, 3)]
+    res, _ = run_aggregate(tmp_path, rows, metadata=meta)
+    assert res["THREE"]["fullStarScore"] > res["TWO"]["fullStarScore"]
+
+
+def test_equal_scores_always_get_equal_verdicts(tmp_path):
+    # Score and hit are now one quantity, so the table can never show the same
+    # score with different calls (the operator's #358).
+    rows = []
+    for i in range(60):
+        rows.append({"clonotypeKey": f"A{i:02d}", "sampleId": "S1", "score": 5.0, "hit": "Hit"})
+        if i % 2:  # half also present in a silent second replicate
+            rows.append({"clonotypeKey": f"A{i:02d}", "sampleId": "S2", "score": 0.0, "hit": "Not hit"})
+    meta = [{"sampleId": "S1", "unit": "D1"}, {"sampleId": "S2", "unit": "D2"}]
+    res, _ = run_aggregate(tmp_path, rows, metadata=meta)
+    by_score = {}
+    for r in res.values():
+        by_score.setdefault(round(float(r["fullStarScore"]), 12), set()).add(r["fullStar"])
+    assert all(len(v) == 1 for v in by_score.values()), by_score
 
 
 def test_bonferroni_within_unit(tmp_path):
@@ -138,8 +190,10 @@ def test_absent_units_are_not_zero_filled(tmp_path):
     ]
     meta = [{"sampleId": "S1", "unit": "D1"}, {"sampleId": "S2", "unit": "D2"}]
     res, _ = run_aggregate(tmp_path, rows, metadata=meta)
-    assert res["A"]["fullStarScore"] == approx(8.0)
+    # B is present in one unit only, so its score is that unit's own -log10 p;
+    # A combines two units and, being genuinely convergent in both, outscores it.
     assert res["B"]["fullStarScore"] == approx(4.0)
+    assert res["A"]["fullStarScore"] > res["B"]["fullStarScore"]
 
 
 def test_untestable_sample_ignored(tmp_path):
