@@ -157,25 +157,30 @@ def fisher_combined_p(unit_scores: np.ndarray) -> float:
 
 
 def bh_hit_mask(pvalues: np.ndarray, alpha: float) -> np.ndarray:
-    """Benjamini-Hochberg first-crossing selection (same rule as full_star's
-    within-sample pass, one level up). Hits are the lowest-p clonotypes up to
-    the largest rank still under the BH line. Stable sort → deterministic ties."""
+    """Benjamini-Hochberg STEP-UP selection: find the LARGEST rank r whose
+    p_(r) <= (r/m)*alpha, and reject ranks 1..r. Stable sort → deterministic
+    ties; equal p-values always land on the same side of the cut, because the
+    BH line only rises with rank.
+
+    Deliberately NOT the same rule as full_star.py's within-sample pass. That
+    one stops at the FIRST rank to exceed the line, verbatim from STAR's
+    `Output_MC.BH_procedure`, and must stay that way to reproduce the reference
+    (M1). Here nothing constrains us to STAR's variant, and first-crossing is
+    severely conservative at repertoire scale: rank 1 has to clear alpha/m, so
+    with ~70k clonotypes a single moderately-significant leader stops the whole
+    procedure and the block reports ZERO hits while looking perfectly healthy.
+    Step-up is the textbook procedure and controls the FDR at alpha just the
+    same, while rejecting everything up to the last rank that clears its line."""
     m = len(pvalues)
     if m == 0:
         return np.zeros(0, dtype=bool)
     order = np.argsort(pvalues, kind="stable")
     sorted_p = pvalues[order]
-    # 1-based ranks: reject the first (rank-1) rows at the smallest rank whose
-    # p_(rank) exceeds (rank/m)*alpha; default to m (all) if never crossed.
-    # rank starts at 1 so the smallest p is tested against its own threshold —
-    # otherwise a set where even p_(1) fails BH would still force order[:1] to Hit.
-    k = m
-    for rank in range(1, m + 1):
-        if sorted_p[rank - 1] > (rank / m) * alpha:
-            k = rank - 1
-            break
+    ranks = np.arange(1, m + 1)
+    passing = np.nonzero(sorted_p <= (ranks / m) * alpha)[0]
     mask = np.zeros(m, dtype=bool)
-    mask[order[:k]] = True
+    if passing.size > 0:
+        mask[order[: passing[-1] + 1]] = True
     return mask
 
 
