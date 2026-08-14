@@ -185,9 +185,9 @@ export type BlockData = {
    *  separate toggle, threshold or weight. */
   groupingRef?: PlRef;
 
-  // UI-only state (never projects to args).
-  settingsOpen?: boolean;
-  logsOpen?: boolean;
+  // UI-only state (never projects to args). Panel open/close is NOT here: it
+  // lives in a local reactive in MainPage, so toggling a modal never writes to
+  // server-stored data (see the hairpin note there).
   /** Required (initialised by dataModel.init); PlAgDataTableV2's
    *  v-model expects a defined value. */
   mainTableState: PlDataTableStateV2;

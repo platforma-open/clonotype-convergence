@@ -4,15 +4,16 @@ import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
 // Default distribution chart state. One state per selector-driven
-// page. Log Y on both: the aggregated scores stay on their per-sample
-// statistic's scale (the upper-median nbFreq; Fisher's sum of -log10 p), so
-// both pages plot long-tailed values. Shared by init() and the migrations.
-const distGraphState = (title: string, scale: "linear" | "log"): GraphMakerState => ({
+// page. Log Y on both — not a parameter: every score these pages plot is
+// long-tailed (the upper-median nbFreq, and -log10 of the combined p), so a
+// linear default would flatten all of them into the first bin. Shared by
+// init() and the migrations.
+const distGraphState = (title: string): GraphMakerState => ({
   title,
   template: "bins",
   currentTab: null,
   layersSettings: { bins: { fillColor: "#5a9bd4" } },
-  axesSettings: { axisY: { axisLabelsAngle: 90, scale }, other: { binsCount: 30 } },
+  axesSettings: { axisY: { axisLabelsAngle: 90, scale: "log" }, other: { binsCount: 30 } },
 });
 
 export const blockDataModel = new DataModelBuilder()
@@ -58,7 +59,7 @@ export const blockDataModel = new DataModelBuilder()
       aggregatedTableState: p.aggregatedTableState ?? createPlDataTableStateV2(),
     };
   })
-  // v4 — parallel fast/full modes (spec v2). The four per-chain histogram
+  // v4 — parallel fast/full modes. The four per-chain histogram
   // states (graphStateHistogram/Score Heavy/Light) are replaced by two
   // selector-driven chart states (aggregated + per-sample). Backfill the two so
   // GraphMaker never gets an undefined state; the old fields, if present on
@@ -67,14 +68,11 @@ export const blockDataModel = new DataModelBuilder()
     const p = prev as Partial<BlockData>;
     return {
       ...prev,
-      graphStateAggregated: p.graphStateAggregated ?? distGraphState("Score distribution", "log"),
-      graphStatePerSample:
-        p.graphStatePerSample ?? distGraphState("Per-sample distribution", "log"),
+      graphStateAggregated: p.graphStateAggregated ?? distGraphState("Score distribution"),
+      graphStatePerSample: p.graphStatePerSample ?? distGraphState("Per-sample distribution"),
     };
   })
   .init(() => ({
-    settingsOpen: true,
-    logsOpen: false,
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
     // Empty string = user hasn't customised the label; the derived
@@ -102,6 +100,6 @@ export const blockDataModel = new DataModelBuilder()
     expectedValues: [],
     // Two selector-driven distribution chart states — see
     // distGraphState. Both plot long-tailed scores, so both default to log Y.
-    graphStateAggregated: distGraphState("Score distribution", "log"),
-    graphStatePerSample: distGraphState("Per-sample distribution", "log"),
+    graphStateAggregated: distGraphState("Score distribution"),
+    graphStatePerSample: distGraphState("Per-sample distribution"),
   }));

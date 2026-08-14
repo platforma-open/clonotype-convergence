@@ -1,5 +1,5 @@
 /*
-  End-to-end block test (review finding 4a, spec M2 "wired end-to-end").
+  End-to-end block test.
 
   Builds a real project — Samples & Data → MiXCR Clonotyping → this block — and
   asserts the part that only an integration run can reach: that the per-sample
@@ -173,8 +173,6 @@ function pickDataset(outputs: Record<string, any>, opts: { groupingRef?: unknown
     clusterMin: 10,
     expectedValues: [],
     groupingRef: opts.groupingRef,
-    settingsOpen: false,
-    logsOpen: false,
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
     graphStateAggregated: { title: "Score distribution", template: "bins", currentTab: null },

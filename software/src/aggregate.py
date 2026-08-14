@@ -77,7 +77,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.special import gammaln, logsumexp
-from scipy.stats import chi2
 
 # ln(10): converts a -log10 p to the natural-log form Fisher's statistic needs.
 LN10 = float(np.log(10.0))
@@ -103,9 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-values", dest="expected_values", default=None)
     parser.add_argument("--clonotype-column", dest="clonotype_column", default="clonotypeKey")
     parser.add_argument("--sample-column", dest="sample_column", default="sampleId")
-    parser.add_argument("--score-column", dest="score_column", default="starScore")
-    parser.add_argument("--hit-column", dest="hit_column", default="starHit")
-    parser.add_argument("--reproducibility-column", dest="repro_column", default="reproducibility")
+    # No defaults: the three mode columns name WHICH mode is being aggregated,
+    # and they name the output columns too. A default would silently aggregate
+    # the wrong mode (or a column that no longer exists) instead of failing.
+    parser.add_argument("--score-column", dest="score_column", required=True)
+    parser.add_argument("--hit-column", dest="hit_column", required=True)
+    parser.add_argument("--reproducibility-column", dest="repro_column", required=True)
     return parser.parse_args()
 
 

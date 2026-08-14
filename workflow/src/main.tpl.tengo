@@ -175,9 +175,10 @@ wf.body(func(args) {
 	}
 	dualChain := !is_undefined(args.chainH) && !is_undefined(args.chainL)
 
-	// full-STAR FDR target. Defaulted here so the workflow runs on the STAR
-	// default even before the model projects `alpha` into args.
-	alpha := is_undefined(args.alpha) ? 0.005 : args.alpha
+	// full-STAR FDR target. Always present: BlockArgs.alpha is required and the
+	// args lambda fills it from the data model's default when the field is
+	// unset, so there is no second copy of the default here to drift from it.
+	alpha := args.alpha
 
 	// runChainPipeline — closure for one chain. Packs the chain's aa+nt CDR3
 	// (and, when a Pgen sibling resolved, the per-clonotype Pgen) into a single
@@ -493,7 +494,7 @@ wf.body(func(args) {
 		// names + Clone IDs without the model needing to do anchored
 		// discovery at render time. No trace.inject — we're re-emitting
 		// upstream-owned labels, not claiming ownership.
-		for i, c in columns.getColumns(labelKey) {
+		for i, c in labelCols {
 			pfBuilder.add("sampleLabel_" + string(i), c.spec, c.data)
 		}
 		for i, c in columns.getColumns(cloneLabelKey) {
@@ -565,14 +566,16 @@ wf.body(func(args) {
 		}
 
 		// statsFor — hit-count badge {above,total} over one mode's aggregated TSV.
+		// `statsWf`, not `wf`: the module-level `wf` is the workflow SDK import,
+		// and shadowing it inside a closure reads as a bug even when it isn't.
 		statsFor := func(aggTsv, hitCol) {
-			wf := pt.workflow().mem("2GiB").cpu(1)
-			df := wf.frame(aggTsv, { xsvType: "tsv", inferSchema: false })
+			statsWf := pt.workflow().mem("2GiB").cpu(1)
+			df := statsWf.frame(aggTsv, { xsvType: "tsv", inferSchema: false })
 			df.select(
 				pt.col(hitCol).count().alias("total"),
 				pt.when(pt.col(hitCol).eq(pt.lit("Hit"))).then(pt.lit(1)).otherwise(pt.lit(0)).sum().alias("above")
 			).saveContent("stats.ndjson")
-			return wf.run().getFileContent("stats.ndjson")
+			return statsWf.run().getFileContent("stats.ndjson")
 		}
 
 		exportCloneAxis := {

@@ -135,7 +135,7 @@ self.body(func(inputs) {
 			arg("--chain").arg(inputs.chain).
 			arg("--neighbours-column").arg("neighbours").
 			arg("--pgen-column").arg("Pgen").
-			addFile("neighbours.tsv", neighboursCmd.getFile("neighbours.tsv")).
+			addFile("neighbours.tsv", baseTsv).
 			saveFile("fullstar.tsv").
 			run()
 		baseTsv = fullStarCmd.getFile("fullstar.tsv")
