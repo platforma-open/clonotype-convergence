@@ -374,9 +374,13 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // scFv marker (clonotype-clustering / -space / sequence-embeddings key off
       // it too); the scClonotypeKey/structure domain is an unfinished
       // placeholder shared with paired SC, so it can't discriminate.
-      const scFv = ctx.resultPool.getAnchoredPColumns({ main: opt.ref }, [
-        { name: "pl7.app/vdj/scFv-sequence" },
-      ]);
+      const scFv = ctx.resultPool.getAnchoredPColumns(
+        { main: opt.ref },
+        [{ name: "pl7.app/vdj/scFv-sequence" }],
+        // Same reason as facts.ts: without this, one in-flight column on the
+        // anchor nulls the whole request and the marker reads as absent.
+        { dontWaitAllData: true },
+      );
       if (scFv && scFv.length > 0) return false;
       // NO CDR3-readiness gate here, deliberately. It used to also require the
       // anchor's aa/nt CDR3 + abundance siblings to be discoverable, to close a
