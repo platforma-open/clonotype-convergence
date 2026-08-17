@@ -15,7 +15,7 @@ catalog:
   # newer SDK than the app that renders it feeds newer model output to an older
   # table component. `require-latest` gates only block-tools, so holding these
   # back is CI-safe; re-raise them when the desktop moves.
-  "@platforma-sdk/block-tools": 2.12.13
+  "@platforma-sdk/block-tools": 2.13.0
   "@platforma-sdk/model": 1.80.2
   "@platforma-sdk/ui-vue": 1.80.2
   "@platforma-sdk/test": 1.80.2
