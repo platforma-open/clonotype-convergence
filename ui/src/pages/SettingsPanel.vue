@@ -4,6 +4,7 @@ import { PFrameImpl } from "@platforma-sdk/model";
 import {
   PlAccordion,
   PlAccordionSection,
+  PlAlert,
   PlCheckbox,
   PlDropdown,
   PlDropdownMulti,
@@ -15,6 +16,8 @@ import {
 import {
   isHeavy,
   isLight,
+  pgenHeavyAvailable,
+  pgenLightAvailable,
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import canonicalize from "canonicalize";
@@ -27,7 +30,7 @@ const app = useApp();
 // (grouped, not hidden). Local UI state, not persisted.
 const convergenceContextOpen = ref(true);
 
-// ---- Clonotype-only aggregation controls (A-0011) ------------------------
+// ---- Clonotype-only aggregation controls ------------------------
 // Sample-metadata columns offered for the expected-sample filter and the
 // independence grouping (both sampleId-keyed `pl7.app/metadata`).
 const metadataColumnOptions = computed(
@@ -47,25 +50,15 @@ const expectedValueOptions = useWatchFetch(
     return [...(response?.values.data ?? [])].map((v) => ({ value: String(v), label: String(v) }));
   },
 );
-// Computed get/set wrappers so the v-models stay well-typed over the optional
-// BlockData fields (undefined on legacy data → the default), mirroring the
-// customBlockLabel pattern. `k` and replicability are NOT exposed (A-0011): the
-// grouping dropdown alone turns on k=2; the only score knob is the weight `w`.
+// Computed get/set wrapper so the v-model stays well-typed over the optional
+// BlockData field (undefined on legacy data → the default), mirroring the
+// customBlockLabel pattern. The aggregation exposes NO other knob:
+// the score is a named method with no weight and no percentile, and the FDR
+// target `alpha` in Advanced settings is the only statistical parameter.
 const expectedValuesModel = computed<string[]>({
   get: () => app.model.data.expectedValues ?? [],
   set: (v) => {
     app.model.data.expectedValues = v;
-  },
-});
-// Presented as the REPRODUCIBILITY weight (up = more cross-donor
-// reproducibility). The stored arg `scoreWeight` is w, which weights the
-// STRENGTH term (peak) in starScore = w·pct(peak) + (1−w)·pct(support), so the
-// displayed reproducibility weight is 1 − w; convert on both ends. Default 0.5
-// maps to 0.5.
-const reproducibilityWeightModel = computed<number>({
-  get: () => 1 - (app.model.data.scoreWeight ?? 0.5),
-  set: (v) => {
-    app.model.data.scoreWeight = 1 - v;
   },
 });
 
@@ -150,7 +143,28 @@ function onToggleLightCheckbox(v: boolean) {
   app.model.data.processLightChain = v;
 }
 
-// Parallel modes (A-0010 v2): fast-STAR runs on every processed chain, so its
+// full-STAR availability hint. Shown here, beside the input
+// pick that determines it, rather than as a banner over the results: a chain
+// without Generation Probability is a complete fast-STAR result, not a
+// failure, so the note is an invitation rather than a warning. Availability is
+// ref presence (the model helpers), never the stored flag. Names the chain
+// only when the other one does have it, so the hint stays one short line.
+const fullStarHint = computed<string | undefined>(() => {
+  const facts = app.model.data.datasetFacts;
+  if (!facts) return undefined;
+  const heavyMissing = heavyActive.value && !pgenHeavyAvailable(facts);
+  const lightMissing = lightActive.value && !pgenLightAvailable(facts);
+  if (!heavyMissing && !lightMissing) return undefined;
+  const onlyOne =
+    heavyActive.value && lightActive.value && heavyMissing !== lightMissing
+      ? heavyMissing
+        ? " for the heavy chain"
+        : " for the light chain"
+      : "";
+  return `Add a Generation Probability block${onlyOne} to also get full-STAR — an FDR-controlled convergence call.`;
+});
+
+// Parallel modes: fast-STAR runs on every processed chain, so its
 // per-chain nb_freq threshold is always shown when that chain is active
 // (heavyActive / lightActive). full-STAR is added automatically wherever the
 // chain has Generation Probability — no method toggle, no disable-light.
@@ -170,6 +184,10 @@ function onToggleLightCheckbox(v: boolean) {
       receptors aren't supported. For in-vivo (immunised) repertoires only.
     </template>
   </PlDropdownRef>
+
+  <PlAlert v-if="fullStarHint" type="info">
+    {{ fullStarHint }}
+  </PlAlert>
 
   <!-- Heavy-chain fast-STAR threshold. fast-STAR runs on every chain, so this
        is always shown when heavy is processed. -->
@@ -227,11 +245,11 @@ function onToggleLightCheckbox(v: boolean) {
     </template>
   </PlNumberField>
 
-  <!-- Convergence context (A-0011): the biological metadata that shapes the
+  <!-- Convergence context: the biological metadata that shapes the
        clonotype-only aggregated export — an expected-convergence sample filter
        and an independence (replicate) grouping. Grouped in a section, default
-       open. Defaults (all empty) = every sample an independent, eligible unit,
-       convergent in >= 1. -->
+       open. Defaults (all empty) = every sample an independent, eligible
+       unit. -->
   <!-- Convergence context: collapsible section, OPEN by default. Standalone
        PlAccordionSection can't default-open (an injected accordion manager
        drives it), so wrap in PlAccordion multiple → the section's v-model
@@ -254,7 +272,9 @@ function onToggleLightCheckbox(v: boolean) {
           <template #tooltip>
             Restrict the exported aggregate to samples where convergence is biologically expected.
             Pick the metadata column (e.g. timepoint) whose values mark where convergence is
-            expected; choose the values below. Empty = use all samples.
+            expected; choose the values below. This also sets the cohort the
+            <b>reproducibility</b> column is measured against. The block's own per-sample table
+            keeps every sample regardless. Empty = use all samples.
           </template>
         </PlDropdown>
         <!-- Always visible; inactive until a column is picked (no column → no
@@ -273,20 +293,23 @@ function onToggleLightCheckbox(v: boolean) {
         clearable
       >
         <template #tooltip>
-          Which samples are independent replicates (e.g. a donor or animal column). This is what
-          turns on the <b>reproducibility</b> signal: samples sharing a replicate collapse together,
-          a clone must be convergent in ≥ 2 replicates to count as a hit, and cross-replicate
-          recurrence feeds the score (see Reproducibility weight). Empty = every sample treated as
-          independent, convergent in ≥ 1, and reproducibility is not used.
+          Which samples come from the same independent unit (e.g. a donor or animal column). Samples
+          sharing a value collapse together first, so replicates and timepoints of one donor count
+          as <b>one</b> piece of evidence rather than several. The units left after that collapse
+          are what the exported score combines across, and they are also the cohort the
+          <b>reproducibility</b> column is measured over. Empty = every sample treated as an
+          independent unit.
         </template>
       </PlDropdown>
     </PlAccordionSection>
   </PlAccordion>
 
   <PlAccordionSection label="Advanced settings">
-    <!-- full-STAR FDR target. The primary full-STAR knob; kept in Advanced
-         so full-STAR runs on the default without prompting for a statistical
-         parameter (A-0015). Ignored in the fast-STAR fallback. -->
+    <!-- full-STAR FDR target. The ONLY statistical knob; kept
+         in Advanced so full-STAR runs on the default without prompting for a
+         statistical parameter. Drives both BH passes — within each sample and
+         across clonotypes after aggregation. Unused on a chain without Pgen
+         (fast-STAR is a threshold call, not FDR-controlled). -->
     <PlNumberField
       v-model="app.model.data.alpha"
       label="FDR target (alpha)"
@@ -295,33 +318,11 @@ function onToggleLightCheckbox(v: boolean) {
       :step="0.001"
     >
       <template #tooltip>
-        full-STAR false-discovery-rate target for the Benjamini–Hochberg call across each sample's
-        clonotypes. Lower = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies
-        only when Generation Probability is available (full-STAR); ignored in the fast-STAR
-        fallback.
-      </template>
-    </PlNumberField>
-
-    <!-- Reproducibility weight (A-0011): the displayed value is 1 − w (see the
-         reproducibilityWeightModel computed). The one score knob; default 0.5.
-         The reproducibility term only takes effect when a Replicate column is
-         set. -->
-    <PlNumberField
-      v-model="reproducibilityWeightModel"
-      label="Reproducibility weight"
-      :min="0"
-      :max="1"
-      :step="0.05"
-    >
-      <template #tooltip>
-        The exported per-clonotype score blends two signals.
-        <b>Strength</b> — how convergent a clone is in its single strongest sample (its peak −log10
-        p-value). <b>Reproducibility</b> — in how many independent replicates the clone is
-        convergent (cross-replicate recurrence).
-        <b>score = (1 − w) · strength + w · reproducibility</b>, where w is this weight (0.5 =
-        equal; 1 = reproducibility only; 0 = strength only). Reproducibility is only computed when a
-        <b>Replicate</b> column is set — without one, every sample is its own unit, the score is
-        strength alone, and this weight has no effect.
+        full-STAR false-discovery-rate target for the Benjamini–Hochberg call — applied twice: once
+        across each sample's clonotypes, and once across clonotypes in the exported aggregate. Lower
+        = stricter (fewer, higher-confidence hits). STAR default 0.005. Applies only where
+        Generation Probability is available (full-STAR); fast-STAR uses its neighbour-frequency
+        threshold instead.
       </template>
     </PlNumberField>
 
@@ -333,10 +334,12 @@ function onToggleLightCheckbox(v: boolean) {
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
-          Adds a stricter hit definition alongside the threshold-only one: clonotypes whose CDR3
-          sits in a cluster of similar CDR3s (one-edit distance) of at least the size below.
-          Mitigates sequencing-error noise and matches Abbate et al. 2024's headline "binder"
-          definition. Off by default — the threshold-only hit column stays as the primary signal.
+          Adds a stricter hit definition alongside each existing one: clonotypes whose CDR3 sits in
+          a cluster of similar CDR3s (one-edit distance) of at least the size below. Applied to
+          every hit call the block emits, so fast-STAR and full-STAR each get their own
+          cluster-filtered column. Mitigates sequencing-error noise and matches Abbate et al. 2024's
+          headline "binder" definition. Off by default — the unfiltered hit columns stay as the
+          primary signal.
         </template>
       </PlTooltip>
     </PlCheckbox>

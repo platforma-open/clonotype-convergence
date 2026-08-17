@@ -107,10 +107,10 @@ self.body(func(inputs) {
 		cacheHours(24).
 		run()
 
-	// Stage 2 — hit calling, PARALLEL modes (A-0003/A-0010 v2). fast-STAR runs on
+	// Stage 2 — hit calling, PARALLEL modes. fast-STAR runs on
 	// EVERY chain (the always-on baseline); full-STAR is ADDED when this chain's
 	// Pgen is present. Both emit side by side with distinct v1-style names
-	// (A-0012): fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);
+	//: fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);
 	// full-STAR → fullStarScore (= -log10 p) + fullStar (BH hit).
 	//
 	// When Pgen is present, run full-STAR first: full_star.py emits fullstar.tsv
@@ -122,8 +122,9 @@ self.body(func(inputs) {
 		// uniq_nucl is derived from neighbours.tsv's nSeqCDR3 (== the nUniqueNt
 		// compute-neighbours reports), so compute-neighbours stays byte-identical
 		// (its pinned cache survives alpha tweaks). full_star.py emits raw Pvalue
-		// + its BH hit ("starHit"); the pt step below turns those into
-		// fullStarScore = -log10(Pvalue) + fullStar.
+		// (kept for M1/QC) + fullStarScore (= -log10 Pvalue, floored per-sample so
+		// the strongest / Pgen==0 clones stay finite and on-scale) + its BH hit
+		// ("starHit"); the pt step below passes fullStarScore + fullStar through.
 		fullStarCmd := exec.builder().
 			software(fullStarSw).
 			cpu(1).
@@ -134,7 +135,7 @@ self.body(func(inputs) {
 			arg("--chain").arg(inputs.chain).
 			arg("--neighbours-column").arg("neighbours").
 			arg("--pgen-column").arg("Pgen").
-			addFile("neighbours.tsv", neighboursCmd.getFile("neighbours.tsv")).
+			addFile("neighbours.tsv", baseTsv).
 			saveFile("fullstar.tsv").
 			run()
 		baseTsv = fullStarCmd.getFile("fullstar.tsv")
@@ -153,32 +154,50 @@ self.body(func(inputs) {
 			alias("fastStar")
 	]
 	if hasPgen {
+		// full_star.py already derived the floored fullStarScore; pass it through
+		// (do NOT recompute -log10 here — that reintroduces +inf on Pvalue==0).
 		callCols = append(callCols,
-			pt.col("Pvalue").cast("Float64").log10().negate().alias("fullStarScore"),
+			pt.col("fullStarScore").cast("Float64").alias("fullStarScore"),
 			pt.col("starHit").alias("fullStar"))
 	}
 	callDf := callWf.frame(baseTsv, { xsvType: "tsv", inferSchema: false }).withColumns(callCols...)
 	callDf.save("called.tsv")
 	calledTsv := callWf.run().getFile("called.tsv")
 
-	// Stage 3 — paper's cluster filter, only when enabled. Refines the fast-STAR
-	// hit (fastStar) → fastStarClusterFiltered + clusterSize (A-0012). One sample
-	// per invocation, so clustering is within this sample's rows.
+	// Stage 3 — paper's cluster filter, only when enabled. Runs ONCE PER EMITTED
+	// MODE, refining that mode's hit set: fastStar always, fullStar too when
+	// this chain carries full-STAR. Each mode gets its own filtered + size
+	// columns because clusters are computed over the HIT SUBSET — the two hit
+	// sets differ, so their cluster structures (and sizes) differ with them.
+	// One sample per invocation, so clustering is within this sample's rows.
+	//
+	// Chained, not parallel: each invocation appends its two columns to the
+	// whole table, so the second must start from the first's output.
+	clusterModes := [{ hit: "fastStar", filtered: "fastStarClusterFiltered", size: "fastStarClusterSize" }]
+	if hasPgen {
+		clusterModes = append(clusterModes, { hit: "fullStar", filtered: "fullStarClusterFiltered", size: "fullStarClusterSize" })
+	}
+
 	finalTsv := calledTsv
 	if inputs.applyClusterFilter {
-		clusterCmd := exec.builder().
-			software(clusterFilterSw).
-			cpu(1).
-			mem("4GiB").
-			arg("--input").arg("called.tsv").
-			arg("--output").arg("output.tsv").
-			arg("--cluster-min").arg(string(inputs.clusterMin)).
-			arg("--chain").arg(inputs.chain).
-			arg("--hit-column").arg("fastStar").
-			addFile("called.tsv", finalTsv).
-			saveFile("output.tsv").
-			run()
-		finalTsv = clusterCmd.getFile("output.tsv")
+		for i, mode in clusterModes {
+			outName := "clustered_" + string(i) + ".tsv"
+			clusterCmd := exec.builder().
+				software(clusterFilterSw).
+				cpu(1).
+				mem("4GiB").
+				arg("--input").arg("called.tsv").
+				arg("--output").arg(outName).
+				arg("--cluster-min").arg(string(inputs.clusterMin)).
+				arg("--chain").arg(inputs.chain).
+				arg("--hit-column").arg(mode.hit).
+				arg("--filtered-column").arg(mode.filtered).
+				arg("--size-column").arg(mode.size).
+				addFile("called.tsv", finalTsv).
+				saveFile(outName).
+				run()
+			finalTsv = clusterCmd.getFile(outName)
+		}
 	}
 
 	return {

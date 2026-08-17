@@ -1,27 +1,44 @@
 packages:
-  - workflow
-  - model
-  - ui
-  - test
-  - software
   - block
+  - model
+  - software
+  - test
+  - ui
+  - workflow
 
 catalog:
-  "@milaboratories/ts-builder": 1.6.0
-  "@milaboratories/ts-configs": 1.3.0
-  "@platforma-sdk/workflow-tengo": 6.6.5
-  "@platforma-sdk/block-tools": 2.12.9
-  "@platforma-sdk/model": 1.79.24
-  "@platforma-sdk/ui-vue": 1.79.24
-  "@platforma-sdk/test": 1.79.26
-  "@platforma-sdk/tengo-builder": 4.0.14
-  "@platforma-sdk/package-builder": 3.14.0
+  "@milaboratories/ts-builder": 1.6.2
+  "@milaboratories/ts-configs": 1.4.0
+  "@platforma-sdk/workflow-tengo": 6.8.2
+  # model / ui-vue / test are held at 1.80.2 to MATCH THE DESKTOP RUNTIME
+  # (the app reports `sdkVersions: desktop 1.80.2`). A block built against a
+  # newer SDK than the app that renders it feeds newer model output to an older
+  # table component. `require-latest` gates only block-tools, so holding these
+  # back is CI-safe; re-raise them when the desktop moves.
+  "@platforma-sdk/block-tools": 2.13.0
+  "@platforma-sdk/model": 1.80.2
+  "@platforma-sdk/ui-vue": 1.80.2
+  "@platforma-sdk/test": 1.80.2
+  "@platforma-sdk/tengo-builder": 4.0.22
+  "@platforma-sdk/package-builder": 3.14.2
   "@platforma-sdk/blocks-deps-updater": 2.2.0
 
   "@platforma-open/milaboratories.runenv-python-3": 1.10.1
 
+  # other blocks used in tests (author-managed section)
+  "@platforma-open/milaboratories.samples-and-data": 1.18.1
+  "@platforma-open/milaboratories.samples-and-data.model": 2.8.1
+  # 2.19.1 is the newest MiXCR that this SDK generation's test runtime can load:
+  # 2.20+ declares the `requiresColumnsCollection` runtime flag, which the
+  # middle layer pinned by @platforma-sdk/test 1.79.x rejects.
+  "@platforma-open/milaboratories.mixcr-clonotyping-2": 2.19.1
+  "@platforma-open/milaboratories.mixcr-clonotyping-2.model": 1.26.0
+  "@platforma-open/milaboratories.generation-probability.block": 1.0.0
+
   "@milaboratories/graph-maker": 1.4.8
-  "@milaboratories/helpers": 1.14.2
+  # Must equal the version @platforma-sdk/model pulls (1.80.2 -> 1.14.4).
+  # A second copy makes the model build fail TS2742 on the `platforma` export.
+  "@milaboratories/helpers": 1.14.4
 
   "canonicalize": 2.1.0
 
@@ -31,5 +48,10 @@ catalog:
 
   "shx": 0.4.0
   "@changesets/cli": 2.29.8
+
+  # The structurer adds `typescript: "catalog:"` to block/ but does not seed the
+  # catalog entry, so the install fails without this. Pinned to the version the
+  # newest structured block in the workspace uses (generation-probability).
+  "typescript": "7.0.2"
 
   "vitest": ^4.0.18

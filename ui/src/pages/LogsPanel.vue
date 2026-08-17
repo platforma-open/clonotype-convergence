@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { PlAccordion, PlAccordionSection, PlLogView, PlTabs } from "@platforma-sdk/ui-vue";
+import {
+  PlAccordion,
+  PlAccordionSection,
+  PlLogView,
+  PlSearchField,
+  PlTabs,
+} from "@platforma-sdk/ui-vue";
 import { computed, reactive, ref } from "vue";
 import { useApp } from "../app";
 
@@ -28,6 +34,19 @@ const shownChain = computed<"heavy" | "light">(() =>
 );
 const shownLogs = computed(() => (shownChain.value === "light" ? light.value : heavy.value));
 
+// Sample filter. View-local (not persisted): a run can fan out over dozens of
+// samples, and the usual reason to open Logs is one named sample. Matches the
+// sample LABEL only — the log bodies are long and searching them would turn a
+// "find my sample" box into a content search with no way to see what matched.
+const query = ref("");
+const shownLogsFiltered = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  if (q === "") return shownLogs.value;
+  return shownLogs.value.filter((s) => s.label.toLowerCase().includes(q));
+});
+// Only worth showing when there is something to sift through.
+const showSearch = computed(() => shownLogs.value.length > 1);
+
 // Per-sample accordion open state, keyed by "<chain>:<sampleId>" so heavy and
 // light keep independent state. Unset = expanded (logs start open).
 const open = reactive<Record<string, boolean>>({});
@@ -40,12 +59,19 @@ const setOpen = (sampleId: string, v: boolean) => {
 <template>
   <div v-if="hasAny" :class="$style.logsPanel">
     <PlTabs v-if="dualChain" v-model="activeChain" :options="chainTabs" :class="$style.tabs" />
+    <PlSearchField
+      v-if="showSearch"
+      v-model="query"
+      placeholder="Find sample..."
+      clearable
+      :class="$style.search"
+    />
     <!-- `multiple` is required: standalone PlAccordionSection ignores its
          v-model and defaults closed; only inside <PlAccordion multiple> does
          each section's open state follow model-value (default expanded). -->
     <PlAccordion multiple>
       <PlAccordionSection
-        v-for="s in shownLogs"
+        v-for="s in shownLogsFiltered"
         :key="s.sampleId"
         :label="s.label"
         :model-value="isOpen(s.sampleId)"
@@ -62,6 +88,9 @@ const setOpen = (sampleId: string, v: boolean) => {
         </div>
       </PlAccordionSection>
     </PlAccordion>
+    <p v-if="shownLogsFiltered.length === 0" :class="$style.runningHint">
+      No samples match "{{ query }}".
+    </p>
   </div>
   <p v-else-if="isRunning" :class="$style.runningHint">Calculations started.</p>
   <p v-else>Run the block to see logs.</p>
@@ -75,6 +104,9 @@ const setOpen = (sampleId: string, v: boolean) => {
 }
 .tabs {
   margin-bottom: 16px;
+}
+.search {
+  margin-bottom: 12px;
 }
 /* Balance the accordion's asymmetric child margins (24px top / 4px bottom) so
    each log has breathing room above the next section header. */
