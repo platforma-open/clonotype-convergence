@@ -176,6 +176,41 @@ function keepTableColumn(
   };
 }
 
+const FAST_STAR_HIT = "pl7.app/vdj/convergence/fastStar";
+const FULL_STAR_HIT = "pl7.app/vdj/convergence/fullStar";
+
+/**
+ * The hit column a table anchors on: full-STAR where the chain has it, else
+ * fast-STAR. Both are emitted per chain and share the table's axes, so either
+ * can carry the join — but the choice is not cosmetic.
+ *
+ * `createPlDataTableV3` never applies visibility rules to `primaryColumns`
+ * (createPlDataTableV3.ts: `visible = { primary, direct: direct.filter(...) }`),
+ * so whatever we anchor on is permanently visible. That must be the call we
+ * want foregrounded, which on a full-STAR chain is full-STAR's.
+ *
+ * The corollary is why only the ANCHOR goes in `primaryColumns` below: with
+ * `maxHops: 0` every discovered column is zero-hop, so handing the whole
+ * discovery result to `primaryColumns` puts every column beyond reach of the
+ * rules and nothing can ever be hidden.
+ */
+function pickHitAnchor(pCols: { spec: PColumnSpec }[] | undefined): PColumnSpec | undefined {
+  const byName = (name: string) => pCols?.find((c) => c.spec.name === name)?.spec;
+  return byName(FULL_STAR_HIT) ?? byName(FAST_STAR_HIT);
+}
+
+/** Split the kept recipes into (the anchor) + (everything else). */
+function splitAnchor(recipes: ColumnRecipe[], anchor: PColumnSpec) {
+  const isAnchor = (r: ColumnRecipe) => {
+    const s = r.getSpec();
+    return (
+      s.name === anchor.name && canonicalize(s.domain ?? {}) === canonicalize(anchor.domain ?? {})
+    );
+  };
+  const anchorRecipe = recipes.find(isAnchor);
+  return { anchorRecipe, rest: recipes.filter((r) => r !== anchorRecipe) };
+}
+
 /** `{above,total}` hit-count badge from one of the workflow's stats fields. */
 function hitStats<A, U>(ctx: RenderCtx<A, U>, field: string) {
   return ctx.outputs
@@ -205,6 +240,14 @@ const FAST_STAR_COLUMN_NAMES = [
   "pl7.app/vdj/convergence/nbFreq",
   "pl7.app/vdj/convergence/fastStar",
   "pl7.app/vdj/convergence/fastStarReproducibility",
+  // The cluster filter runs per mode, so its columns belong to the family of
+  // the hit set they refine. Demoting them with the rest is what keeps a
+  // derived column from outliving its parent in the table: showing
+  // "cluster-filtered (fast-STAR)" while "hit (fast-STAR)" is hidden reads as
+  // a contradiction. full-STAR's own cluster columns stay default-visible.
+  "pl7.app/vdj/convergence/fastStarClusterFiltered",
+  "pl7.app/vdj/convergence/fastStarClusterSize",
+  "pl7.app/vdj/convergence/fastStarClusterFilteredReproducibility",
 ];
 
 // Table visibility rules are declarative selectors (SDK 1.81): a rule matches
@@ -529,6 +572,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // table stays put. After Run, the new sourceId triggers a fresh
   // hidden-columns / sort state (so stale column IDs from the old
   // dataset don't haunt the new one).
+  //
+  // It keys on the dataset AND on which column FAMILIES the run emits, because
+  // the saved hidden-column list does not merge with the visibility rules — it
+  // replaces them (`computeHiddenColumns`: `hiddenSpecs` wins outright over the
+  // rule-derived optional set). So a state captured while full-STAR existed
+  // keeps hiding the fast-STAR family after Pgen is removed, and with full-STAR
+  // gone too the table renders empty but for the clone id. Anything that
+  // changes which columns exist has to reset that state.
   .output("mainTableSourceId", (ctx) => {
     // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
     // running/loading overlay when it takes the `sourceId: null` branch
@@ -543,7 +594,14 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (!args) return undefined;
     const ref = args.chainH ?? args.chainL;
     if (!ref) return undefined;
-    return canonicalize(ref as unknown as Record<string, unknown>);
+    return canonicalize({
+      ref,
+      heavy: args.chainH !== undefined,
+      light: args.chainL !== undefined,
+      fullStarHeavy: args.hasPgenHeavy === true,
+      fullStarLight: args.hasPgenLight === true,
+      clusterFilter: args.applyClusterFilter,
+    } as unknown as Record<string, unknown>);
   })
 
   // Canonical id of the args that produced the current render (activeArgs).
@@ -716,9 +774,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const hitAnchorSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
+    const hitAnchorSpec = pickHitAnchor(pCols);
     if (!hitAnchorSpec) return undefined;
 
     // Discover first, then filter in JS — see keepTableColumn.
@@ -756,13 +812,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // Nullable in this SDK line: nothing resolvable yet -> no table.
     if (!discovered) return undefined;
 
-    const primaryKept = discovered.primary.filter(keep);
-    const secondaryKept = discovered.secondary.filter(keep);
-    const keptSpecs = [...primaryKept, ...secondaryKept].map((r) => r.getSpec());
+    const kept = [...discovered.primary.filter(keep), ...discovered.secondary.filter(keep)];
+    const { anchorRecipe, rest } = splitAnchor(kept, hitAnchorSpec);
+    if (!anchorRecipe) return undefined;
+    const keptSpecs = kept.map((r) => r.getSpec());
 
+    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
+    // through `columns`, which is the set the visibility rules can reach.
     return createPlDataTableV3(ctx, {
-      primaryColumns: primaryKept,
-      columns: secondaryKept,
+      primaryColumns: [anchorRecipe],
+      columns: rest,
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: visibilityRules(args, keptSpecs, { perSampleOnly: true }),
@@ -795,9 +854,7 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
     const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const hitAnchorSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
+    const hitAnchorSpec = pickHitAnchor(pCols);
     if (!hitAnchorSpec) return undefined;
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
@@ -834,13 +891,16 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // Nullable in this SDK line: nothing resolvable yet -> no table.
     if (!discovered) return undefined;
 
-    const primaryKept = discovered.primary.filter(keep);
-    const secondaryKept = discovered.secondary.filter(keep);
-    const keptSpecs = [...primaryKept, ...secondaryKept].map((r) => r.getSpec());
+    const kept = [...discovered.primary.filter(keep), ...discovered.secondary.filter(keep)];
+    const { anchorRecipe, rest } = splitAnchor(kept, hitAnchorSpec);
+    if (!anchorRecipe) return undefined;
+    const keptSpecs = kept.map((r) => r.getSpec());
 
+    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
+    // through `columns`, which is the set the visibility rules can reach.
     return createPlDataTableV3(ctx, {
-      primaryColumns: primaryKept,
-      columns: secondaryKept,
+      primaryColumns: [anchorRecipe],
+      columns: rest,
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: visibilityRules(args, keptSpecs),

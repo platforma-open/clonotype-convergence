@@ -362,6 +362,135 @@ def test_expected_filter_excludes_samples_and_shrinks_the_cohort(tmp_path):
     assert res["A"]["fullStarReproducibility"] == approx(0.5)
 
 
+# --- cluster-filtered aggregation (hit + reproducibility, gated) ------------
+
+
+def _run_cluster_aggregate(tmp_path, rows, gate_rows, *, metadata=None, tag="cl"):
+    """Aggregate a cluster-filtered column against a gate TSV (the mode's own
+    already-aggregated output). Returns {clonotypeKey: row}, columns."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    inp = tmp_path / f"{tag}_in.tsv"
+    pd.DataFrame(rows).to_csv(inp, sep="\t", index=False)
+    gate = tmp_path / f"{tag}_gate.tsv"
+    pd.DataFrame(gate_rows).to_csv(gate, sep="\t", index=False)
+    out = tmp_path / f"{tag}_out.tsv"
+    cmd = [
+        sys.executable, str(SRC / "aggregate.py"),
+        "--input", str(inp), "--output", str(out),
+        "--chain", "IGHeavy", "--method", "cluster-filter", "--alpha", "0.005",
+        "--hit-column", "fastStarClusterFiltered",
+        "--reproducibility-column", "fastStarClusterFilteredReproducibility",
+        "--gate", str(gate), "--gate-hit-column", "fastStar",
+    ]
+    if metadata is not None:
+        meta = tmp_path / f"{tag}_meta.tsv"
+        pd.DataFrame(metadata).to_csv(meta, sep="\t", index=False)
+        cmd += ["--metadata", str(meta)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(SRC))
+    assert proc.returncode == 0, f"aggregate.py failed:\n{proc.stdout}\n{proc.stderr}"
+    df = pd.read_csv(out, sep="\t")
+    return {r["clonotypeKey"]: r for _, r in df.iterrows()}, list(df.columns)
+
+
+def test_cluster_aggregation_emits_hit_and_reproducibility_only(tmp_path):
+    # No score column: a cluster-filtered call refines a hit set, it does not
+    # rank. The export is the hit + reproducibility pair.
+    rows = [
+        {"clonotypeKey": "A", "sampleId": "S1", "fastStarClusterFiltered": "Hit"},
+        {"clonotypeKey": "A", "sampleId": "S2", "fastStarClusterFiltered": "Not hit"},
+    ]
+    gate = [{"clonotypeKey": "A", "fastStar": "Hit"}]
+    _, cols = _run_cluster_aggregate(tmp_path, rows, gate)
+    assert cols == [
+        "clonotypeKey",
+        "fastStarClusterFiltered",
+        "fastStarClusterFilteredReproducibility",
+    ]
+
+
+def test_cluster_aggregation_is_gated_by_the_mode_hit(tmp_path):
+    """The aggregated cluster call must stay a STRICT SUBSET of the aggregated
+    mode call — the same relationship the per-sample columns have.
+
+    B is a cluster hit in both its samples but is NOT an aggregated fast-STAR
+    hit, so it cannot be a cluster-filtered hit either. Its reproducibility is
+    still reported: the ratio measures how reproducible the cluster evidence is,
+    independently of the gate.
+    """
+    rows = [
+        {"clonotypeKey": "A", "sampleId": "S1", "fastStarClusterFiltered": "Hit"},
+        {"clonotypeKey": "A", "sampleId": "S2", "fastStarClusterFiltered": "Not hit"},
+        {"clonotypeKey": "B", "sampleId": "S1", "fastStarClusterFiltered": "Hit"},
+        {"clonotypeKey": "B", "sampleId": "S2", "fastStarClusterFiltered": "Hit"},
+    ]
+    gate = [
+        {"clonotypeKey": "A", "fastStar": "Hit"},
+        {"clonotypeKey": "B", "fastStar": "Not hit"},
+    ]
+    meta = [{"sampleId": "S1", "unit": "D1"}, {"sampleId": "S2", "unit": "D2"}]
+    res, _ = _run_cluster_aggregate(tmp_path, rows, gate, metadata=meta)
+    assert res["A"]["fastStarClusterFiltered"] == "Hit"
+    assert res["B"]["fastStarClusterFiltered"] == "Not hit"  # gated out
+    # D = 2 units; A is a cluster hit in 1, B in 2.
+    assert res["A"]["fastStarClusterFilteredReproducibility"] == approx(0.5)
+    assert res["B"]["fastStarClusterFilteredReproducibility"] == approx(1.0)
+
+
+def test_cluster_aggregation_requires_a_gate(tmp_path):
+    # Without the gate the subset invariant cannot be enforced, so refuse.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    inp = tmp_path / "in.tsv"
+    pd.DataFrame(
+        [{"clonotypeKey": "A", "sampleId": "S1", "fastStarClusterFiltered": "Hit"}]
+    ).to_csv(inp, sep="\t", index=False)
+    proc = subprocess.run(
+        [
+            sys.executable, str(SRC / "aggregate.py"),
+            "--input", str(inp), "--output", str(tmp_path / "out.tsv"),
+            "--chain", "IGHeavy", "--method", "cluster-filter", "--alpha", "0.005",
+            "--hit-column", "fastStarClusterFiltered",
+            "--reproducibility-column", "fastStarClusterFilteredReproducibility",
+        ],
+        capture_output=True, text=True, cwd=str(SRC),
+    )
+    assert proc.returncode == 2
+    assert "--gate" in proc.stdout
+
+
+def test_expected_filter_matching_nothing_is_an_error(tmp_path):
+    """A filter that keeps no sample must FAIL, not export an empty table.
+
+    The values are matched as text on both sides — the selection comes from the
+    UI, the column values arrive through a TSV — so a numeric metadata column
+    can render "1.0" against a selected "1" and match nothing. Silently emitting
+    an empty aggregate is indistinguishable from a real empty result, and gives
+    the user nothing to act on. The message must name both value sets.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    inp = tmp_path / "in.tsv"
+    pd.DataFrame(
+        [{"clonotypeKey": "A", "sampleId": "S1", "fullStarScore": 4.0, "fullStar": "Hit"}]
+    ).to_csv(inp, sep="\t", index=False)
+    meta = tmp_path / "meta.tsv"
+    pd.DataFrame([{"sampleId": "S1", "unit": "D1", "expected": "1.0"}]).to_csv(
+        meta, sep="\t", index=False
+    )
+    out = tmp_path / "out.tsv"
+    proc = subprocess.run(
+        [
+            sys.executable, str(SRC / "aggregate.py"),
+            "--input", str(inp), "--output", str(out),
+            "--chain", "IGHeavy", "--method", "full-STAR", "--alpha", "0.005",
+            *FULL, "--metadata", str(meta), "--expected-values", '["1"]',
+        ],
+        capture_output=True, text=True, cwd=str(SRC),
+    )
+    assert proc.returncode == 2, f"expected a hard failure, got {proc.returncode}"
+    assert "matched none" in proc.stdout
+    assert "'1'" in proc.stdout and "'1.0'" in proc.stdout  # both sides reported
+    assert not out.exists(), "no output file should be written on this failure"
+
+
 def test_private_clone_included(tmp_path):
     # A single-donor clone is never emptied — it keeps a score and a call.
     rows = [{"clonotypeKey": "P", "sampleId": "S1", "score": 7.0, "hit": "Hit"}]

@@ -349,30 +349,44 @@ wf.body(func(args) {
 					}
 				}})
 		}
-		if args.applyClusterFilter {
-			columnSpecs = append(columnSpecs,
-				{ column: "fastStarClusterFiltered", spec: {
-					name: "pl7.app/vdj/convergence/fastStarClusterFiltered",
+		// Cluster filter — one filtered + size pair PER EMITTED MODE. The sizes
+		// differ between modes by construction (clusters are computed over each
+		// mode's own hit subset), so they cannot share a column.
+		clusterSpecsFor := func(modeName, filteredCol, sizeCol) {
+			return [
+				{ column: filteredCol, spec: {
+					name: "pl7.app/vdj/convergence/" + filteredCol,
 					valueType: "String",
 					domain: convDomain,
 					annotations: {
-						"pl7.app/label": withChain("Convergent hit (cluster-filtered)"),
-						"pl7.app/description": "Hit when a fast-STAR hit's CDR3 also sits in a cluster of CDR3s one edit apart, of at least the minimum cluster size. Per sample.",
+						"pl7.app/label": withChain("Convergent hit (cluster-filtered, " + modeName + ")"),
+						"pl7.app/description": "Hit when a " + modeName + " hit's CDR3 also sits in a cluster of CDR3s one edit apart, of at least the minimum cluster size. Per sample.",
 						"pl7.app/table/visibility": "default",
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"]))
 					}
 				}},
-				{ column: "clusterSize", spec: {
-					name: "pl7.app/vdj/convergence/clusterSize",
+				{ column: sizeCol, spec: {
+					name: "pl7.app/vdj/convergence/" + sizeCol,
 					valueType: "Int",
 					domain: convDomain,
 					annotations: {
-						"pl7.app/label": withChain("Convergent cluster size"),
-						"pl7.app/description": "Number of CDR3s in the one-edit cluster this clone belongs to. Per sample.",
+						"pl7.app/label": withChain("Convergent cluster size (" + modeName + ")"),
+						"pl7.app/description": "Number of CDR3s in the one-edit cluster this clone belongs to, among this sample's " + modeName + " hits. Per sample.",
 						"pl7.app/table/visibility": "default"
 					}
-				}})
+				}}
+			]
+		}
+		if args.applyClusterFilter {
+			for s in clusterSpecsFor("fast-STAR", "fastStarClusterFiltered", "fastStarClusterSize") {
+				columnSpecs = append(columnSpecs, s)
+			}
+			if hasPgen {
+				for s in clusterSpecsFor("full-STAR", "fullStarClusterFiltered", "fullStarClusterSize") {
+					columnSpecs = append(columnSpecs, s)
+				}
+			}
 		}
 
 		perSampleResult := pframes.processColumn(
@@ -565,6 +579,38 @@ wf.body(func(args) {
 			return cmd.run().getFile("aggregated.tsv")
 		}
 
+		// aggregateClusterMode — the cluster-filtered column's own aggregation.
+		// Hit-only (no score), so it emits a hit + reproducibility PAIR, and it
+		// takes the mode's already-aggregated TSV as a GATE: the aggregated
+		// cluster hit is the mode's aggregated hit AND a cluster hit in >= 1
+		// unit, which keeps it a strict subset of the mode call at this level
+		// exactly as it is per sample.
+		aggregateClusterMode := func(filteredCol, reproCol, gateTsv, gateHitCol) {
+			cmd := exec.builder().
+				software(aggregateSw).
+				cpu(1).
+				mem("4GiB").
+				arg("--input").arg("per_sample.tsv").
+				arg("--output").arg("aggregated.tsv").
+				arg("--chain").arg(chainName).
+				arg("--method").arg("cluster-filter").
+				arg("--hit-column").arg(filteredCol).
+				arg("--reproducibility-column").arg(reproCol).
+				arg("--gate").arg("gate.tsv").
+				arg("--gate-hit-column").arg(gateHitCol).
+				arg("--alpha").arg(string(alpha)).
+				addFile("per_sample.tsv", perSampleTsv).
+				addFile("gate.tsv", gateTsv).
+				saveFile("aggregated.tsv")
+			if !is_undefined(metaTsv) {
+				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
+				if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
+					cmd = cmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+				}
+			}
+			return cmd.run().getFile("aggregated.tsv")
+		}
+
 		// statsFor — hit-count badge {above,total} over one mode's aggregated TSV.
 		// `statsWf`, not `wf`: the module-level `wf` is the workflow SDK import,
 		// and shadowing it inside a closure reads as a bug even when it isn't.
@@ -676,6 +722,26 @@ wf.body(func(args) {
 		])
 		statsFast := statsFor(fastAggTsv, "fastStar")
 
+		// addClusterMode — aggregate one mode's cluster-filtered column and add
+		// the resulting hit + reproducibility pair to both export families.
+		// Cluster SIZE is deliberately absent: it is a per-sample diagnostic
+		// (like neighbours) with no defensible single value per clonotype.
+		addClusterMode := func(modeName, filteredCol, gateTsv, gateHitCol) {
+			reproCol := filteredCol + "Reproducibility"
+			aggTsv := aggregateClusterMode(filteredCol, reproCol, gateTsv, gateHitCol)
+			addMode(aggTsv, [
+				aggHitSpec(filteredCol,
+					"Convergent hit (cluster-filtered, " + modeName + ")",
+					"Hit when this clone is an aggregated " + modeName + " hit AND its CDR3 sits in a cluster of CDR3s one edit apart, of at least the minimum cluster size, in at least one replicate."),
+				aggReproSpec(reproCol,
+					"Convergent hit reproducibility (cluster-filtered, " + modeName + ")",
+					reproDescFor(modeName + " cluster-filtered", "a cluster-filtered hit"))
+			])
+		}
+		if args.applyClusterFilter {
+			addClusterMode("fast-STAR", "fastStarClusterFiltered", fastAggTsv, "fastStar")
+		}
+
 		// full-STAR: added when this chain has Pgen. Score and hit are two faces of
 		// one statistic — Fisher's combination of the per-replicate p-values, and that
 		// combination's own chi2 p-value put through BH across clonotypes.
@@ -699,6 +765,9 @@ wf.body(func(args) {
 				aggReproSpec("fullStarReproducibility", "Convergent hit reproducibility (full-STAR)", reproDescFor("full-STAR", "the FDR-controlled within-sample call"))
 			])
 			statsFull = statsFor(fullAggTsv, "fullStar")
+			if args.applyClusterFilter {
+				addClusterMode("full-STAR", "fullStarClusterFiltered", fullAggTsv, "fullStar")
+			}
 		}
 
 		// Pool export also carries the full per-sample neighbours column (both axes)

@@ -164,24 +164,40 @@ self.body(func(inputs) {
 	callDf.save("called.tsv")
 	calledTsv := callWf.run().getFile("called.tsv")
 
-	// Stage 3 — paper's cluster filter, only when enabled. Refines the fast-STAR
-	// hit (fastStar) → fastStarClusterFiltered + clusterSize. One sample
-	// per invocation, so clustering is within this sample's rows.
+	// Stage 3 — paper's cluster filter, only when enabled. Runs ONCE PER EMITTED
+	// MODE, refining that mode's hit set: fastStar always, fullStar too when
+	// this chain carries full-STAR. Each mode gets its own filtered + size
+	// columns because clusters are computed over the HIT SUBSET — the two hit
+	// sets differ, so their cluster structures (and sizes) differ with them.
+	// One sample per invocation, so clustering is within this sample's rows.
+	//
+	// Chained, not parallel: each invocation appends its two columns to the
+	// whole table, so the second must start from the first's output.
+	clusterModes := [{ hit: "fastStar", filtered: "fastStarClusterFiltered", size: "fastStarClusterSize" }]
+	if hasPgen {
+		clusterModes = append(clusterModes, { hit: "fullStar", filtered: "fullStarClusterFiltered", size: "fullStarClusterSize" })
+	}
+
 	finalTsv := calledTsv
 	if inputs.applyClusterFilter {
-		clusterCmd := exec.builder().
-			software(clusterFilterSw).
-			cpu(1).
-			mem("4GiB").
-			arg("--input").arg("called.tsv").
-			arg("--output").arg("output.tsv").
-			arg("--cluster-min").arg(string(inputs.clusterMin)).
-			arg("--chain").arg(inputs.chain).
-			arg("--hit-column").arg("fastStar").
-			addFile("called.tsv", finalTsv).
-			saveFile("output.tsv").
-			run()
-		finalTsv = clusterCmd.getFile("output.tsv")
+		for i, mode in clusterModes {
+			outName := "clustered_" + string(i) + ".tsv"
+			clusterCmd := exec.builder().
+				software(clusterFilterSw).
+				cpu(1).
+				mem("4GiB").
+				arg("--input").arg("called.tsv").
+				arg("--output").arg(outName).
+				arg("--cluster-min").arg(string(inputs.clusterMin)).
+				arg("--chain").arg(inputs.chain).
+				arg("--hit-column").arg(mode.hit).
+				arg("--filtered-column").arg(mode.filtered).
+				arg("--size-column").arg(mode.size).
+				addFile("called.tsv", finalTsv).
+				saveFile(outName).
+				run()
+			finalTsv = clusterCmd.getFile(outName)
+		}
 	}
 
 	return {

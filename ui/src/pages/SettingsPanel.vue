@@ -334,10 +334,12 @@ const fullStarHint = computed<string | undefined>(() => {
       Apply cluster filter
       <PlTooltip class="info" position="top">
         <template #tooltip>
-          Adds a stricter hit definition alongside the threshold-only one: clonotypes whose CDR3
-          sits in a cluster of similar CDR3s (one-edit distance) of at least the size below.
-          Mitigates sequencing-error noise and matches Abbate et al. 2024's headline "binder"
-          definition. Off by default — the threshold-only hit column stays as the primary signal.
+          Adds a stricter hit definition alongside each existing one: clonotypes whose CDR3 sits in
+          a cluster of similar CDR3s (one-edit distance) of at least the size below. Applied to
+          every hit call the block emits, so fast-STAR and full-STAR each get their own
+          cluster-filtered column. Mitigates sequencing-error noise and matches Abbate et al. 2024's
+          headline "binder" definition. Off by default — the unfiltered hit columns stay as the
+          primary signal.
         </template>
       </PlTooltip>
     </PlCheckbox>
