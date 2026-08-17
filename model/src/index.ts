@@ -627,9 +627,17 @@ export const platforma = BlockModelV3.create(blockDataModel)
   // never appears. Returning undefined during a run keeps the table
   // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
   .output("mainTableSheets", (ctx) => {
-    if (!ctx.data.datasetRef) return undefined;
     if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ctx.data.datasetRef);
+    // From activeArgs, NOT ctx.data.datasetRef: the table this picker sits above
+    // is built from the args that produced the CURRENT rows. Reading the live
+    // pick instead let the two disagree — select another dataset, don't press
+    // Run, and the picker listed the new dataset's samples over the old
+    // dataset's data. Same source as mainTableSourceId, so sheet and table
+    // always describe the same run.
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    const ref = args?.chainH ?? args?.chainL;
+    if (!ref) return undefined;
+    const anchor = ctx.resultPool.getPColumnByRef(ref);
     if (!anchor) return undefined;
     const samples = getUniquePartitionKeys(anchor.data)?.[0];
     if (!samples) return undefined;

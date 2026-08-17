@@ -31,3 +31,10 @@ The table's source identifier now covers which column families a run emits
 so any change to the set of existing columns resets the layout. The trade-off is
 that those transitions also reset manual column choices and sort order for that
 table, exactly as a dataset change already did.
+
+**The sample picker described a different run from the table under it.** The
+per-sample table's sheet selector was built from the dataset currently selected
+in Settings, while the table itself is built from the args that produced the
+current rows. Selecting another dataset without pressing Run therefore listed
+the new dataset's samples above the old dataset's data. The picker now reads the
+same committed args as the table.
