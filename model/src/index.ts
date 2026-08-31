@@ -1,7 +1,7 @@
 import type {
   InferOutputsType,
-  PColumnSpec,
   PFrameHandle,
+  PObjectId,
   PlRef,
   RenderCtx,
 } from "@platforma-sdk/model";
@@ -30,7 +30,6 @@ import { blockDataModel } from "./dataModel";
 import { discoverUpstreamFacts } from "./facts";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import { getPColumnSpecId } from "@platforma-sdk/model";
 import type { ColumnRecipe } from "@platforma-sdk/model";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
@@ -101,18 +100,20 @@ function buildSkippedSamples<A, U>(
 // universe (they are joined by `primaryJoinType`, the rest are joined onto
 // them) and which axes stay visible (`buildColumnsMeta` hides every axis that
 // no primary column carries). Handing the whole split through as primary
-// widens both. So the anchor is picked out here by spec identity, restoring
-// "the anchor alone is primary".
-function splitOnAnchor(columns: ColumnRecipe[], anchorSpec: PColumnSpec) {
-  const keyOf = (spec: PColumnSpec) =>
-    canonicalize(getPColumnSpecId(spec) as unknown as Record<string, unknown>);
-  const anchorKey = keyOf(anchorSpec);
-  const primary = columns.filter((c) => keyOf(c.getSpec()) === anchorKey);
+// widens both, so the anchor is separated out again by its own id.
+//
+// Both sides come from the same discovery call rather than the anchor being
+// passed in from `pCols` directly: discovery wraps each hit's id, and mixing a
+// bare leaf id into `primaryColumns` would stop it matching its wrapped twin in
+// `columns`, leaving the anchor in both lists and rendered twice.
+function splitOnAnchor(columns: ColumnRecipe[], anchorId: PObjectId) {
+  const isAnchor = (c: ColumnRecipe) => c.getReferencedIds().includes(anchorId);
+  const primary = columns.filter(isAnchor);
   // The anchor is always among the enrichment hits, so this is belt-and-braces:
   // an empty primary list would render an empty table, which is worse than the
   // wider one it replaces.
   if (primary.length === 0) return { primary: columns, secondary: [] };
-  return { primary, secondary: columns.filter((c) => keyOf(c.getSpec()) !== anchorKey) };
+  return { primary, secondary: columns.filter((c) => !isAnchor(c)) };
 }
 
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
@@ -622,10 +623,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
         allowPermanentAbsence: true,
       })
       ?.getPColumns();
-    const starHitSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!starHitSpec) return undefined;
+    const starHit = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/fastStar");
+    if (!starHit) return undefined;
+    const starHitSpec = starHit.spec;
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -691,7 +691,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
 
     const mainColumns = splitOnAnchor(
       [...variants.primary, ...variants.secondary].filter(keep),
-      starHitSpec,
+      starHit.id,
     );
 
     return createPlDataTableV3(ctx, {
@@ -771,10 +771,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
     const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const starHitSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!starHitSpec) return undefined;
+    const starHit = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/fastStar");
+    if (!starHit) return undefined;
+    const starHitSpec = starHit.spec;
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
     // axis: pull every column sharing the clonotypeKey axis from the pool
@@ -824,7 +823,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
 
     const aggregatedColumns = splitOnAnchor(
       [...variants.primary, ...variants.secondary].filter(keep),
-      starHitSpec,
+      starHit.id,
     );
 
     return createPlDataTableV3(ctx, {
