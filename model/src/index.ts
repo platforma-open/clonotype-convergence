@@ -1,4 +1,10 @@
-import type { InferOutputsType, PFrameHandle, PlRef, RenderCtx } from "@platforma-sdk/model";
+import type {
+  InferOutputsType,
+  PColumnSpec,
+  PFrameHandle,
+  PlRef,
+  RenderCtx,
+} from "@platforma-sdk/model";
 import {
   BlockModelV3,
   createPlDataTableSheet,
@@ -24,6 +30,7 @@ import { blockDataModel } from "./dataModel";
 import { discoverUpstreamFacts } from "./facts";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
+import { getPColumnSpecId } from "@platforma-sdk/model";
 import type { ColumnRecipe } from "@platforma-sdk/model";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
@@ -82,6 +89,30 @@ function buildSkippedSamples<A, U>(
   noCdr3.sort((a, b) => a.localeCompare(b));
   const allEmpty = parsed.data.length === 0;
   return { belowMin, noCdr3, allEmpty, nMin };
+}
+
+// `discoverTableColumnSnaphots` kept its name across the 1.83 SDK bump but
+// changed meaning. It used to return a flat list whose per-item `isPrimary`
+// flag was set only for the column that IS the anchor; it now returns a
+// { primary, secondary } split where "primary" means "reachable without a
+// join", which under this block's `maxHops: 0` is every discovered column.
+//
+// That distinction is load-bearing: primary columns decide the table's row
+// universe (they are joined by `primaryJoinType`, the rest are joined onto
+// them) and which axes stay visible (`buildColumnsMeta` hides every axis that
+// no primary column carries). Handing the whole split through as primary
+// widens both. So the anchor is picked out here by spec identity, restoring
+// "the anchor alone is primary".
+function splitOnAnchor(columns: ColumnRecipe[], anchorSpec: PColumnSpec) {
+  const keyOf = (spec: PColumnSpec) =>
+    canonicalize(getPColumnSpecId(spec) as unknown as Record<string, unknown>);
+  const anchorKey = keyOf(anchorSpec);
+  const primary = columns.filter((c) => keyOf(c.getSpec()) === anchorKey);
+  // The anchor is always among the enrichment hits, so this is belt-and-braces:
+  // an empty primary list would render an empty table, which is worse than the
+  // wider one it replaces.
+  if (primary.length === 0) return { primary: columns, secondary: [] };
+  return { primary, secondary: columns.filter((c) => keyOf(c.getSpec()) !== anchorKey) };
 }
 
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
@@ -658,11 +689,14 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     };
 
+    const mainColumns = splitOnAnchor(
+      [...variants.primary, ...variants.secondary].filter(keep),
+      starHitSpec,
+    );
+
     return createPlDataTableV3(ctx, {
-      // discoverTableColumns now splits its hits into direct anchor matches
-      // and linker-reached ones; the filter is the same on both sides.
-      primaryColumns: variants.primary.filter(keep),
-      columns: variants.secondary.filter(keep),
+      primaryColumns: mainColumns.primary,
+      columns: mainColumns.secondary,
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
@@ -788,9 +822,14 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.domain?.["pl7.app/block"] === thisBlockId;
     };
 
+    const aggregatedColumns = splitOnAnchor(
+      [...variants.primary, ...variants.secondary].filter(keep),
+      starHitSpec,
+    );
+
     return createPlDataTableV3(ctx, {
-      primaryColumns: variants.primary.filter(keep),
-      columns: variants.secondary.filter(keep),
+      primaryColumns: aggregatedColumns.primary,
+      columns: aggregatedColumns.secondary,
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: [
