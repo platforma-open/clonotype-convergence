@@ -2,12 +2,17 @@ import type { PlRef } from "@platforma-sdk/model";
 import { platforma } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import { defineAppV3 } from "@platforma-sdk/ui-vue";
 import { watch } from "vue";
+import { factsFor, labelFor } from "./datasetSnapshot";
 import AggregatedDistributionPage from "./pages/AggregatedDistributionPage.vue";
 import MainPage from "./pages/MainPage.vue";
 import PerSampleDistributionPage from "./pages/PerSampleDistributionPage.vue";
 import PerSamplePage from "./pages/PerSamplePage.vue";
 
 export const sdkPlugin = defineAppV3(platforma, (app) => {
+  // Build the dataset snapshot for a `datasetRef` that arrived without one.
+  // Must run before syncPgenAvailability, which only refreshes an existing
+  // snapshot.
+  backfillDatasetSnapshot(app.model);
   // Keep the dataset snapshot's Generation Probability fields live (A-0010).
   syncPgenAvailability(app.model);
   return {
@@ -65,6 +70,36 @@ function syncPgenAvailability(model: AppModel) {
         return;
       }
       model.data.datasetFacts = { ...facts, ...status };
+    },
+    { immediate: true, deep: true },
+  );
+}
+
+// A project template seeds `datasetRef` alone: `datasetFacts` and
+// `datasetLabel` are derived from the pool, so the kind's init-params contract
+// leaves them out and the block starts with a ref and no snapshot. Nothing
+// else fills that gap -- `onPickDataset` treats re-picking the same ref as a
+// no-op (deliberately, so pool churn can't downgrade a good snapshot), and
+// `syncPgenAvailability` returns early when there are no facts to refresh. So
+// without this the seeded block stays non-runnable on "Select a dataset" until
+// the user clears the picker and reselects.
+//
+// Reads the same two outputs the picker does, so a seeded snapshot is
+// identical to a picked one. Fires at most once per ref: the guard is
+// "facts are missing", and writing them makes it false. No loop -- `factsByRef`
+// derives from `datasetRef` and the pool, never from the fields written here.
+// An absent entry (options not resolved yet) is left for a later tick rather
+// than written as a partial snapshot.
+function backfillDatasetSnapshot(model: AppModel) {
+  watch(
+    () => [model.data.datasetRef, model.outputs.factsByRef, model.outputs.datasetOptions] as const,
+    () => {
+      const ref = model.data.datasetRef;
+      if (!ref || model.data.datasetFacts) return;
+      const facts = factsFor(model, ref);
+      if (!facts) return;
+      model.data.datasetFacts = facts;
+      model.data.datasetLabel ??= labelFor(model, ref);
     },
     { immediate: true, deep: true },
   );

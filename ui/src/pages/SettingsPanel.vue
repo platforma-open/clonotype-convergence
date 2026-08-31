@@ -17,9 +17,9 @@ import {
   isLight,
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
-import canonicalize from "canonicalize";
 import { computed, ref } from "vue";
 import { useApp } from "../app";
+import { factsFor, labelFor } from "../datasetSnapshot";
 
 const app = useApp();
 
@@ -69,26 +69,6 @@ const reproducibilityWeightModel = computed<number>({
   },
 });
 
-const factsFor = (ref: PlRef | undefined) => {
-  if (!ref) return undefined;
-  const key = canonicalize(ref as unknown as Record<string, unknown>);
-  if (key === undefined) return undefined;
-  const facts = app.model.outputs.factsByRef?.[key];
-  // Return a copy so the persisted snapshot in `data` doesn't alias the
-  // reactive outputs object.
-  return facts ? { ...facts, chains: [...facts.chains] } : undefined;
-};
-
-// Look up the dataset label as shown in the dropdown for the picked ref.
-// Snapshotted at pick time so the page subtitle renders without having
-// to re-resolve options later.
-const labelFor = (ref: PlRef | undefined): string | undefined => {
-  if (!ref) return undefined;
-  return app.model.outputs.datasetOptions?.find(
-    (o) => o.ref.blockId === ref.blockId && o.ref.name === ref.name,
-  )?.label;
-};
-
 // Snapshot pattern: when the user picks the input dataset, write
 // `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
 // user-gesture handler. Reads from the model's factsByRef map +
@@ -112,8 +92,8 @@ function onPickDataset(ref: PlRef | undefined) {
   if (sameRef) return;
 
   app.model.data.datasetRef = ref;
-  app.model.data.datasetFacts = factsFor(ref);
-  app.model.data.datasetLabel = labelFor(ref);
+  app.model.data.datasetFacts = factsFor(app.model, ref);
+  app.model.data.datasetLabel = labelFor(app.model, ref);
   app.model.data.processLightChain = false;
 }
 
