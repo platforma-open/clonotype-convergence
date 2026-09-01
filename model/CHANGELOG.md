@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.clonotype-convergence.model
 
+## 1.4.0
+
+### Minor Changes
+
+- 21ab756: Migrate onto the structurer and take the full SDK upgrade (block-tools 2.14.3, tengo-builder 4.0.23, model 1.83.0, ui-vue 1.83.3), porting the model onto the 1.83 column-discovery and column-selector APIs.
+
+  Adds the mandatory block kind. Its init-params contract is the dataset pick plus every analysis setting, so a project template can seed a fully configured Clonotype Convergence block.
+
 ## 1.3.0
 
 ### Minor Changes
