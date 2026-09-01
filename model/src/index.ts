@@ -1,10 +1,4 @@
-import type {
-  InferOutputsType,
-  PFrameHandle,
-  PObjectId,
-  PlRef,
-  RenderCtx,
-} from "@platforma-sdk/model";
+import type { InferOutputsType, PFrameHandle, PlRef, RenderCtx } from "@platforma-sdk/model";
 import {
   BlockModelV3,
   createPlDataTableSheet,
@@ -13,7 +7,6 @@ import {
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
-  isDataColumn,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
@@ -89,31 +82,6 @@ function buildSkippedSamples<A, U>(
   noCdr3.sort((a, b) => a.localeCompare(b));
   const allEmpty = parsed.data.length === 0;
   return { belowMin, noCdr3, allEmpty, nMin };
-}
-
-// Split the discovered columns the way `createPlDataTableV3` wants them: the
-// anchor alone is primary, everything else is joined onto it.
-//
-// Which columns are primary is load-bearing, not cosmetic. Primary columns
-// decide the table's row universe (they are joined by `primaryJoinType`, the
-// rest are joined onto them) and which axes stay visible (`buildColumnsMeta`
-// hides every axis that no primary column carries), so widening the primary
-// set widens both.
-//
-// The anchor is matched by its own id rather than by spec: `getReferencedIds`
-// unwraps a discovered hit's id down to the leaf `PObjectId`, which is the id
-// the caller already holds. Passing that leaf recipe straight to
-// `primaryColumns` instead would not work -- it would not match its wrapped
-// twin among the discovered columns, so the anchor would sit in both lists and
-// render twice.
-function splitOnAnchor(columns: ColumnRecipe[], anchorId: PObjectId) {
-  const isAnchor = (c: ColumnRecipe) => isDataColumn(c) && c.getReferencedIds().includes(anchorId);
-  const primary = columns.filter(isAnchor);
-  // The anchor is always among the enrichment hits, so this is belt-and-braces:
-  // an empty primary list would render an empty table, which is worse than the
-  // wider one it replaces.
-  if (primary.length === 0) return { primary: columns, secondary: [] };
-  return { primary, secondary: columns.filter((c) => !isAnchor(c)) };
 }
 
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
@@ -616,16 +584,19 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     if (!ref) return undefined;
     if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: pframeField,
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+    const pframe = ctx.outputs?.resolve({
+      field: pframeField,
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!pframe) return undefined;
+    const starHit = ColumnsCollection([pframe])
+      .filter({
+        include: [{ name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" } }],
       })
-      ?.getPColumns();
-    const starHit = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/fastStar");
+      .getColumns()[0];
     if (!starHit) return undefined;
-    const starHitSpec = starHit.spec;
+    const starHitSpec = starHit.getSpec();
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -655,6 +626,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
         // columns whose axes are *exactly* [sampleId] (multi-axis
         // columns that include sampleId stay).
         exclude: [
+          {
+            name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" },
+          },
           {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: false,
@@ -689,11 +663,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     };
 
-    const mainColumns = splitOnAnchor(discovered.filter(keep), starHit.id);
-
     return createPlDataTableV3(ctx, {
-      primaryColumns: mainColumns.primary,
-      columns: mainColumns.secondary,
+      primaryColumns: [starHit],
+      columns: discovered.filter(keep),
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
@@ -767,10 +739,15 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // stays up during the whole run (this view has no `sheets` to drive the
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const starHit = pCols?.find((c) => c.spec.name === "pl7.app/vdj/convergence/fastStar");
+    const pframe = ctx.outputs?.resolve(field);
+    if (!pframe) return undefined;
+    const starHit = ColumnsCollection([pframe])
+      .filter({
+        include: [{ name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" } }],
+      })
+      .getColumns()[0];
     if (!starHit) return undefined;
-    const starHitSpec = starHit.spec;
+    const starHitSpec = starHit.getSpec();
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
     // axis: pull every column sharing the clonotypeKey axis from the pool
@@ -791,6 +768,12 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
         // table back out over samples. partialAxesMatch:true excludes columns
         // that merely INCLUDE sampleId, not only exact [sampleId].
         exclude: [
+          // The anchor is supplied directly as the primary column, so keeping it
+          // out here leaves the two sets disjoint by construction. The sampleId
+          // rule below cannot do it: this anchor is clonotype-only.
+          {
+            name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" },
+          },
           {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: true,
@@ -817,11 +800,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.domain?.["pl7.app/block"] === thisBlockId;
     };
 
-    const aggregatedColumns = splitOnAnchor(discovered.filter(keep), starHit.id);
-
     return createPlDataTableV3(ctx, {
-      primaryColumns: aggregatedColumns.primary,
-      columns: aggregatedColumns.secondary,
+      primaryColumns: [starHit],
+      columns: discovered.filter(keep),
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: [
