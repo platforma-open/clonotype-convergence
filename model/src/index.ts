@@ -13,6 +13,7 @@ import {
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
+  isDataColumn,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
@@ -106,7 +107,7 @@ function buildSkippedSamples<A, U>(
 // twin among the discovered columns, so the anchor would sit in both lists and
 // render twice.
 function splitOnAnchor(columns: ColumnRecipe[], anchorId: PObjectId) {
-  const isAnchor = (c: ColumnRecipe) => c.getReferencedIds().includes(anchorId);
+  const isAnchor = (c: ColumnRecipe) => isDataColumn(c) && c.getReferencedIds().includes(anchorId);
   const primary = columns.filter(isAnchor);
   // The anchor is always among the enrichment hits, so this is belt-and-braces:
   // an empty primary list would render an empty table, which is worse than the
@@ -658,22 +659,24 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: false,
           },
+          // gen-prob's Pgen columns are a full-STAR INPUT, not a convergence
+          // result, so they are noise in this table. Plain name match -- no
+          // negation needed, so the driver can do it.
+          {
+            name: [
+              { type: "exact", value: "pl7.app/vdj/generationProbability" },
+              { type: "exact", value: "pl7.app/vdj/negLog10GenerationProbability" },
+            ],
+          },
         ],
       })
       .getColumns();
-    // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
-    // and this block's own convergence columns; drop convergence columns
-    // produced by other instances of this block.
+    // What the `exclude` selectors above cannot say. Both remaining rules need
+    // a negation ("block is NOT this one", "axes do NOT include sampleId"), and
+    // the selector vocabulary has none -- `domain` matchers require a key to be
+    // present and match, and there is no "not". Hence JS.
     const keep = (v: ColumnRecipe) => {
       const spec = v.getSpec();
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
@@ -792,22 +795,23 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: true,
           },
+          // gen-prob's Pgen columns are a full-STAR INPUT, not a convergence
+          // result, so they are noise in this table. Plain name match -- no
+          // negation needed, so the driver can do it.
+          {
+            name: [
+              { type: "exact", value: "pl7.app/vdj/generationProbability" },
+              { type: "exact", value: "pl7.app/vdj/negLog10GenerationProbability" },
+            ],
+          },
         ],
       })
       .getColumns();
-    // Keep all non-convergence enrichment and this block's own convergence
-    // columns; drop convergence columns produced by other instances of this
-    // block (see mainTable for the same rationale).
+    // Drop convergence columns produced by OTHER instances of this block --
+    // "block is not this one" needs a negation the selector vocabulary has
+    // none of, so it cannot join the `exclude` list above.
     const keep = (v: ColumnRecipe) => {
       const spec = v.getSpec();
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true;
       return spec.domain?.["pl7.app/block"] === thisBlockId;
