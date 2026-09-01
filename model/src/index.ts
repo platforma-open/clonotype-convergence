@@ -9,7 +9,7 @@ import {
   BlockModelV3,
   createPlDataTableSheet,
   createPlDataTableV3,
-  discoverTableColumnSnaphots,
+  ColumnsCollection,
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
@@ -90,22 +90,21 @@ function buildSkippedSamples<A, U>(
   return { belowMin, noCdr3, allEmpty, nMin };
 }
 
-// `discoverTableColumnSnaphots` kept its name across the 1.83 SDK bump but
-// changed meaning. It used to return a flat list whose per-item `isPrimary`
-// flag was set only for the column that IS the anchor; it now returns a
-// { primary, secondary } split where "primary" means "reachable without a
-// join", which under this block's `maxHops: 0` is every discovered column.
+// Split the discovered columns the way `createPlDataTableV3` wants them: the
+// anchor alone is primary, everything else is joined onto it.
 //
-// That distinction is load-bearing: primary columns decide the table's row
-// universe (they are joined by `primaryJoinType`, the rest are joined onto
-// them) and which axes stay visible (`buildColumnsMeta` hides every axis that
-// no primary column carries). Handing the whole split through as primary
-// widens both, so the anchor is separated out again by its own id.
+// Which columns are primary is load-bearing, not cosmetic. Primary columns
+// decide the table's row universe (they are joined by `primaryJoinType`, the
+// rest are joined onto them) and which axes stay visible (`buildColumnsMeta`
+// hides every axis that no primary column carries), so widening the primary
+// set widens both.
 //
-// Both sides come from the same discovery call rather than the anchor being
-// passed in from `pCols` directly: discovery wraps each hit's id, and mixing a
-// bare leaf id into `primaryColumns` would stop it matching its wrapped twin in
-// `columns`, leaving the anchor in both lists and rendered twice.
+// The anchor is matched by its own id rather than by spec: `getReferencedIds`
+// unwraps a discovered hit's id down to the leaf `PObjectId`, which is the id
+// the caller already holds. Passing that leaf recipe straight to
+// `primaryColumns` instead would not work -- it would not match its wrapped
+// twin among the discovered columns, so the anchor would sit in both lists and
+// render twice.
 function splitOnAnchor(columns: ColumnRecipe[], anchorId: PObjectId) {
   const isAnchor = (c: ColumnRecipe) => c.getReferencedIds().includes(anchorId);
   const primary = columns.filter(isAnchor);
@@ -635,9 +634,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // the block domain here. This block's id sits on the anchor's own
     // domain (pl7.app/block).
     const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
-    const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: starHitSpec },
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment
         // traverses linkers from the clonotype axis into other blocks' axis
@@ -660,10 +659,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
             partialAxesMatch: false,
           },
         ],
-      },
-    });
-    if (!variants) return undefined;
-
+      })
+      .getColumns();
     // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
     // and this block's own convergence columns; drop convergence columns
     // produced by other instances of this block.
@@ -689,10 +686,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
     };
 
-    const mainColumns = splitOnAnchor(
-      [...variants.primary, ...variants.secondary].filter(keep),
-      starHit.id,
-    );
+    const mainColumns = splitOnAnchor(discovered.filter(keep), starHit.id);
 
     return createPlDataTableV3(ctx, {
       primaryColumns: mainColumns.primary,
@@ -783,9 +777,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // enrichment to the anchor's own axis (no linker hops into cluster/space
     // axis systems).
     const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
-    const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: starHitSpec },
         mode: "enrichment",
         maxHops: 0,
         // One row per clonotype: drop any column carrying a sampleId axis (the
@@ -799,10 +793,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
             partialAxesMatch: true,
           },
         ],
-      },
-    });
-    if (!variants) return undefined;
-
+      })
+      .getColumns();
     // Keep all non-convergence enrichment and this block's own convergence
     // columns; drop convergence columns produced by other instances of this
     // block (see mainTable for the same rationale).
@@ -821,10 +813,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       return spec.domain?.["pl7.app/block"] === thisBlockId;
     };
 
-    const aggregatedColumns = splitOnAnchor(
-      [...variants.primary, ...variants.secondary].filter(keep),
-      starHit.id,
-    );
+    const aggregatedColumns = splitOnAnchor(discovered.filter(keep), starHit.id);
 
     return createPlDataTableV3(ctx, {
       primaryColumns: aggregatedColumns.primary,
