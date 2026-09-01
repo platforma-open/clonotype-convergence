@@ -1,4 +1,5 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
+import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
 import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
 import { DEFAULT_ALPHA, DEFAULT_NMIN } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
@@ -15,7 +16,7 @@ const distGraphState = (title: string, scale: "linear" | "log"): GraphMakerState
   axesSettings: { axisY: { axisLabelsAngle: 90, scale }, other: { binsCount: 30 } },
 });
 
-export const blockDataModel = new DataModelBuilder()
+export const blockDataModel = new DataModelBuilder({ kind })
   .from<BlockDataV1>("v1")
   // v2 — collapse the v1 dual-ref (mainRef/lightRef) into a single dataset
   // snapshot plus a `processLightChain` boolean, and map `axisName` →
@@ -72,14 +73,14 @@ export const blockDataModel = new DataModelBuilder()
         p.graphStatePerSample ?? distGraphState("Per-sample distribution", "log"),
     };
   })
-  .init(() => ({
+  .init(({ params }) => ({
     settingsOpen: true,
     logsOpen: false,
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
     // Empty string = user hasn't customised the label; the derived
     // chain/threshold subtitle shows as a placeholder in the page header.
-    customBlockLabel: "",
+    customBlockLabel: params?.customBlockLabel ?? "",
     // Heavy-chain fast-STAR threshold default 0.000961 (≈5% FDR target on
     // Abbate et al. 2024 human IgH calibration). fast-STAR runs on every chain,
     // so this is always in effect once heavy is processed.
@@ -87,23 +88,30 @@ export const blockDataModel = new DataModelBuilder()
     // value over-flags the lower-diversity light chain, so the user must enter
     // it explicitly. Until they do, a processed light chain leaves the block
     // non-runnable (the args gate throws → Run disabled).
-    thresholdH: 0.000961,
-    nMin: DEFAULT_NMIN,
+    thresholdH: params?.thresholdH ?? 0.000961,
+    nMin: params?.nMin ?? DEFAULT_NMIN,
     // full-STAR FDR target (Benjamini–Hochberg). STAR default 0.005.
-    alpha: DEFAULT_ALPHA,
+    alpha: params?.alpha ?? DEFAULT_ALPHA,
     // Cluster filter — off by default. Paper default 10 for cluster_min
     // when the toggle is on.
-    applyClusterFilter: false,
-    clusterMin: 10,
+    applyClusterFilter: params?.applyClusterFilter ?? false,
+    clusterMin: params?.clusterMin ?? 10,
     // Clonotype-only aggregation (A-0011). Defaults = the default path: no
     // metadata refs, every sample an independent eligible unit, k = 1. The
     // expected-values multiselect + the starScore weight are initialised so
     // their v-model bindings are well-typed. `w` default 0.5 (50/50).
-    expectedValues: [],
-    scoreWeight: 0.5,
+    expectedValues: params?.expectedValues ?? [],
+    scoreWeight: params?.scoreWeight ?? 0.5,
     // Two selector-driven distribution chart states (A-0015 v2) — see
     // distGraphState. Aggregated = the exported blend (linear Y); per-sample =
     // the long-tailed per-sample statistic (log Y).
     graphStateAggregated: distGraphState("Score distribution", "linear"),
     graphStatePerSample: distGraphState("Per-sample distribution", "log"),
+    // No init default of their own -- unset unless a template seeds them.
+    // `thresholdL` deliberately stays absent (see above).
+    datasetRef: params?.datasetRef,
+    processLightChain: params?.processLightChain,
+    thresholdL: params?.thresholdL,
+    expectedFilterRef: params?.expectedFilterRef,
+    groupingRef: params?.groupingRef,
   }));

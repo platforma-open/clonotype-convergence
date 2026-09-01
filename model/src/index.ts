@@ -1,15 +1,9 @@
-import type {
-  InferOutputsType,
-  PColumnSpec,
-  PFrameHandle,
-  PlRef,
-  RenderCtx,
-} from "@platforma-sdk/model";
+import type { InferOutputsType, PFrameHandle, PlRef, RenderCtx } from "@platforma-sdk/model";
 import {
   BlockModelV3,
   createPlDataTableSheet,
   createPlDataTableV3,
-  discoverTableColumnSnaphots,
+  ColumnsCollection,
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
@@ -29,6 +23,8 @@ import {
 import { blockDataModel } from "./dataModel";
 import { discoverUpstreamFacts } from "./facts";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
+import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
+import type { ColumnRecipe } from "@platforma-sdk/model";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
@@ -88,7 +84,7 @@ function buildSkippedSamples<A, U>(
   return { belowMin, noCdr3, allEmpty, nMin };
 }
 
-export const platforma = BlockModelV3.create(blockDataModel)
+export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
   .args((data): BlockArgs => {
     if (!data.datasetRef || !data.datasetFacts) {
       throw new Error("Select a dataset");
@@ -215,6 +211,27 @@ export const platforma = BlockModelV3.create(blockDataModel)
     args.scoreWeight = data.scoreWeight ?? 0.5;
     return args;
   })
+
+  // Inverse of the kind's init-params contract: the dataset pick, the
+  // light-chain opt-in and every analysis knob -- the fields a user sets by
+  // hand. `datasetFacts` and `datasetLabel` are derived from the pick (and
+  // refreshed from this block's outputs by the UI), and the table / chart
+  // states are view state; neither is configuration a template carries.
+  .templateParams((data) => ({
+    datasetRef: data.datasetRef,
+    processLightChain: data.processLightChain,
+    thresholdH: data.thresholdH,
+    thresholdL: data.thresholdL,
+    nMin: data.nMin,
+    alpha: data.alpha,
+    applyClusterFilter: data.applyClusterFilter,
+    clusterMin: data.clusterMin,
+    expectedFilterRef: data.expectedFilterRef,
+    expectedValues: data.expectedValues,
+    groupingRef: data.groupingRef,
+    scoreWeight: data.scoreWeight,
+    customBlockLabel: data.customBlockLabel,
+  }))
 
   // Dropdown offers any BCR-compatible anchor. Two shapes:
   //   - Bulk anchors (clonotypeKey axis): chain identity lives on the
@@ -567,17 +584,19 @@ export const platforma = BlockModelV3.create(blockDataModel)
     if (!ref) return undefined;
     if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: pframeField,
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
+    const pframe = ctx.outputs?.resolve({
+      field: pframeField,
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!pframe) return undefined;
+    const starHit = ColumnsCollection([pframe])
+      .filter({
+        include: [{ name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" } }],
       })
-      ?.getPColumns();
-    const starHitSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!starHitSpec) return undefined;
+      .getColumns()[0];
+    if (!starHit) return undefined;
+    const starHitSpec = starHit.getSpec();
 
     // Enrichment pulls every column sharing the anchor's axes from the
     // result pool — including convergence columns from OTHER convergence
@@ -587,9 +606,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // the block domain here. This block's id sits on the anchor's own
     // domain (pl7.app/block).
     const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
-    const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: starHitSpec },
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment
         // traverses linkers from the clonotype axis into other blocks' axis
@@ -608,27 +627,30 @@ export const platforma = BlockModelV3.create(blockDataModel)
         // columns that include sampleId stay).
         exclude: [
           {
+            name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" },
+          },
+          {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: false,
           },
+          // gen-prob's Pgen columns are a full-STAR INPUT, not a convergence
+          // result, so they are noise in this table. Plain name match -- no
+          // negation needed, so the driver can do it.
+          {
+            name: [
+              { type: "exact", value: "pl7.app/vdj/generationProbability" },
+              { type: "exact", value: "pl7.app/vdj/negLog10GenerationProbability" },
+            ],
+          },
         ],
-      },
-    });
-    if (!variants) return undefined;
-
-    // Keep all non-convergence enrichment (Clone ID, genes, abundance, …)
-    // and this block's own convergence columns; drop convergence columns
-    // produced by other instances of this block.
-    const ownVariants = variants.filter((v) => {
-      const spec = v.column.spec;
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
+      })
+      .getColumns();
+    // What the `exclude` selectors above cannot say. Both remaining rules need
+    // a negation ("block is NOT this one", "axes do NOT include sampleId"), and
+    // the selector vocabulary has none -- `domain` matchers require a key to be
+    // present and match, and there is no "not". Hence JS.
+    const keep = (v: ColumnRecipe) => {
+      const spec = v.getSpec();
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
       if (spec.domain?.["pl7.app/block"] !== thisBlockId) return false; // other block's convergence
@@ -639,10 +661,11 @@ export const platforma = BlockModelV3.create(blockDataModel)
       // columns carry the sampleId axis; the export columns are clonotype-
       // only, so this keeps the former and drops the latter.
       return spec.axesSpec.some((a) => a.name === "pl7.app/sampleId");
-    });
+    };
 
     return createPlDataTableV3(ctx, {
-      columns: ownVariants,
+      primaryColumns: [starHit],
+      columns: discovered.filter(keep),
       tableState: ctx.data.mainTableState,
       displayOptions: {
         visibility: [
@@ -654,8 +677,10 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // before the `pl7.app/label` rule below, which would otherwise
           // force the Sample label visible.
           {
-            match: (spec: PColumnSpec) =>
-              spec.axesSpec.length === 1 && spec.axesSpec[0]?.name === "pl7.app/sampleId",
+            match: {
+              axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+              partialAxesMatch: false,
+            },
             visibility: "hidden",
           },
           // Force `pl7.app/label` (clonotype-id label) to default-visible
@@ -664,17 +689,27 @@ export const platforma = BlockModelV3.create(blockDataModel)
           // shows up hidden on server runs. The Sample label is
           // already caught by the rule above (first match wins).
           {
-            match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
+            match: { name: [{ type: "exact", value: "pl7.app/label" }] },
             visibility: "default",
           },
+          // The key axes and this block's own convergence results keep their
+          // declared visibility. The selector vocabulary has no negation, so
+          // they are named here, ahead of the catch-all, instead of being
+          // excluded from it. The convergence columns already annotate
+          // themselves "default" in the workflow, so naming them changes
+          // nothing.
           {
-            match: (spec: PColumnSpec) => {
-              if (spec.name === "pl7.app/sampleId") return false;
-              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
-              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
-              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
-              return true;
-            },
+            match: [
+              { name: [{ type: "exact", value: "pl7.app/sampleId" }] },
+              { name: [{ type: "exact", value: "pl7.app/vdj/clonotypeKey" }] },
+              { name: [{ type: "exact", value: "pl7.app/vdj/scClonotypeKey" }] },
+              { name: [{ type: "regex", value: "^pl7\\.app/vdj/convergence/" }] },
+            ],
+            visibility: "default",
+          },
+          // Everything else starts optional.
+          {
+            match: {},
             visibility: "optional",
           },
         ],
@@ -704,11 +739,15 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // stays up during the whole run (this view has no `sheets` to drive the
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const starHitSpec = pCols?.find(
-      (c) => c.spec.name === "pl7.app/vdj/convergence/fastStar",
-    )?.spec;
-    if (!starHitSpec) return undefined;
+    const pframe = ctx.outputs?.resolve(field);
+    if (!pframe) return undefined;
+    const starHit = ColumnsCollection([pframe])
+      .filter({
+        include: [{ name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" } }],
+      })
+      .getColumns()[0];
+    if (!starHit) return undefined;
+    const starHitSpec = starHit.getSpec();
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
     // axis: pull every column sharing the clonotypeKey axis from the pool
@@ -718,9 +757,9 @@ export const platforma = BlockModelV3.create(blockDataModel)
     // enrichment to the anchor's own axis (no linker hops into cluster/space
     // axis systems).
     const thisBlockId = starHitSpec.domain?.["pl7.app/block"];
-    const variants = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: starHitSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: starHitSpec },
         mode: "enrichment",
         maxHops: 0,
         // One row per clonotype: drop any column carrying a sampleId axis (the
@@ -729,53 +768,62 @@ export const platforma = BlockModelV3.create(blockDataModel)
         // table back out over samples. partialAxesMatch:true excludes columns
         // that merely INCLUDE sampleId, not only exact [sampleId].
         exclude: [
+          // The anchor is supplied directly as the primary column, so keeping it
+          // out here leaves the two sets disjoint by construction. The sampleId
+          // rule below cannot do it: this anchor is clonotype-only.
+          {
+            name: { type: "exact", value: "pl7.app/vdj/convergence/fastStar" },
+          },
           {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: true,
           },
+          // gen-prob's Pgen columns are a full-STAR INPUT, not a convergence
+          // result, so they are noise in this table. Plain name match -- no
+          // negation needed, so the driver can do it.
+          {
+            name: [
+              { type: "exact", value: "pl7.app/vdj/generationProbability" },
+              { type: "exact", value: "pl7.app/vdj/negLog10GenerationProbability" },
+            ],
+          },
         ],
-      },
-    });
-    if (!variants) return undefined;
-
-    // Keep all non-convergence enrichment and this block's own convergence
-    // columns; drop convergence columns produced by other instances of this
-    // block (see mainTable for the same rationale).
-    const ownVariants = variants.filter((v) => {
-      const spec = v.column.spec;
-      // Drop gen-prob's Pgen columns — they're a full-STAR INPUT, not a
-      // convergence result; showing them in the convergence table is noise.
-      if (
-        spec.name === "pl7.app/vdj/generationProbability" ||
-        spec.name === "pl7.app/vdj/negLog10GenerationProbability"
-      ) {
-        return false;
-      }
+      })
+      .getColumns();
+    // Drop convergence columns produced by OTHER instances of this block --
+    // "block is not this one" needs a negation the selector vocabulary has
+    // none of, so it cannot join the `exclude` list above.
+    const keep = (v: ColumnRecipe) => {
+      const spec = v.getSpec();
       if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
       if (thisBlockId === undefined) return true;
       return spec.domain?.["pl7.app/block"] === thisBlockId;
-    });
+    };
 
     return createPlDataTableV3(ctx, {
-      columns: ownVariants,
+      primaryColumns: [starHit],
+      columns: discovered.filter(keep),
       tableState: ctx.data.aggregatedTableState,
       displayOptions: {
         visibility: [
           // Force the clonotype-id label (Clone ID) default-visible — some
           // MiXCR builds annotate it "optional".
           {
-            match: (spec: PColumnSpec) => spec.name === "pl7.app/label",
+            match: { name: [{ type: "exact", value: "pl7.app/label" }] },
             visibility: "default",
           },
           // Everything else that isn't a clonotype-key axis or a convergence
           // column starts optional (hidden, available in the column panel).
           {
-            match: (spec: PColumnSpec) => {
-              if (spec.name === "pl7.app/vdj/clonotypeKey") return false;
-              if (spec.name === "pl7.app/vdj/scClonotypeKey") return false;
-              if (spec.name.startsWith("pl7.app/vdj/convergence/")) return false;
-              return true;
-            },
+            match: [
+              { name: [{ type: "exact", value: "pl7.app/vdj/clonotypeKey" }] },
+              { name: [{ type: "exact", value: "pl7.app/vdj/scClonotypeKey" }] },
+              { name: [{ type: "regex", value: "^pl7\\.app/vdj/convergence/" }] },
+            ],
+            visibility: "default",
+          },
+          {
+            match: {},
             visibility: "optional",
           },
         ],

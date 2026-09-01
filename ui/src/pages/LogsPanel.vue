@@ -49,7 +49,7 @@ const setOpen = (sampleId: string, v: boolean) => {
         :key="s.sampleId"
         :label="s.label"
         :model-value="isOpen(s.sampleId)"
-        @update:model-value="(v: boolean) => setOpen(s.sampleId, v)"
+        @update:model-value="(v: boolean | undefined) => setOpen(s.sampleId, v ?? false)"
       >
         <!-- `text` is the sample's full captured stdout, or undefined until the
              sample finishes — in which case "Starting…" shows and is replaced by
