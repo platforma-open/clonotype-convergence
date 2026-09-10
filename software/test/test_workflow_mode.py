@@ -3,9 +3,10 @@
 1. full_star.py derives uniq_nucl from the nSeqCDR3 column (the workflow path,
    which avoids threading status.json as a file) and matches passing it
    explicitly.
-2. cluster_filter.py is method-agnostic — it refines whatever `starHit`=="Hit"
-   set exists (full- or fast-STAR) via --hit-column, emitting
-   fastStarClusterFiltered + clusterSize.
+2. cluster_filter.py is method-agnostic — it refines whichever hit column it is
+   pointed at (--hit-column) and writes the pair of output columns it is told to
+   (--filtered-column / --size-column), so the workflow can run it once per
+   emitted mode without the second run clobbering the first.
 
 Run:  cd software && python -m pytest test/test_workflow_mode.py
 """
@@ -62,12 +63,55 @@ def test_cluster_filter_method_agnostic(tmp_path):
     df.to_csv(inp, sep="\t", index=False)
     _run("cluster_filter.py", ["--input", str(inp), "--output", str(out),
                                "--cluster-min", "3", "--chain", "IGHeavy",
-                               "--hit-column", "starHit"])
+                               "--hit-column", "starHit",
+                               "--filtered-column", "starClusterFiltered",
+                               "--size-column", "starClusterSize"])
     r = pd.read_csv(out, sep="\t")
-    assert "fastStarClusterFiltered" in r.columns and "clusterSize" in r.columns
-    filt = dict(zip(r["aaSeqCDR3"], r["fastStarClusterFiltered"]))
+    assert "starClusterFiltered" in r.columns and "starClusterSize" in r.columns
+    filt = dict(zip(r["aaSeqCDR3"], r["starClusterFiltered"]))
     # 4-member cluster survives; singleton hit and the non-hit do not.
     assert filt["CARDYW"] == "Hit" and filt["CARDYS"] == "Hit"
     assert filt["CWWWWW"] == "Not hit" and filt["CGGGGG"] == "Not hit"
-    size = dict(zip(r["aaSeqCDR3"], r["clusterSize"]))
+    size = dict(zip(r["aaSeqCDR3"], r["starClusterSize"]))
     assert size["CARDYW"] == 4
+
+
+def test_cluster_filter_runs_per_mode_without_clobbering(tmp_path):
+    """The two modes' invocations chain, and each owns its own column pair.
+
+    This is the reason the output names are parameters: clusters are computed
+    over the HIT SUBSET, so the same clone can sit in a 4-member cluster of
+    fast-STAR hits and a 2-member cluster of full-STAR hits. A shared column
+    name would have the second run silently overwrite the first's answer.
+    """
+    df = pd.DataFrame({
+        "aaSeqCDR3": ["CARDYW", "CARDYY", "CARDYF", "CARDYS"],
+        # fast-STAR calls all four; full-STAR only the first two.
+        "fastStar":  ["Hit",    "Hit",    "Hit",    "Hit"],
+        "fullStar":  ["Hit",    "Hit",    "Not hit", "Not hit"],
+    })
+    inp = tmp_path / "called.tsv"
+    mid = tmp_path / "mid.tsv"
+    out = tmp_path / "out.tsv"
+    df.to_csv(inp, sep="\t", index=False)
+    _run("cluster_filter.py", ["--input", str(inp), "--output", str(mid),
+                               "--cluster-min", "2", "--chain", "IGHeavy",
+                               "--hit-column", "fastStar",
+                               "--filtered-column", "fastStarClusterFiltered",
+                               "--size-column", "fastStarClusterSize"])
+    _run("cluster_filter.py", ["--input", str(mid), "--output", str(out),
+                               "--cluster-min", "2", "--chain", "IGHeavy",
+                               "--hit-column", "fullStar",
+                               "--filtered-column", "fullStarClusterFiltered",
+                               "--size-column", "fullStarClusterSize"])
+    r = pd.read_csv(out, sep="\t").set_index("aaSeqCDR3")
+    # Both pairs survive the chaining.
+    for col in ("fastStarClusterFiltered", "fastStarClusterSize",
+                "fullStarClusterFiltered", "fullStarClusterSize"):
+        assert col in r.columns, col
+    # Different hit sets → different cluster structures → different sizes.
+    assert r.loc["CARDYW", "fastStarClusterSize"] == 4
+    assert r.loc["CARDYW", "fullStarClusterSize"] == 2
+    # full-STAR's filtered column is a strict subset of ITS OWN hit set.
+    assert r.loc["CARDYF", "fastStarClusterFiltered"] == "Hit"
+    assert r.loc["CARDYF", "fullStarClusterFiltered"] == "Not hit"
