@@ -22,18 +22,36 @@ export function discoverUpstreamFacts<A, U>(
   // MiXCR partitions outputs across two axis frames: per-(sample,
   // clonotype) and per-clonotype. The anchored selector matches axes
   // exactly, so we need both queries.
+  //
+  // `dontWaitAllData` is load-bearing. Without it the query returns undefined
+  // for the WHOLE request as soon as any matching column's data is incomplete,
+  // and the `?? []` below would read that as "this dataset has no siblings" —
+  // no CDR3, no chains. The selectors here match every column on the anchor's
+  // clonotype axis, which includes columns another block is still computing:
+  // while Generation Probability runs, its Pgen columns sit on exactly that
+  // axis, so the dataset it is computing on looked empty and dropped out of the
+  // picker. Only its specs are read below, never data, so skipping in-flight
+  // columns costs nothing.
+  const opts = { dontWaitAllData: true };
   const perSampleClonotype =
-    ctx.resultPool.getAnchoredPColumns({ main: ref }, [
-      {
-        axes: [
-          { anchor: "main", idx: 0 },
-          { anchor: "main", idx: 1 },
-        ],
-      },
-    ]) ?? [];
+    ctx.resultPool.getAnchoredPColumns(
+      { main: ref },
+      [
+        {
+          axes: [
+            { anchor: "main", idx: 0 },
+            { anchor: "main", idx: 1 },
+          ],
+        },
+      ],
+      opts,
+    ) ?? [];
   const perClonotype =
-    ctx.resultPool.getAnchoredPColumns({ main: ref }, [{ axes: [{ anchor: "main", idx: 1 }] }]) ??
-    [];
+    ctx.resultPool.getAnchoredPColumns(
+      { main: ref },
+      [{ axes: [{ anchor: "main", idx: 1 }] }],
+      opts,
+    ) ?? [];
 
   const chains = new Set<string>();
   // Aggregate (dataset-level) presence: does the dataset carry ANY aa-CDR3 /
