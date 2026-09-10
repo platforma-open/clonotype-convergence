@@ -38,3 +38,11 @@ in Settings, while the table itself is built from the args that produced the
 current rows. Selecting another dataset without pressing Run therefore listed
 the new dataset's samples above the old dataset's data. The picker now reads the
 same committed args as the table.
+
+Column discovery in both tables now goes through `ColumnsCollection` rather
+than the older `discoverTableColumnSnaphots` helper, and the Generation
+Probability columns are excluded in the discovery selector instead of being
+filtered out in JS afterwards. One behavioural consequence: the hit anchor is
+now read from the block's own output collection, so a table renders with its
+anchor column even when enrichment finds nothing to add — previously the whole
+table disappeared in that case.

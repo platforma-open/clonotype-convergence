@@ -9,9 +9,9 @@ import type {
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
+  ColumnsCollection,
   createPlDataTableSheet,
   createPlDataTableV3,
-  discoverTableColumnSnaphots,
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
@@ -141,10 +141,14 @@ function buildPerSampleLogs<A, U>(
 
 // gen-prob's columns. A full-STAR INPUT, not a convergence result — enrichment
 // finds them on the clonotype axis, but in a convergence table they are noise.
-const PGEN_COLUMN_NAMES = [
-  "pl7.app/vdj/generationProbability",
-  "pl7.app/vdj/negLog10GenerationProbability",
-];
+// Excluded in the discovery selector, not in JS: a plain name match needs no
+// negation, so the spec driver can express it and the columns never reach us.
+const EXCLUDE_PGEN = {
+  name: [
+    { type: "exact" as const, value: "pl7.app/vdj/generationProbability" },
+    { type: "exact" as const, value: "pl7.app/vdj/negLog10GenerationProbability" },
+  ],
+};
 
 /**
  * Which enrichment-discovered columns a table keeps.
@@ -167,7 +171,6 @@ function keepTableColumn(
 ) {
   return (recipe: ColumnRecipe): boolean => {
     const spec = recipe.getSpec();
-    if (PGEN_COLUMN_NAMES.includes(spec.name)) return false;
     // Everything that isn't convergence (Clone ID, genes, abundance, …) stays.
     if (!spec.name.startsWith("pl7.app/vdj/convergence/")) return true;
     if (thisBlockId === undefined) return true; // can't filter without own block id; keep all
@@ -195,21 +198,29 @@ const FULL_STAR_HIT = "pl7.app/vdj/convergence/fullStar";
  * discovery result to `primaryColumns` puts every column beyond reach of the
  * rules and nothing can ever be hidden.
  */
-function pickHitAnchor(pCols: { spec: PColumnSpec }[] | undefined): PColumnSpec | undefined {
-  const byName = (name: string) => pCols?.find((c) => c.spec.name === name)?.spec;
+function pickHitAnchor(source: ColumnsCollection): ColumnRecipe | undefined {
+  const byName = (name: string) =>
+    source.filter({ include: [{ name: { type: "exact", value: name } }] }).getColumns()[0];
   return byName(FULL_STAR_HIT) ?? byName(FAST_STAR_HIT);
 }
 
-/** Split the kept recipes into (the anchor) + (everything else). */
-function splitAnchor(recipes: ColumnRecipe[], anchor: PColumnSpec) {
-  const isAnchor = (r: ColumnRecipe) => {
+/**
+ * The discovered columns minus the anchor, which is passed to the table
+ * separately as its one primary column.
+ *
+ * Matched on name + domain rather than on `ColumnRecipe.id`: the anchor recipe
+ * comes from the block's own output collection while these come from a
+ * `discover()` collection, so the same column carries a different recipe id on
+ * each side and only the spec identity is comparable. The domain half matters
+ * in dual-chain SC, where the other chain's same-named hit column is a
+ * legitimate table column and must not be dropped with the anchor.
+ */
+function withoutAnchor(recipes: ColumnRecipe[], anchor: PColumnSpec): ColumnRecipe[] {
+  const domainKey = canonicalize(anchor.domain ?? {});
+  return recipes.filter((r) => {
     const s = r.getSpec();
-    return (
-      s.name === anchor.name && canonicalize(s.domain ?? {}) === canonicalize(anchor.domain ?? {})
-    );
-  };
-  const anchorRecipe = recipes.find(isAnchor);
-  return { anchorRecipe, rest: recipes.filter((r) => r !== anchorRecipe) };
+    return !(s.name === anchor.name && canonicalize(s.domain ?? {}) === domainKey);
+  });
 }
 
 /** `{above,total}` hit-count badge from one of the workflow's stats fields. */
@@ -796,21 +807,21 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     if (!ref) return undefined;
     if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
 
-    const pCols = ctx.outputs
-      ?.resolve({
-        field: pframeField,
-        assertFieldType: "Input",
-        allowPermanentAbsence: true,
-      })
-      ?.getPColumns();
-    const hitAnchorSpec = pickHitAnchor(pCols);
-    if (!hitAnchorSpec) return undefined;
+    const pframe = ctx.outputs?.resolve({
+      field: pframeField,
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!pframe) return undefined;
+    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    if (!anchorRecipe) return undefined;
+    const hitAnchorSpec = anchorRecipe.getSpec();
 
     // Discover first, then filter in JS — see keepTableColumn.
     const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: hitAnchorSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: hitAnchorSpec },
         mode: "enrichment",
         // Direct-only: no cross-domain linker hops. Without this, enrichment
         // traverses linkers from the clonotype axis into other blocks' axis
@@ -821,30 +832,26 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
         // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
         // optional via the visibility rules below.
         maxHops: 0,
-        // Drop per-sample-only columns (Sample label, donor, dataset,
-        // metadata) — the sample sheet pins one sampleId at a time,
-        // so these columns would just repeat the picked value
-        // on every row. `partialAxesMatch: false` excludes only
-        // columns whose axes are *exactly* [sampleId] (multi-axis
-        // columns that include sampleId stay).
         exclude: [
+          // Drop per-sample-only columns (Sample label, donor, dataset,
+          // metadata) — the sample sheet pins one sampleId at a time,
+          // so these columns would just repeat the picked value
+          // on every row. `partialAxesMatch: false` excludes only
+          // columns whose axes are *exactly* [sampleId] (multi-axis
+          // columns that include sampleId stay).
           {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: false,
           },
+          EXCLUDE_PGEN,
         ],
-      },
-    });
+      })
+      .getColumns();
 
     const keep = keepTableColumn(thisBlockId, { requireSampleIdAxis: true });
-
-    // Nullable in this SDK line: nothing resolvable yet -> no table.
-    if (!discovered) return undefined;
-
-    const kept = [...discovered.primary.filter(keep), ...discovered.secondary.filter(keep)];
-    const { anchorRecipe, rest } = splitAnchor(kept, hitAnchorSpec);
-    if (!anchorRecipe) return undefined;
-    const keptSpecs = kept.map((r) => r.getSpec());
+    const kept = discovered.filter(keep);
+    const rest = withoutAnchor(kept, hitAnchorSpec);
+    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
 
     // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
     // through `columns`, which is the set the visibility rules can reach.
@@ -882,9 +889,11 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // stays up during the whole run (this view has no `sheets` to drive the
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pCols = ctx.outputs?.resolve(field)?.getPColumns();
-    const hitAnchorSpec = pickHitAnchor(pCols);
-    if (!hitAnchorSpec) return undefined;
+    const pframe = ctx.outputs?.resolve(field);
+    if (!pframe) return undefined;
+    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    if (!anchorRecipe) return undefined;
+    const hitAnchorSpec = anchorRecipe.getSpec();
 
     // Same enrichment as the per-sample mainTable, but on the clonotype-only
     // axis: pull every column sharing the clonotypeKey axis from the pool
@@ -894,36 +903,32 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // enrichment to the anchor's own axis (no linker hops into cluster/space
     // axis systems).
     const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = discoverTableColumnSnaphots(ctx, {
-      anchors: { main: hitAnchorSpec },
-      selector: {
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: hitAnchorSpec },
         mode: "enrichment",
         maxHops: 0,
-        // One row per clonotype: drop any column carrying a sampleId axis (the
-        // per-sample convergence family — including the exported neighbours
-        // column — and per-sample metadata) so enrichment doesn't fan the
-        // table back out over samples. partialAxesMatch:true excludes columns
-        // that merely INCLUDE sampleId, not only exact [sampleId].
         exclude: [
+          // One row per clonotype: drop any column carrying a sampleId axis (the
+          // per-sample convergence family — including the exported neighbours
+          // column — and per-sample metadata) so enrichment doesn't fan the
+          // table back out over samples. partialAxesMatch:true excludes columns
+          // that merely INCLUDE sampleId, not only exact [sampleId].
           {
             axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
             partialAxesMatch: true,
           },
+          EXCLUDE_PGEN,
         ],
-      },
-    });
+      })
+      .getColumns();
 
     // No sampleId-axis clause here: this table IS the clonotype-only shape, so
     // our own export family is exactly what it should show.
     const keep = keepTableColumn(thisBlockId);
-
-    // Nullable in this SDK line: nothing resolvable yet -> no table.
-    if (!discovered) return undefined;
-
-    const kept = [...discovered.primary.filter(keep), ...discovered.secondary.filter(keep)];
-    const { anchorRecipe, rest } = splitAnchor(kept, hitAnchorSpec);
-    if (!anchorRecipe) return undefined;
-    const keptSpecs = kept.map((r) => r.getSpec());
+    const kept = discovered.filter(keep);
+    const rest = withoutAnchor(kept, hitAnchorSpec);
+    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
 
     // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
     // through `columns`, which is the set the visibility rules can reach.
