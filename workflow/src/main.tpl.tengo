@@ -565,8 +565,8 @@ wf.body(func(args) {
 				software(aggregateSw).
 				resources({ onCPU: {
 					cpu: 1,
-					ram: f.lineCount("perSample").times(512).plus(f.gib(2)).
-						between(f.gib(4), f.gib(32)).
+					ram: f.lineCount("perSample").times(512).plus(f.gib(1)).
+						between(f.gib(1), f.gib(32)).
 						staticFallback("8GiB")
 				} }).
 				arg("--input").arg("per_sample.tsv").
@@ -602,8 +602,8 @@ wf.body(func(args) {
 				software(aggregateSw).
 				resources({ onCPU: {
 					cpu: 1,
-					ram: f.lineCount("perSample").times(512).plus(f.gib(2)).
-						between(f.gib(4), f.gib(32)).
+					ram: f.lineCount("perSample").times(512).plus(f.gib(1)).
+						between(f.gib(1), f.gib(32)).
 						staticFallback("8GiB")
 				} }).
 				arg("--input").arg("per_sample.tsv").
