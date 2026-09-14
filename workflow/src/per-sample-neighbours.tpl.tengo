@@ -112,15 +112,15 @@ self.body(func(inputs) {
 	// step (a live stream blinks empty between handle-resolve and first line).
 	// status.json carries the unique-nt-CDR3 count + nMin for the
 	// skipped-samples warning.
-	// Memory here tracks ROWS (one trie entry, one dict entry and two list
-	// slots per unique aa CDR3), not bytes, so the budget is driven by
-	// lineCount. ~1KiB/row covers the string, the trie node chain and the
-	// per-row results. Single-threaded, so cpu stays at 2.
+	// Memory here tracks ROWS, not bytes — the atriegc trie dominates, and it
+	// costs per unique aa CDR3 rather than per character. Measured 2.7KiB/row
+	// at 1M rows (3.8KiB at 100K, falling with scale); 4KiB carries headroom.
+	// Single-threaded, so cpu stays at 2.
 	neighboursCmd := exec.builder().
 		software(computeNeighboursSw).
 		resources({ onCPU: {
 			cpu: 2,
-			ram: f.lineCount("perAa").times(1024).plus(f.gib(2)).
+			ram: f.lineCount("perAa").times(4096).plus(f.gib(2)).
 				between(f.gib(4), f.gib(32)).
 				staticFallback("8GiB")
 		} }).
