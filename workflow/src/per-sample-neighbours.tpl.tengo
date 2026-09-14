@@ -231,10 +231,22 @@ self.body(func(inputs) {
 	if inputs.applyClusterFilter {
 		for i, mode in clusterModes {
 			outName := "clustered_" + string(i) + ".tsv"
+			// Memory here is the pandas read of the whole per-sample table, which
+			// grows with the sample; the DBSCAN itself is flat (~150MB, measured
+			// constant from 400 to 1600 hits — sklearn chunks the pairwise pass).
+			// What does NOT scale is this step's RUNTIME: DBSCAN with a callable
+			// metric calls it once per pair at ~1.6us, so the cost is quadratic in
+			// the HIT count — ~11 min at 20K hits, ~4h at 100K. No budget bounds
+			// that; it needs the eps=1/min_samples=1 clustering rewritten as
+			// connected components over a Levenshtein-1 neighbour join.
 			clusterCmd := exec.builder().
 				software(clusterFilterSw).
-				cpu(1).
-				mem("4GiB").
+				resources({ onCPU: {
+					cpu: 1,
+					ram: f.size("input").times(8).plus(f.gib(1)).
+						between(f.gib(1), f.gib(32)).
+						staticFallback("4GiB")
+				} }).
 				arg("--input").arg("called.tsv").
 				arg("--output").arg(outName).
 				arg("--cluster-min").arg(string(inputs.clusterMin)).
@@ -242,7 +254,7 @@ self.body(func(inputs) {
 				arg("--hit-column").arg(mode.hit).
 				arg("--filtered-column").arg(mode.filtered).
 				arg("--size-column").arg(mode.size).
-				addFile("called.tsv", finalTsv).
+				addFile("called.tsv", finalTsv, { tag: "input" }).
 				saveFile(outName).
 				run()
 			finalTsv = clusterCmd.getFile(outName)
