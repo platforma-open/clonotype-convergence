@@ -434,8 +434,11 @@ wf.body(func(args) {
 			}],
 			{
 				aggregate: [{ name: anchorSpec.axesSpec[1].name }],
-				cpu: 2,
-				mem: "4GiB",
+				// No cpu/mem: these reach a pt workflow that imports each
+				// sample's output, and a sample's output grows with the sample.
+				// They take static values only (not exec.formula), so the way to
+				// make them scale is to leave them unset and let the SDK size
+				// from the input.
 				// Pin each per-sample iteration so its result survives
 				// reference-counting GC between renders; without this the
 				// per-sample nodes are dropped and re-executed every run,
