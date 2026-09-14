@@ -18,6 +18,8 @@ xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pt := import("@platforma-sdk/workflow-tengo:pt")
 pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 
+f := exec.formula
+
 // outputTsv — the convergence columns for this sample (collected as an Xsv
 //             output and reassembled into the block's tables/histograms).
 // log       — this sample's compute-neighbours stdout (collected as a
@@ -67,7 +69,7 @@ self.body(func(inputs) {
 	// 3-field pattern (matches the packing in :pack-input).
 	hasPgen := inputs.hasPgen
 	packedPattern := hasPgen ? "([^|]*)\\|([^|]*)\\|([^|]*)" : "([^|]*)\\|([^|]*)"
-	ptwf := pt.workflow().mem("4GiB").cpu(2)
+	ptwf := pt.workflow()
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
 	unpackCols := [
 		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("aaSeqCDR3"),
@@ -91,16 +93,24 @@ self.body(func(inputs) {
 	// step (a live stream blinks empty between handle-resolve and first line).
 	// status.json carries the unique-nt-CDR3 count + nMin for the
 	// skipped-samples warning.
+	// get_df.py holds a trie over the sample's unique aa CDR3s, four dicts keyed
+	// by those same strings, and a merge that rebuilds the frame — roughly 10x
+	// the TSV's bytes in Python objects, so 16x with headroom. Single-threaded,
+	// so cpu stays at 2.
 	neighboursCmd := exec.builder().
 		software(computeNeighboursSw).
-		cpu(2).
-		mem("4GiB").
+		resources({ onCPU: {
+			cpu: 2,
+			ram: f.size("input").times(16).plus(f.gib(2)).
+				between(f.gib(4), f.gib(32)).
+				staticFallback("8GiB")
+		} }).
 		arg("--input").arg("input.tsv").
 		arg("--output").arg("neighbours.tsv").
 		arg("--nMin").arg(string(inputs.nMin)).
 		arg("--chain").arg(inputs.chain).
 		arg("--status-json").arg("status.json").
-		addFile("input.tsv", perSampleInputTsv).
+		addFile("input.tsv", perSampleInputTsv, { tag: "input" }).
 		saveFile("neighbours.tsv").
 		saveFileContent("status.json").
 		saveStdoutContent().
@@ -127,15 +137,19 @@ self.body(func(inputs) {
 		// ("starHit"); the pt step below passes fullStarScore + fullStar through.
 		fullStarCmd := exec.builder().
 			software(fullStarSw).
-			cpu(1).
-			mem("2GiB").
+			resources({ onCPU: {
+				cpu: 1,
+				ram: f.size("input").times(8).plus(f.gib(2)).
+					between(f.gib(2), f.gib(32)).
+					staticFallback("4GiB")
+			} }).
 			arg("--input").arg("neighbours.tsv").
 			arg("--output").arg("fullstar.tsv").
 			arg("--alpha").arg(string(inputs.alpha)).
 			arg("--chain").arg(inputs.chain).
 			arg("--neighbours-column").arg("neighbours").
 			arg("--pgen-column").arg("Pgen").
-			addFile("neighbours.tsv", baseTsv).
+			addFile("neighbours.tsv", baseTsv, { tag: "input" }).
 			saveFile("fullstar.tsv").
 			run()
 		baseTsv = fullStarCmd.getFile("fullstar.tsv")
@@ -145,7 +159,7 @@ self.body(func(inputs) {
 	// Float64 only where compared, so blank / non-numeric values become null →
 	// "Not hit" / null score. fast-STAR always; full-STAR columns appended when
 	// Pgen was present (Pvalue / starHit exist in the superset base).
-	callWf := pt.workflow().mem("1GiB").cpu(1)
+	callWf := pt.workflow()
 	callCols := [
 		pt.col("Nb_freq").cast("Float64").alias("nbFreq"),
 		pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(inputs.threshold))).
