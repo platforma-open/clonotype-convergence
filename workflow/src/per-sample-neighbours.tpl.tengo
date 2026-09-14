@@ -82,8 +82,27 @@ self.body(func(inputs) {
 	}
 	df = df.withColumns(unpackCols...).select(selectCols...)
 	df.save("input.tsv")
+
+	// Collapse to one row per unique aa CDR3 with its nt multiplicity — the
+	// only thing the neighbour statistic reads. Doing it here rather than in
+	// pandas keeps every clonotype's nt CDR3 out of Python: the step's memory
+	// now tracks the sample's unique aa count, not its clonotype count.
+	// The null/empty CDR3 drop moves here too, so the collapse and the join
+	// below agree on the row set (the join is inner, so unusable rows are
+	// dropped from the result exactly as the pandas filter used to drop them).
+	usable := df.filter(
+		pt.col("aaSeqCDR3").isNotNull(),
+		pt.col("nSeqCDR3").isNotNull(),
+		pt.col("aaSeqCDR3").neq(pt.lit("")),
+		pt.col("nSeqCDR3").neq(pt.lit(""))
+	)
+	usable.groupBy(pt.col("aaSeqCDR3")).
+		agg(pt.col("nSeqCDR3").nUnique().alias("multiplicity")).
+		save("per_aa.tsv")
+
 	ptRes := ptwf.run()
 	perSampleInputTsv := ptRes.getFile("input.tsv")
+	perAaTsv := ptRes.getFile("per_aa.tsv")
 
 	// Stage 1 — neighbour density (the expensive STAR run). Pinned with
 	// cacheHours so a threshold-only change recovers it instead of recomputing
@@ -93,25 +112,25 @@ self.body(func(inputs) {
 	// step (a live stream blinks empty between handle-resolve and first line).
 	// status.json carries the unique-nt-CDR3 count + nMin for the
 	// skipped-samples warning.
-	// get_df.py holds a trie over the sample's unique aa CDR3s, four dicts keyed
-	// by those same strings, and a merge that rebuilds the frame — roughly 10x
-	// the TSV's bytes in Python objects, so 16x with headroom. Single-threaded,
-	// so cpu stays at 2.
+	// Memory here tracks ROWS (one trie entry, one dict entry and two list
+	// slots per unique aa CDR3), not bytes, so the budget is driven by
+	// lineCount. ~1KiB/row covers the string, the trie node chain and the
+	// per-row results. Single-threaded, so cpu stays at 2.
 	neighboursCmd := exec.builder().
 		software(computeNeighboursSw).
 		resources({ onCPU: {
 			cpu: 2,
-			ram: f.size("input").times(16).plus(f.gib(2)).
+			ram: f.lineCount("perAa").times(1024).plus(f.gib(2)).
 				between(f.gib(4), f.gib(32)).
 				staticFallback("8GiB")
 		} }).
-		arg("--input").arg("input.tsv").
-		arg("--output").arg("neighbours.tsv").
+		arg("--input").arg("per_aa.tsv").
+		arg("--output").arg("per_aa_stats.tsv").
 		arg("--nMin").arg(string(inputs.nMin)).
 		arg("--chain").arg(inputs.chain).
 		arg("--status-json").arg("status.json").
-		addFile("input.tsv", perSampleInputTsv, { tag: "input" }).
-		saveFile("neighbours.tsv").
+		addFile("per_aa.tsv", perAaTsv, { tag: "perAa" }).
+		saveFile("per_aa_stats.tsv").
 		saveFileContent("status.json").
 		saveStdoutContent().
 		cacheHours(24).
@@ -126,7 +145,21 @@ self.body(func(inputs) {
 	// When Pgen is present, run full-STAR first: full_star.py emits fullstar.tsv
 	// = neighbours.tsv + Pvalue + starHit over ALL rows, so it's a superset we can
 	// base the merged pt step on. Otherwise base on neighbours.tsv (fast only).
-	baseTsv := neighboursCmd.getFile("neighbours.tsv")
+	// Fan the per-aa stats back onto the per-clonotype rows. Inner, so the
+	// rows the collapse dropped stay dropped and a skipped sample (empty stats)
+	// yields an empty neighbours.tsv — both the old pandas merge's behaviour.
+	joinWf := pt.workflow()
+	joinedDf := joinWf.frame(perSampleInputTsv, { xsvType: "tsv", inferSchema: false }).
+		join(
+			joinWf.frame(neighboursCmd.getFile("per_aa_stats.tsv"), { xsvType: "tsv", inferSchema: false }),
+			{
+				how: "inner",
+				on: "aaSeqCDR3",
+				rightColumns: ["multiplicity", "neighbours", "Nb_freq"]
+			}
+		)
+	joinedDf.save("neighbours.tsv")
+	baseTsv := joinWf.run().getFile("neighbours.tsv")
 	if hasPgen {
 		// full-STAR: Poisson tail vs the Pgen null + Benjamini-Hochberg at alpha.
 		// uniq_nucl is derived from neighbours.tsv's nSeqCDR3 (== the nUniqueNt
