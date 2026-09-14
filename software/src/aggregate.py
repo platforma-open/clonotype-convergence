@@ -287,27 +287,44 @@ def main() -> int:
     prefix = f"[chain {args.chain}]"
 
     clone_c, sample_c = args.clonotype_column, args.sample_column
-    # The sample column is read as text on BOTH sides (here and for --metadata):
-    # it is joined against the universe, and a numeric sampleId inferred as a
-    # float on one side only ("12345" vs "12345.0") would silently join nothing.
-    df = pd.read_csv(args.input, sep="\t", dtype={sample_c: str, clone_c: str})
     score_c, hit_c, repro_c = args.score_column, args.hit_column, args.repro_column
 
     is_full = args.method == "full-STAR"
     is_cluster = args.method == "cluster-filter"
+
+    if not is_cluster and score_c is None:
+        print(f"error: --score-column is required for --method {args.method}")
+        return 2
+
     # A cluster-filtered column has no score of its own — it refines a hit set.
     required = {clone_c, sample_c, hit_c} | (set() if is_cluster else {score_c})
-    missing = required - set(df.columns)
+    header = pd.read_csv(args.input, sep="\t", nrows=0)
+    missing = required - set(header.columns)
     if missing:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
+    # Read ONLY the columns this aggregation uses. per_sample.tsv carries every
+    # convergence column, and the unread ones (neighbours, multiplicity, ...)
+    # cost GBs of Python strings on a large project for nothing.
+    #
+    # sampleId and the hit column are read as `category`: they have a handful of
+    # distinct values over tens of millions of rows, so as plain text they are
+    # the two largest objects in the process after the clonotype key. The key
+    # itself stays text — it is high-cardinality, and that cost is irreducible.
+    #
+    # The sample column is text on BOTH sides (here and for --metadata): it is
+    # matched against the universe, and a numeric sampleId inferred as a float
+    # on one side only ("12345" vs "12345.0") would silently match nothing.
+    df = pd.read_csv(
+        args.input,
+        sep="\t",
+        usecols=sorted(required),
+        dtype={sample_c: "category", clone_c: str, hit_c: "category"},
+    )
+
     if is_cluster and (args.gate is None or args.gate_hit_column is None):
         print("error: cluster-filter aggregation requires --gate and --gate-hit-column")
-        return 2
-
-    if not is_cluster and score_c is None:
-        print(f"error: --score-column is required for --method {args.method}")
         return 2
 
     if not is_full and not is_cluster and args.threshold is None:
@@ -345,7 +362,7 @@ def main() -> int:
             return 2
         universe = meta[[c for c in (sample_c, "unit", "expected") if c in meta.columns]].copy()
     else:
-        universe = pd.DataFrame({sample_c: df[sample_c].astype(str).unique()})
+        universe = pd.DataFrame({sample_c: df[sample_c].cat.categories.astype(str)})
     universe[sample_c] = universe[sample_c].astype(str)
     universe = universe.drop_duplicates(subset=[sample_c])
 
@@ -395,27 +412,50 @@ def main() -> int:
         return emit_empty("no samples remain after eligibility; emitting empty output")
 
     # Restrict the per-sample rows to the eligible samples and attach their unit.
-    df[sample_c] = df[sample_c].astype(str)
-    df = df.merge(universe[[sample_c, "_unit"]], on=sample_c, how="inner")
+    # sampleId -> unit is defined over the handful of distinct sampleIds, so it
+    # is applied to the CATEGORIES and carried by the codes: an inner merge onto
+    # tens of millions of rows would rebuild the whole frame to add one column
+    # whose values repeat a few times over. Rows whose sample is not in the
+    # universe get code -1 and are dropped, which is what the inner join did.
+    unit_by_sample = dict(zip(universe[sample_c], universe["_unit"]))
+    sample_cats = [str(c) for c in df[sample_c].cat.categories]
+    unit_values = sorted({u for u in (unit_by_sample.get(c) for c in sample_cats) if u is not None})
+    unit_pos = {u: i for i, u in enumerate(unit_values)}
+    cat_to_unit = np.array(
+        [unit_pos.get(unit_by_sample.get(c), -1) for c in sample_cats], dtype=np.int32
+    )
+    unit_codes = cat_to_unit[df[sample_c].cat.codes.to_numpy()]
+    df = df[unit_codes >= 0]
     if len(df) == 0:
         return emit_empty("no convergence rows in the eligible samples; emitting empty output")
+    df["_unit"] = pd.Categorical.from_codes(unit_codes[unit_codes >= 0], categories=unit_values)
 
     # A per-sample row contributes only if it carries a numeric score (a clone
     # untestable in a sample has a blank score and is not evidence). Absence is
     # never zero-filled: aggregation runs over the units the clone is present in.
     # cluster-filter has no score column: every row of its hit column counts.
     df["_score"] = 0.0 if is_cluster else pd.to_numeric(df[score_c], errors="coerce")
-    df["_hit"] = df[hit_c].astype(str) == "Hit"
-    scored = df[df["_score"].notna()].copy()
-    log(prefix, f"units with data: {df['_unit'].nunique()}; scored rows: {len(scored)}")
+    # Compare through the codes rather than materialising the hit text.
+    hit_cats = df[hit_c].cat.categories
+    hit_code = hit_cats.get_loc("Hit") if "Hit" in hit_cats else -1
+    df["_hit"] = df[hit_c].cat.codes.to_numpy() == hit_code
+    units_with_data = df["_unit"].nunique()
+    scored = df[df["_score"].notna()]
+    log(prefix, f"units with data: {units_with_data}; scored rows: {len(scored)}")
+    del df
     if len(scored) == 0:
         return emit_empty("no scored rows; emitting empty output")
 
     # --- Level 1: collapse each (clonotype, unit) to one per-unit value -----
     # Both modes reduce to (max, count) per group, so one built-in aggregation
     # serves both; the full-STAR Bonferroni is then a vector op over the result.
+    # observed=True is REQUIRED, not a tidy-up: `_unit` is a Categorical, and
+    # the pandas default (observed=False) emits a row for every category — i.e.
+    # every unit in the dataset — including the ones this clonotype is absent
+    # from. That is exactly the zero-filling the two-level shape forbids; it
+    # inflates k in the Fisher combination and drags the score down.
     per_unit = (
-        scored.groupby([clone_c, "_unit"])
+        scored.groupby([clone_c, "_unit"], observed=True)
         .agg(_best=("_score", "max"), _m=("_score", "size"), unit_hit=("_hit", "any"))
         .reset_index()
     )

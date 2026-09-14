@@ -47,6 +47,8 @@ pt := import("@platforma-sdk/workflow-tengo:pt")
 json := import("json")
 times := import("times")
 
+f := exec.formula
+
 packInputTpl := assets.importTemplate(":pack-input")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 aggregateSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:aggregate")
@@ -552,11 +554,21 @@ wf.body(func(args) {
 
 		// aggregateMode — run aggregate.py for one mode; returns aggregated.tsv
 		// (columns clonotypeKey + scoreCol + hitCol + reproCol, named after the mode).
+		// per_sample.tsv spans EVERY sample, so this is a whole-dataset step and
+		// its budget has to track the dataset. aggregate.py reads four columns
+		// and holds one Python string per row for the clonotype key, so the cost
+		// is per row, not per byte: measured 305 B/row at 6M rows and 198 B/row
+		// at 18M (it falls as the fixed overhead amortises). 512 B/row is ~2.5x
+		// the extrapolated cost at the sizes we have seen.
 		aggregateMode := func(scoreCol, hitCol, reproCol, methodName) {
 			cmd := exec.builder().
 				software(aggregateSw).
-				cpu(1).
-				mem("4GiB").
+				resources({ onCPU: {
+					cpu: 1,
+					ram: f.lineCount("perSample").times(512).plus(f.gib(2)).
+						between(f.gib(4), f.gib(32)).
+						staticFallback("8GiB")
+				} }).
 				arg("--input").arg("per_sample.tsv").
 				arg("--output").arg("aggregated.tsv").
 				arg("--chain").arg(chainName).
@@ -565,7 +577,7 @@ wf.body(func(args) {
 				arg("--hit-column").arg(hitCol).
 				arg("--reproducibility-column").arg(reproCol).
 				arg("--alpha").arg(string(alpha)).
-				addFile("per_sample.tsv", perSampleTsv).
+				addFile("per_sample.tsv", perSampleTsv, { tag: "perSample" }).
 				saveFile("aggregated.tsv")
 			if methodName == "fast-STAR" {
 				cmd = cmd.arg("--threshold").arg(string(threshold))
@@ -588,8 +600,12 @@ wf.body(func(args) {
 		aggregateClusterMode := func(filteredCol, reproCol, gateTsv, gateHitCol) {
 			cmd := exec.builder().
 				software(aggregateSw).
-				cpu(1).
-				mem("4GiB").
+				resources({ onCPU: {
+					cpu: 1,
+					ram: f.lineCount("perSample").times(512).plus(f.gib(2)).
+						between(f.gib(4), f.gib(32)).
+						staticFallback("8GiB")
+				} }).
 				arg("--input").arg("per_sample.tsv").
 				arg("--output").arg("aggregated.tsv").
 				arg("--chain").arg(chainName).
@@ -599,7 +615,7 @@ wf.body(func(args) {
 				arg("--gate").arg("gate.tsv").
 				arg("--gate-hit-column").arg(gateHitCol).
 				arg("--alpha").arg(string(alpha)).
-				addFile("per_sample.tsv", perSampleTsv).
+				addFile("per_sample.tsv", perSampleTsv, { tag: "perSample" }).
 				addFile("gate.tsv", gateTsv).
 				saveFile("aggregated.tsv")
 			if !is_undefined(metaTsv) {
@@ -615,7 +631,7 @@ wf.body(func(args) {
 		// `statsWf`, not `wf`: the module-level `wf` is the workflow SDK import,
 		// and shadowing it inside a closure reads as a bug even when it isn't.
 		statsFor := func(aggTsv, hitCol) {
-			statsWf := pt.workflow().mem("2GiB").cpu(1)
+			statsWf := pt.workflow()
 			df := statsWf.frame(aggTsv, { xsvType: "tsv", inferSchema: false })
 			df.select(
 				pt.col(hitCol).count().alias("total"),
@@ -654,7 +670,7 @@ wf.body(func(args) {
 				columns: cols,
 				storageFormat: "Parquet",
 				partitionKeyLength: 0
-			}, { splitDataAndSpec: true, mem: "2GiB", cpu: 1 })
+			}, { splitDataAndSpec: true })
 			for c in cols {
 				name := c.column
 				exportPfBuilder.add(name, trace.inject(frame[name].spec), frame[name].data)
