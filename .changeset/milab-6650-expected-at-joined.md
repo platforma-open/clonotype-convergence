@@ -12,5 +12,6 @@ dropdown takes `group-position="top"`, the value multiselect `group-position="bo
 adjoining corners), and the wrapper's gap is removed so the borders meet.
 
 The lower dropdown loses its "Selected values" label, as the joined form
-intends. That text moves to its `placeholder`, so the empty state still says
-what the field is instead of showing the default "...".
+intends, and carries no placeholder. It is also pulled up 1px
+(`margin-top: -1px`) so the two adjoining 1px borders overlap into a single
+line instead of stacking into a 2px seam.
