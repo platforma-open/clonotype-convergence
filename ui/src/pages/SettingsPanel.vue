@@ -264,7 +264,6 @@ const fullStarHint = computed<string | undefined>(() => {
         <PlDropdownMulti
           v-model="expectedValuesModel"
           :options="expectedValueOptions.value ?? []"
-          placeholder="Selected values"
           group-position="bottom"
           :disabled="!app.model.data.expectedFilterRef"
         />
@@ -356,11 +355,18 @@ const fullStarHint = computed<string | undefined>(() => {
 </template>
 
 <style module>
-/* Tight column→values pair: the "Selected values" multiselect sits close under
-   "Convergence expected at" so it reads as that column's values, while the
+/* Joined column→values pair: the value multiselect is flush under
+   "Convergence expected at" so the two read as one control, while the
    surrounding controls (Replicate, etc.) keep normal spacing. */
 .filterPair {
   display: flex;
   flex-direction: column;
+}
+
+/* Pull the lower control up onto the one above so their adjoining 1px
+   borders overlap into a single line — groupPosition squares the corners
+   but leaves both borders drawn. */
+.filterPair > *:not(:first-child) {
+  margin-top: -1px;
 }
 </style>
