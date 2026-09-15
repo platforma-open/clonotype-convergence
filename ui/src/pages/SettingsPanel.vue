@@ -239,14 +239,16 @@ const fullStarHint = computed<string | undefined>(() => {
       <!-- Expected-convergence filter: pick the metadata column whose values
            pinpoint where convergence is expected, then which of its values to
            keep. Restricts the EXPORTED aggregate; the per-sample table keeps
-           all samples. Empty = use all samples. The column + its values are a
-           tight pair (small gap) so it's obvious the values belong to the
-           column above; Replicate keeps normal spacing. -->
+           all samples. Empty = use all samples. The column + its values render
+           as ONE joined control (groupPosition top/bottom, no gap) the way the
+           table filters do, so the values obviously belong to the column above;
+           Replicate keeps normal spacing. -->
       <div :class="$style.filterPair">
         <PlDropdown
           v-model="app.model.data.expectedFilterRef"
           :options="metadataColumnOptions"
           label="Convergence expected at"
+          group-position="top"
           clearable
         >
           <template #tooltip>
@@ -262,7 +264,8 @@ const fullStarHint = computed<string | undefined>(() => {
         <PlDropdownMulti
           v-model="expectedValuesModel"
           :options="expectedValueOptions.value ?? []"
-          label="Selected values"
+          placeholder="Selected values"
+          group-position="bottom"
           :disabled="!app.model.data.expectedFilterRef"
         />
       </div>
@@ -359,6 +362,5 @@ const fullStarHint = computed<string | undefined>(() => {
 .filterPair {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 </style>
