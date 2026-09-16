@@ -3,7 +3,6 @@ packages:
   - kind
   - model
   - software
-  - test
   - ui
   - workflow
 
