@@ -21,24 +21,15 @@ catalogs:
     '@milaboratories/ts-configs':
       specifier: 1.4.0
       version: 1.4.0
-    '@platforma-open/milaboratories.generation-probability.block':
-      specifier: 1.0.0
-      version: 1.0.0
     '@platforma-open/milaboratories.mixcr-clonotyping-2':
       specifier: 2.19.1
       version: 2.19.1
-    '@platforma-open/milaboratories.mixcr-clonotyping-2.model':
-      specifier: 1.26.0
-      version: 1.26.0
     '@platforma-open/milaboratories.runenv-python-3':
       specifier: 1.10.1
       version: 1.10.1
     '@platforma-open/milaboratories.samples-and-data':
       specifier: 1.18.1
       version: 1.18.1
-    '@platforma-open/milaboratories.samples-and-data.model':
-      specifier: 2.8.1
-      version: 2.8.1
     '@platforma-sdk/block-kind':
       specifier: 1.1.0
       version: 1.1.0
@@ -212,21 +203,12 @@ importers:
       '@platforma-open/milaboratories.clonotype-convergence.model':
         specifier: workspace:*
         version: link:../model
-      '@platforma-open/milaboratories.generation-probability.block':
-        specifier: 'catalog:'
-        version: 1.0.0
       '@platforma-open/milaboratories.mixcr-clonotyping-2':
         specifier: 'catalog:'
         version: 2.19.1(@vue/compiler-dom@3.5.35)(@vue/server-renderer@3.5.24(vue@3.5.24(typescript@6.0.3)))(typescript@6.0.3)
-      '@platforma-open/milaboratories.mixcr-clonotyping-2.model':
-        specifier: 'catalog:'
-        version: 1.26.0
       '@platforma-open/milaboratories.samples-and-data':
         specifier: 'catalog:'
         version: 1.18.1
-      '@platforma-open/milaboratories.samples-and-data.model':
-        specifier: 'catalog:'
-        version: 2.8.1(@types/node@25.9.1)(typescript@6.0.3)
       '@platforma-sdk/model':
         specifier: 'catalog:'
         version: 1.84.1
@@ -1066,9 +1048,6 @@ packages:
   '@milaboratories/pl-model-common@1.31.1':
     resolution: {integrity: sha512-MLQvhXXFOykABZr8aVgzt5x0htT7ye4cvvnVy0TgOITXpct+lEmWvaVj29zirK/0VFw7wnTXDGnLwusr77NZFA==}
 
-  '@milaboratories/pl-model-common@1.46.1':
-    resolution: {integrity: sha512-ABOz/w7dA4t2zUpZHXI74MTNW6LmPFSLxgfhOPFdO6vodIY8draVN+ag2U21WlYIoSgdJwSXJrXJWdu1cefrIg==}
-
   '@milaboratories/pl-model-common@1.46.2':
     resolution: {integrity: sha512-VEeauisApYScvCS8lnK3zpFJ520xuTAodKJmjR8ulHcMrWMyWMfHEdGb7j5OMD0mM/OwTgmQrrJ5eB7Xd+xoOQ==}
 
@@ -1077,9 +1056,6 @@ packages:
 
   '@milaboratories/pl-model-middle-layer@1.16.3':
     resolution: {integrity: sha512-XLZEC3POgUMNNjXr3Pudh7gx2CXZygeskxuQCyPfj4c8Fi35+kAfH9VBpNZD1koiT2n+x5QZyS3RpzcAddQTnQ==}
-
-  '@milaboratories/pl-model-middle-layer@1.30.6':
-    resolution: {integrity: sha512-x6cj1sNAayz80odDf6RbXnJDgj01Lc+NB+5IVyMk65o3cGt6ml0IbiqaDXGMJYUDkt1JSAj3EQpPha2YDDfYQg==}
 
   '@milaboratories/pl-model-middle-layer@1.30.7':
     resolution: {integrity: sha512-rs9x3Ron4ujR/UOdEgB8WUB1SvZ8ZAScT1Av/e4or+iiQ/CzhmK9nqtYamHVwKV+JgwIFbXQwxGvIHDVz955dQ==}
@@ -1090,9 +1066,6 @@ packages:
   '@milaboratories/pl-tree@1.15.4':
     resolution: {integrity: sha512-tKqhArB/LlpPZnB9driSo9vLqF2GP6laN9++IpEqKndYs+irtMVzWPY7KHk2I8A12TDPWVTSCl94pAW51Chsbg==}
     engines: {node: '>=22.19.0'}
-
-  '@milaboratories/ptabler-expression-js@1.2.30':
-    resolution: {integrity: sha512-6yRo0T6rpt14WEC++F+uuFGunnGF8ApCeKnvkysTsKxo+hALGPIQbobcTFN1gtQADnK6DI6huWQ6MxQpjBgbuQ==}
 
   '@milaboratories/ptabler-expression-js@1.2.41':
     resolution: {integrity: sha512-GnZAF1PT3XWrFb6SU7twKiWPpyTV7OVu76I3XWB/zpvkHb18O1K+kiXuN0k8JzTWQCUmq6tPlRP6R5CtmhK6Fw==}
@@ -1660,9 +1633,6 @@ packages:
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
 
-  '@platforma-open/milaboratories.generation-probability.block@1.0.0':
-    resolution: {integrity: sha512-q4VErDbRqCpwmbUTlDb/uBYtsaToJQFE/RdGB5c9vZbrGjifSXQSVD3bQprO1W3lKqbMw140cx0240kDBNlZFA==}
-
   '@platforma-open/milaboratories.mixcr-clonotyping-2.model@1.26.0':
     resolution: {integrity: sha512-NW2Mr6klFed5Jr70Pnur3hEi0Ph1UaNc8/4d1z5+DxltkQV5P5W68hAMNZOmfOMpjFgg4breK/ZQRwBeRhHvbA==}
 
@@ -1708,12 +1678,6 @@ packages:
   '@platforma-open/milaboratories.runenv-python-3@1.10.1':
     resolution: {integrity: sha512-+QsytL1rX7DhZaSNGngKR5K8RdaakV2IL0knoyevGgNzJfwBC+/qTZxezokbipSgX11MzfhL5nCBGzmLapbcvA==}
 
-  '@platforma-open/milaboratories.samples-and-data.model@2.8.1':
-    resolution: {integrity: sha512-GyUJgMnglCxxJa27X5HM4KB6v94XlfXh4OVgqOJVL/0bxYDk+rFrt4Uh5LmtjeRFJ6CPcJVad1N+jhX9iS+HnA==}
-    peerDependencies:
-      '@types/node': '*'
-      typescript: '*'
-
   '@platforma-open/milaboratories.samples-and-data@1.18.1':
     resolution: {integrity: sha512-Zyo2Wjwiqyr//ULAgQGdNXsy/XFtw7kS8lpeCw2pypYaWwourYlU+wZ7k8VlB26UZDJxBXCZResFLYc2trmNEQ==}
 
@@ -1722,9 +1686,6 @@ packages:
 
   '@platforma-open/milaboratories.software-ptabler.schema@1.14.5':
     resolution: {integrity: sha512-WZgX43fFYAbf6wWawN9edpBQm3ldtk9SrrfPvLPEmYiYyytjcxgEJrCeRiFv1rUkhOHpCyr7HSR4yonHh6W+fQ==}
-
-  '@platforma-open/milaboratories.software-ptabler.schema@1.15.14':
-    resolution: {integrity: sha512-BBbmfUi3fS40HmMbYKGuRNgSPo4kAk/vk+dUK3fyabbjGncKZTm9W4vZlqH2JJX0VECIROR4FrvGvF91yRyVwg==}
 
   '@platforma-open/milaboratories.software-ptabler.schema@1.15.25':
     resolution: {integrity: sha512-SZww/g+LCsVrsMzdfZv/HnzU29ASuejGTly33gOldmN7INV74ntgL0jgE3chcAAAZQjvnjmE6NUHKZ0HIZsujg==}
@@ -1772,9 +1733,6 @@ packages:
 
   '@platforma-sdk/model@1.63.1':
     resolution: {integrity: sha512-Ma1PEz3yZw6Jbo23BEUrZcO/8q15FU0DEtcjxObobVqXFoS0o4yCNPDxWytksiT2JL3G8F+Ic+k/wHYZ/Fbd0Q==}
-
-  '@platforma-sdk/model@1.79.6':
-    resolution: {integrity: sha512-aLgxJQQj07+uNYXiQHvFwFG34tgDC+NxvihMJ89dYKdgLPGDMlamIN4bxXco4W3uFqujQNTOqMed7cMeF3UYxA==}
 
   '@platforma-sdk/model@1.84.1':
     resolution: {integrity: sha512-UmA9FQzs8rU+vqHAxOvd/uk9CYhej2damyhFNB8uFh8fKjNoUYZkpBa/jvn/G//c+wtFyQdjtxaBSq0PV0Pkag==}
@@ -8229,13 +8187,6 @@ snapshots:
       canonicalize: 2.1.0
       zod: 3.23.8
 
-  '@milaboratories/pl-model-common@1.46.1':
-    dependencies:
-      '@milaboratories/helpers': 1.14.2
-      '@milaboratories/pl-error-like': 1.12.10
-      canonicalize: 2.1.0
-      zod: 3.25.76
-
   '@milaboratories/pl-model-common@1.46.2':
     dependencies:
       '@milaboratories/helpers': 1.14.2
@@ -8258,14 +8209,6 @@ snapshots:
       es-toolkit: 1.47.0
       utility-types: 3.11.0
       zod: 3.23.8
-
-  '@milaboratories/pl-model-middle-layer@1.30.6':
-    dependencies:
-      '@milaboratories/helpers': 1.14.2
-      '@milaboratories/pl-model-common': 1.46.1
-      es-toolkit: 1.47.0
-      utility-types: 3.11.0
-      zod: 3.25.76
 
   '@milaboratories/pl-model-middle-layer@1.30.7':
     dependencies:
@@ -8292,10 +8235,6 @@ snapshots:
       denque: 2.1.0
       utility-types: 3.11.0
       zod: 3.25.76
-
-  '@milaboratories/ptabler-expression-js@1.2.30':
-    dependencies:
-      '@platforma-open/milaboratories.software-ptabler.schema': 1.15.14
 
   '@milaboratories/ptabler-expression-js@1.2.41':
     dependencies:
@@ -8890,8 +8829,6 @@ snapshots:
   '@pkgjs/parseargs@0.11.0':
     optional: true
 
-  '@platforma-open/milaboratories.generation-probability.block@1.0.0': {}
-
   '@platforma-open/milaboratories.mixcr-clonotyping-2.model@1.26.0':
     dependencies:
       '@platforma-sdk/model': 1.63.1
@@ -8987,13 +8924,6 @@ snapshots:
       '@platforma-open/milaboratories.runenv-python-3.12.10-scientific-slim': 1.1.0
       '@platforma-open/milaboratories.runenv-python-3.12.10-torch-cuda': 0.1.0
 
-  '@platforma-open/milaboratories.samples-and-data.model@2.8.1(@types/node@25.9.1)(typescript@6.0.3)':
-    dependencies:
-      '@platforma-sdk/model': 1.79.6
-      '@types/node': 25.9.1
-      typescript: 6.0.3
-      zod: 3.25.76
-
   '@platforma-open/milaboratories.samples-and-data@1.18.1': {}
 
   '@platforma-open/milaboratories.software-mixcr@4.7.0-347-develop': {}
@@ -9001,10 +8931,6 @@ snapshots:
   '@platforma-open/milaboratories.software-ptabler.schema@1.14.5':
     dependencies:
       '@milaboratories/pl-model-common': 1.31.1
-
-  '@platforma-open/milaboratories.software-ptabler.schema@1.15.14':
-    dependencies:
-      '@milaboratories/pl-model-common': 1.46.1
 
   '@platforma-open/milaboratories.software-ptabler.schema@1.15.25':
     dependencies:
@@ -9082,19 +9008,6 @@ snapshots:
       fast-json-patch: 3.1.1
       utility-types: 3.11.0
       zod: 3.23.8
-
-  '@platforma-sdk/model@1.79.6':
-    dependencies:
-      '@milaboratories/helpers': 1.14.2
-      '@milaboratories/pl-error-like': 1.12.10
-      '@milaboratories/pl-model-common': 1.46.1
-      '@milaboratories/pl-model-middle-layer': 1.30.6
-      '@milaboratories/ptabler-expression-js': 1.2.30
-      canonicalize: 2.1.0
-      es-toolkit: 1.47.0
-      fast-json-patch: 3.1.1
-      utility-types: 3.11.0
-      zod: 3.25.76
 
   '@platforma-sdk/model@1.84.1':
     dependencies:
