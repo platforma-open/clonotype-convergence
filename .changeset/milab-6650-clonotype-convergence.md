@@ -86,4 +86,5 @@ MILAB-6650: aggregation rebuilt, memory scaled with the data, tests reworked
   and rendering of the model's tables in a real project.
 - The software package's 60 pytest tests now run under `turbo run test`. The
   runner script provisions its own environment (uv preferred, venv fallback)
-  and fails rather than skipping if neither is available.
+  and fails rather than skipping if neither is available. CI has no uv, so the
+  venv path is the one that runs there.

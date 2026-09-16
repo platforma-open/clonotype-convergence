@@ -104,7 +104,6 @@ async function runPerSample(
 
 tplTest(
   "per-sample chain: collapse, neighbour count and fan-back-out",
-  { timeout: 120000 },
   async ({ helper, expect, driverKit }) => {
     const { header, rows } = await runPerSample(helper, driverKit, {});
 
@@ -143,7 +142,6 @@ tplTest(
 
 tplTest(
   "per-sample chain: rows with an empty CDR3 are dropped and do not count toward N",
-  { timeout: 120000 },
   async ({ helper, expect, driverKit }) => {
     const { rows } = await runPerSample(helper, driverKit, {
       packedTsv: PACKED_TSV_WITH_UNUSABLE,
@@ -161,7 +159,6 @@ tplTest(
 
 tplTest(
   "per-sample chain: a sample under nMin is skipped and yields no rows",
-  { timeout: 120000 },
   async ({ helper, expect, driverKit }) => {
     // N = 4 unique nt CDR3s, well under the floor.
     const { rows } = await runPerSample(helper, driverKit, { nMin: 100 });
