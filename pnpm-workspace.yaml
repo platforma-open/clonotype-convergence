@@ -9,34 +9,18 @@ packages:
 catalog:
   "@milaboratories/ts-builder": 1.7.2
   "@milaboratories/ts-configs": 1.4.0
-  "@platforma-sdk/workflow-tengo": 6.8.3
-  "@platforma-sdk/block-tools": 2.14.3
-  "@platforma-sdk/model": 1.83.0
-  "@platforma-sdk/ui-vue": 1.83.3
-  "@platforma-sdk/test": 1.83.2
-  "@platforma-sdk/tengo-builder": 4.0.23
-  "@platforma-sdk/package-builder": 3.15.0
+  "@platforma-sdk/workflow-tengo": 6.10.3
+  "@platforma-sdk/block-tools": 2.15.2
+  "@platforma-sdk/model": 1.83.17
+  "@platforma-sdk/ui-vue": 1.83.17
+  "@platforma-sdk/test": 1.83.19
+  "@platforma-sdk/tengo-builder": 4.0.27
+  "@platforma-sdk/package-builder": 3.16.0
   "@platforma-sdk/blocks-deps-updater": 2.2.0
 
   "@platforma-open/milaboratories.runenv-python-3": 1.10.1
 
-  # other blocks used in tests (author-managed section)
-  "@platforma-open/milaboratories.samples-and-data": 1.18.1
-  "@platforma-open/milaboratories.samples-and-data.model": 2.8.1
-  # MiXCR is held at 2.19.1 for one reason only, and that reason has expired:
-  # 2.21.4+ declares the `requiresColumnsCollection` feature flag, and a
-  # runtime rejects any `requires*` flag missing from its allowlist
-  # (RuntimeCapabilities.getIncompatibleFlags). `ColumnsCollection` joined the
-  # service list in pl-model-common 1.48.0, which is what pl-middle-layer
-  # 1.68.0 -- bundled with @platforma-sdk/test 1.83.2 -- uses; test 1.79.x
-  # carried ML 1.64.42 on pl-model-common 1.46.3, which lacked it.
-  # So this pin can be raised (newest is 2.23.0) once the end-to-end test has
-  # been run against it. Note the boundary is 2.21.4, not 2.20.0.
-  "@platforma-open/milaboratories.mixcr-clonotyping-2": 2.19.1
-  "@platforma-open/milaboratories.mixcr-clonotyping-2.model": 1.26.0
-  "@platforma-open/milaboratories.generation-probability.block": 1.0.0
-
-  "@milaboratories/graph-maker": 1.4.8
+  "@milaboratories/graph-maker": 1.8.0
   "@milaboratories/helpers": 1.14.5
 
   "canonicalize": 2.1.0
