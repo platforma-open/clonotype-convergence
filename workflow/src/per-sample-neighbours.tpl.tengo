@@ -18,6 +18,8 @@ xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pt := import("@platforma-sdk/workflow-tengo:pt")
 pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 
+f := exec.formula
+
 // outputTsv — the convergence columns for this sample (collected as an Xsv
 //             output and reassembled into the block's tables/histograms).
 // log       — this sample's compute-neighbours stdout (collected as a
@@ -67,7 +69,7 @@ self.body(func(inputs) {
 	// 3-field pattern (matches the packing in :pack-input).
 	hasPgen := inputs.hasPgen
 	packedPattern := hasPgen ? "([^|]*)\\|([^|]*)\\|([^|]*)" : "([^|]*)\\|([^|]*)"
-	ptwf := pt.workflow().mem("4GiB").cpu(2)
+	ptwf := pt.workflow()
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
 	unpackCols := [
 		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("aaSeqCDR3"),
@@ -80,8 +82,27 @@ self.body(func(inputs) {
 	}
 	df = df.withColumns(unpackCols...).select(selectCols...)
 	df.save("input.tsv")
+
+	// Collapse to one row per unique aa CDR3 with its nt multiplicity — the
+	// only thing the neighbour statistic reads. Doing it here rather than in
+	// pandas keeps every clonotype's nt CDR3 out of Python: the step's memory
+	// now tracks the sample's unique aa count, not its clonotype count.
+	// The null/empty CDR3 drop moves here too, so the collapse and the join
+	// below agree on the row set (the join is inner, so unusable rows are
+	// dropped from the result exactly as the pandas filter used to drop them).
+	usable := df.filter(
+		pt.col("aaSeqCDR3").isNotNull(),
+		pt.col("nSeqCDR3").isNotNull(),
+		pt.col("aaSeqCDR3").neq(pt.lit("")),
+		pt.col("nSeqCDR3").neq(pt.lit(""))
+	)
+	usable.groupBy(pt.col("aaSeqCDR3")).
+		agg(pt.col("nSeqCDR3").nUnique().alias("multiplicity")).
+		save("per_aa.tsv")
+
 	ptRes := ptwf.run()
 	perSampleInputTsv := ptRes.getFile("input.tsv")
+	perAaTsv := ptRes.getFile("per_aa.tsv")
 
 	// Stage 1 — neighbour density (the expensive STAR run). Pinned with
 	// cacheHours so a threshold-only change recovers it instead of recomputing
@@ -91,50 +112,79 @@ self.body(func(inputs) {
 	// step (a live stream blinks empty between handle-resolve and first line).
 	// status.json carries the unique-nt-CDR3 count + nMin for the
 	// skipped-samples warning.
+	// Memory here tracks ROWS, not bytes — the atriegc trie dominates, and it
+	// costs per unique aa CDR3 rather than per character. Measured 2.7KiB/row
+	// at 1M rows (3.8KiB at 100K, falling with scale); 4KiB carries headroom.
+	// The 1GiB base+floor is the fixed cost of the interpreter and its imports
+	// (~300MB) with headroom — it binds only below ~250K rows, where measured
+	// need is under 400MB. Single-threaded, so cpu stays at 2.
 	neighboursCmd := exec.builder().
 		software(computeNeighboursSw).
-		cpu(2).
-		mem("4GiB").
-		arg("--input").arg("input.tsv").
-		arg("--output").arg("neighbours.tsv").
+		resources({ onCPU: {
+			cpu: 2,
+			ram: f.lineCount("perAa").times(4096).plus(f.gib(1)).
+				between(f.gib(1), f.gib(32)).
+				staticFallback("8GiB")
+		} }).
+		arg("--input").arg("per_aa.tsv").
+		arg("--output").arg("per_aa_stats.tsv").
 		arg("--nMin").arg(string(inputs.nMin)).
 		arg("--chain").arg(inputs.chain).
 		arg("--status-json").arg("status.json").
-		addFile("input.tsv", perSampleInputTsv).
-		saveFile("neighbours.tsv").
+		addFile("per_aa.tsv", perAaTsv, { tag: "perAa" }).
+		saveFile("per_aa_stats.tsv").
 		saveFileContent("status.json").
 		saveStdoutContent().
 		cacheHours(24).
 		run()
 
-	// Stage 2 — hit calling, PARALLEL modes (A-0003/A-0010 v2). fast-STAR runs on
+	// Stage 2 — hit calling, PARALLEL modes. fast-STAR runs on
 	// EVERY chain (the always-on baseline); full-STAR is ADDED when this chain's
-	// Pgen is present. Both emit side by side with distinct v1-style names
-	// (A-0012): fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);
+	// Pgen is present. Both emit side by side with distinct v1-style names:
+	// fast-STAR → nbFreq (= Nb_freq) + fastStar (threshold hit);
 	// full-STAR → fullStarScore (= -log10 p) + fullStar (BH hit).
 	//
 	// When Pgen is present, run full-STAR first: full_star.py emits fullstar.tsv
 	// = neighbours.tsv + Pvalue + starHit over ALL rows, so it's a superset we can
 	// base the merged pt step on. Otherwise base on neighbours.tsv (fast only).
-	baseTsv := neighboursCmd.getFile("neighbours.tsv")
+	// Fan the per-aa stats back onto the per-clonotype rows. Inner, so the
+	// rows the collapse dropped stay dropped and a skipped sample (empty stats)
+	// yields an empty neighbours.tsv — both the old pandas merge's behaviour.
+	joinWf := pt.workflow()
+	joinedDf := joinWf.frame(perSampleInputTsv, { xsvType: "tsv", inferSchema: false }).
+		join(
+			joinWf.frame(neighboursCmd.getFile("per_aa_stats.tsv"), { xsvType: "tsv", inferSchema: false }),
+			{
+				how: "inner",
+				on: "aaSeqCDR3",
+				rightColumns: ["multiplicity", "neighbours", "Nb_freq"]
+			}
+		)
+	joinedDf.save("neighbours.tsv")
+	baseTsv := joinWf.run().getFile("neighbours.tsv")
 	if hasPgen {
 		// full-STAR: Poisson tail vs the Pgen null + Benjamini-Hochberg at alpha.
 		// uniq_nucl is derived from neighbours.tsv's nSeqCDR3 (== the nUniqueNt
 		// compute-neighbours reports), so compute-neighbours stays byte-identical
 		// (its pinned cache survives alpha tweaks). full_star.py emits raw Pvalue
-		// + its BH hit ("starHit"); the pt step below turns those into
-		// fullStarScore = -log10(Pvalue) + fullStar.
+		// (kept for M1/QC) + fullStarScore (= -log10 Pvalue, floored per-sample so
+		// the strongest / Pgen==0 clones stay finite and on-scale) + its BH hit
+		// ("starHit"); the pt step below passes fullStarScore + fullStar through.
 		fullStarCmd := exec.builder().
 			software(fullStarSw).
-			cpu(1).
-			mem("2GiB").
+			resources({ onCPU: {
+				cpu: 1,
+				ram: f.size("input").times(8).plus(f.gib(2)).
+					between(f.gib(2), f.gib(32)).
+					staticFallback("4GiB")
+			} }).
 			arg("--input").arg("neighbours.tsv").
 			arg("--output").arg("fullstar.tsv").
 			arg("--alpha").arg(string(inputs.alpha)).
 			arg("--chain").arg(inputs.chain).
 			arg("--neighbours-column").arg("neighbours").
 			arg("--pgen-column").arg("Pgen").
-			addFile("neighbours.tsv", neighboursCmd.getFile("neighbours.tsv")).
+			addFile("neighbours.tsv", baseTsv, { tag: "input" }).
 			saveFile("fullstar.tsv").
 			run()
 		baseTsv = fullStarCmd.getFile("fullstar.tsv")
@@ -144,7 +194,7 @@ self.body(func(inputs) {
 	// Float64 only where compared, so blank / non-numeric values become null →
 	// "Not hit" / null score. fast-STAR always; full-STAR columns appended when
 	// Pgen was present (Pvalue / starHit exist in the superset base).
-	callWf := pt.workflow().mem("1GiB").cpu(1)
+	callWf := pt.workflow()
 	callCols := [
 		pt.col("Nb_freq").cast("Float64").alias("nbFreq"),
 		pt.when(pt.col("Nb_freq").cast("Float64").gt(pt.lit(inputs.threshold))).
@@ -153,32 +203,62 @@ self.body(func(inputs) {
 			alias("fastStar")
 	]
 	if hasPgen {
+		// full_star.py already derived the floored fullStarScore; pass it through
+		// (do NOT recompute -log10 here — that reintroduces +inf on Pvalue==0).
 		callCols = append(callCols,
-			pt.col("Pvalue").cast("Float64").log10().negate().alias("fullStarScore"),
+			pt.col("fullStarScore").cast("Float64").alias("fullStarScore"),
 			pt.col("starHit").alias("fullStar"))
 	}
 	callDf := callWf.frame(baseTsv, { xsvType: "tsv", inferSchema: false }).withColumns(callCols...)
 	callDf.save("called.tsv")
 	calledTsv := callWf.run().getFile("called.tsv")
 
-	// Stage 3 — paper's cluster filter, only when enabled. Refines the fast-STAR
-	// hit (fastStar) → fastStarClusterFiltered + clusterSize (A-0012). One sample
-	// per invocation, so clustering is within this sample's rows.
+	// Stage 3 — paper's cluster filter, only when enabled. Runs ONCE PER EMITTED
+	// MODE, refining that mode's hit set: fastStar always, fullStar too when
+	// this chain carries full-STAR. Each mode gets its own filtered + size
+	// columns because clusters are computed over the HIT SUBSET — the two hit
+	// sets differ, so their cluster structures (and sizes) differ with them.
+	// One sample per invocation, so clustering is within this sample's rows.
+	//
+	// Chained, not parallel: each invocation appends its two columns to the
+	// whole table, so the second must start from the first's output.
+	clusterModes := [{ hit: "fastStar", filtered: "fastStarClusterFiltered", size: "fastStarClusterSize" }]
+	if hasPgen {
+		clusterModes = append(clusterModes, { hit: "fullStar", filtered: "fullStarClusterFiltered", size: "fullStarClusterSize" })
+	}
+
 	finalTsv := calledTsv
 	if inputs.applyClusterFilter {
-		clusterCmd := exec.builder().
-			software(clusterFilterSw).
-			cpu(1).
-			mem("4GiB").
-			arg("--input").arg("called.tsv").
-			arg("--output").arg("output.tsv").
-			arg("--cluster-min").arg(string(inputs.clusterMin)).
-			arg("--chain").arg(inputs.chain).
-			arg("--hit-column").arg("fastStar").
-			addFile("called.tsv", finalTsv).
-			saveFile("output.tsv").
-			run()
-		finalTsv = clusterCmd.getFile("output.tsv")
+		for i, mode in clusterModes {
+			outName := "clustered_" + string(i) + ".tsv"
+			// Memory here is the pandas read of the whole per-sample table, which
+			// grows with the sample; the DBSCAN itself is flat (~150MB, measured
+			// constant from 400 to 1600 hits — sklearn chunks the pairwise pass).
+			// What does NOT scale is this step's RUNTIME: DBSCAN with a callable
+			// metric calls it once per pair at ~1.6us, so the cost is quadratic in
+			// the HIT count — ~11 min at 20K hits, ~4h at 100K. No budget bounds
+			// that; it needs the eps=1/min_samples=1 clustering rewritten as
+			// connected components over a Levenshtein-1 neighbour join.
+			clusterCmd := exec.builder().
+				software(clusterFilterSw).
+				resources({ onCPU: {
+					cpu: 1,
+					ram: f.size("input").times(8).plus(f.gib(1)).
+						between(f.gib(1), f.gib(32)).
+						staticFallback("4GiB")
+				} }).
+				arg("--input").arg("called.tsv").
+				arg("--output").arg(outName).
+				arg("--cluster-min").arg(string(inputs.clusterMin)).
+				arg("--chain").arg(inputs.chain).
+				arg("--hit-column").arg(mode.hit).
+				arg("--filtered-column").arg(mode.filtered).
+				arg("--size-column").arg(mode.size).
+				addFile("called.tsv", finalTsv, { tag: "input" }).
+				saveFile(outName).
+				run()
+			finalTsv = clusterCmd.getFile(outName)
+		}
 	}
 
 	return {

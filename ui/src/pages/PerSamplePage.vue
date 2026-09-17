@@ -4,7 +4,7 @@ import { useApp } from "../app";
 
 const app = useApp();
 
-// Per-sample table (A-0015): v1's internal per-sample family with the
+// Per-sample table: v1's internal per-sample family with the
 // single-sample sheet selector, for inspecting a clonotype's convergence signal
 // sample by sample. `sheets` adds the sample picker (SDK pins to one sample at a
 // time). This is the internal per-sample view, distinct from the aggregated,

@@ -12,23 +12,25 @@ CLI:
         --chain <str>
         [--status-json <path>]
 
-Input TSV is ONE sample's clonotypes (the per-sample fan-out slices the
-whole-dataset input by sampleId before this runs — see
-workflow/src/per-sample-neighbours.tpl.tengo). It must contain `aaSeqCDR3`
-and `nSeqCDR3` columns; any other columns (e.g. the clonotype-key axis) pass
-through unused. Abundance is intentionally NOT provided — the neighbour count
-is weighted by nt-per-aa multiplicity, not read abundance.
+Input TSV is ONE sample's PER-AA table: `aaSeqCDR3` (unique) and
+`multiplicity` (distinct nt CDR3s collapsed into that aa CDR3). The
+collapse, the null/empty CDR3 drop, and the fan-back-out to per-clonotype
+rows all happen in ptabler around this step — see
+workflow/src/per-sample-neighbours.tpl.tengo. This step therefore never sees
+an nt CDR3 or a clonotype key, and its memory scales with the sample's
+unique aa CDR3 count rather than its clonotype count.
 
-Output TSV is the input TSV with three columns appended:
-    multiplicity  — nt-CDR3 count per aa CDR3 (informational)
+Output TSV is one row per unique aa CDR3:
+    aaSeqCDR3     — the key the workflow joins back on
+    multiplicity  — nt-CDR3 count per aa CDR3 (passed through)
     neighbours    — multiplicity-weighted Hamming-1 neighbour count
     Nb_freq       — neighbours / N_nt (continuous density)
 
 `--status-json` writes `{"nUniqueNt": <int>, "nMin": <int>}` — the
-unique-nt-CDR3 count for this sample (after dropping null/empty CDR3s) and
-the floor in effect. The model reads it per sample to decide the
-skipped-samples warning (below nMin vs no usable CDR3); it exists even when
-the sample is skipped and the output TSV is empty.
+unique-nt-CDR3 count for this sample (the sum of the multiplicity column,
+which the collapse computed over non-null CDR3s) and the floor in effect.
+The model reads it per sample to decide the skipped-samples warning; it
+exists even when the sample is skipped and the output TSV is empty.
 
 Structured stdout, one event per line, prefixed ``[chain <chain>]``. The
 sample identity is supplied by the workflow (the result is keyed by the
@@ -48,6 +50,8 @@ from get_df import Get_df
 
 
 SAMPLE_SIZE_WARN = 10_000
+
+OUTPUT_COLUMNS = ["aaSeqCDR3", "multiplicity", "neighbours", "Nb_freq"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,28 +75,15 @@ def log(prefix: str, msg: str) -> None:
     print(f"{prefix} {msg}")
 
 
-def process_sample(
-    sample_df: pd.DataFrame,
-    chain: str,
-    n_min: int,
-):
-    """Run Get_df on this sample's rows. Returns ``(annotated_df_or_None,
-    n_nt)`` — the dataframe is None when the sample's unique-nt-CDR3 count is
-    below the nMin floor; ``n_nt`` is always the post-drop unique-nt count so
-    the caller can report it regardless of the skip decision."""
+def process_sample(per_aa: pd.DataFrame, chain: str, n_min: int):
+    """Run Get_df on this sample's per-aa table. Returns ``(stats_or_None,
+    n_nt)`` — the frame is None when the sample's unique-nt-CDR3 count is
+    below the nMin floor; ``n_nt`` is always reported so the caller can write
+    the status sidecar regardless of the skip decision."""
     prefix = f"[chain {chain}]"
-    log(prefix, f"input rows: {len(sample_df)}")
 
-    # Drop rows with null / empty / NaN in either CDR3 column.
-    before = len(sample_df)
-    df = sample_df[sample_df["aaSeqCDR3"].notna() & sample_df["nSeqCDR3"].notna()]
-    df = df[(df["aaSeqCDR3"] != "") & (df["nSeqCDR3"] != "")]
-    dropped = before - len(df)
-    if dropped > 0:
-        log(prefix, f"dropped {dropped} rows with null/empty aaSeqCDR3 or nSeqCDR3")
-
-    n_nt = int(df["nSeqCDR3"].nunique())
-    n_aa = int(df["aaSeqCDR3"].nunique())
+    n_aa = len(per_aa)
+    n_nt = int(per_aa["multiplicity"].astype(int).sum()) if n_aa else 0
     log(prefix, f"unique nt CDR3: {n_nt}")
     log(prefix, f"unique aa CDR3: {n_aa}")
 
@@ -112,33 +103,29 @@ def process_sample(
             "signal may be unreliable (paper-reported lower bound for stable STAR estimates)",
         )
 
-    star_input = df[["aaSeqCDR3", "nSeqCDR3"]].reset_index(drop=True)
-    per_aa = Get_df(star_input).make()
-
-    stats = per_aa.rename(
+    stats = Get_df(per_aa).make().rename(
         columns={
+            "Multiplicity": "multiplicity",
             "Neighbours": "neighbours",
             "Nb_freq": "Nb_freq",
-            "Multiplicity": "multiplicity",
         }
-    )[["aaSeqCDR3", "multiplicity", "neighbours", "Nb_freq"]]
-    out = df.merge(stats, on="aaSeqCDR3", how="left")
-    log(prefix, f"output rows: {len(out)}")
-    return out, n_nt
+    )[OUTPUT_COLUMNS]
+    log(prefix, f"output rows: {len(stats)}")
+    return stats, n_nt
 
 
 def main() -> int:
     args = parse_args()
 
-    df = pd.read_csv(args.input, sep="\t")
+    per_aa = pd.read_csv(args.input, sep="\t")
 
-    required = {"aaSeqCDR3", "nSeqCDR3"}
-    missing = required - set(df.columns)
+    required = {"aaSeqCDR3", "multiplicity"}
+    missing = required - set(per_aa.columns)
     if missing:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
-    result, n_nt = process_sample(df, args.chain, args.nMin)
+    result, n_nt = process_sample(per_aa, args.chain, args.nMin)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -153,14 +140,12 @@ def main() -> int:
         )
 
     if result is None:
-        # Below nMin — emit a header-only TSV and exit 0 so the downstream
-        # pipeline (threshold + xsv.importFile) produces empty PColumns
-        # rather than aborting. The model surfaces the skip via the status
-        # sidecar; the empty rows drop the sample from the assembled output.
-        empty = pd.DataFrame(
-            columns=list(df.columns) + ["multiplicity", "neighbours", "Nb_freq"]
-        )
-        empty.to_csv(args.output, sep="\t", index=False)
+        # Below nMin — emit a header-only TSV and exit 0. The workflow joins
+        # this onto the clonotype rows with an INNER join, so an empty stats
+        # table yields an empty neighbours.tsv, which is what drops the sample
+        # from the assembled output. The model surfaces the skip via the
+        # status sidecar.
+        pd.DataFrame(columns=OUTPUT_COLUMNS).to_csv(args.output, sep="\t", index=False)
         print(
             f"[chain {args.chain}] unique nt CDR3 ({n_nt}) below nMin "
             f"({args.nMin}); emitting empty output"

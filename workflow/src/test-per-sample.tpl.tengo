@@ -1,0 +1,79 @@
+// TEST HARNESS — not part of the block's pipeline.
+//
+// :per-sample-neighbours takes the sample's slice as PColumn DATA (it exports
+// that back to a TSV before unpacking), and a test cannot manufacture a PColumn
+// resource directly — the render helper only creates JSON values. This template
+// closes that gap: it materialises a packed TSV passed as text, imports it into
+// the one-axis String PColumn the per-sample body expects, renders that body,
+// and hands the resulting TSV back as a downloadable blob the test can read.
+//
+// The packed column spec and the clonotype axis mirror :main exactly, so what
+// the test exercises is the real per-sample chain (pt collapse ->
+// compute-neighbours -> pt join), not a paraphrase of it.
+self := import("@platforma-sdk/workflow-tengo:tpl")
+assets := import("@platforma-sdk/workflow-tengo:assets")
+exec := import("@platforma-sdk/workflow-tengo:exec")
+file := import("@platforma-sdk/workflow-tengo:file")
+xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
+render := import("@platforma-sdk/workflow-tengo:render")
+pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
+
+perSampleTpl := assets.importTemplate(":per-sample-neighbours")
+
+self.defineOutputs("resultTsv")
+
+// The clonotype axis the packed column is keyed by — same shape :main threads
+// through from the anchor.
+// `domain` must be present: :per-sample-neighbours copies it straight into the
+// export spec, and an absent one serialises as null, which the pframe spec
+// parser rejects ("invalid type: unit value, expected a map").
+clonoAxisSpec := {
+	name: "pl7.app/vdj/clonotypeKey",
+	type: "String",
+	domain: {},
+	annotations: { "pl7.app/label": "Clonotype" }
+}
+
+self.body(func(inputs) {
+	// inputs.packedTsv — TSV text, columns clonotypeKey + packed, where packed
+	// is "aaSeqCDR3|nSeqCDR3" ("...|Pgen" when hasPgen). Materialised through a
+	// no-op exec because writeFile is the only way to turn text into a file.
+	packedFile := exec.builder().
+		cpu(1).
+		mem("512MiB").
+		cmd("env").
+		writeFile("packed.tsv", inputs.packedTsv).
+		saveFile("packed.tsv").
+		run().
+		getFile("packed.tsv")
+
+	packedFrame := xsv.importFile(packedFile, "tsv", {
+		axes: [{ column: "clonotypeKey", spec: clonoAxisSpec }],
+		columns: [{
+			column: "packed",
+			spec: {
+				name: "pl7.app/vdj/convergence/perSampleInput",
+				valueType: "String",
+				annotations: { "pl7.app/label": "Per-sample convergence input (packed)" }
+			}
+		}]
+	}, { splitDataAndSpec: true })
+
+	bodyInputs := {
+		clonoAxisSpec: clonoAxisSpec,
+		hasPgen: inputs.hasPgen == true,
+		nMin: inputs.nMin,
+		chain: inputs.chain,
+		threshold: inputs.threshold,
+		alpha: inputs.alpha,
+		applyClusterFilter: inputs.applyClusterFilter == true,
+		clusterMin: inputs.clusterMin
+	}
+	bodyInputs[pConstants.VALUE_FIELD_NAME] = packedFrame["packed"].data
+
+	result := render.create(perSampleTpl, bodyInputs)
+
+	return {
+		resultTsv: file.exportFile(result.output("outputTsv"))
+	}
+})

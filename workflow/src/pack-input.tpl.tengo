@@ -38,6 +38,11 @@ self.body(func(inputs) {
 	sampleAxisSpec := inputs.sampleAxisSpec
 	clonoAxisSpec := inputs.clonoAxisSpec
 
+	// No cpu/mem on the three steps below: this is the only whole-project step
+	// of the block (the rest runs per-sample), and the k8s runner turns a
+	// declared request into a hard container limit. Unset, the SDK sizes them
+	// from the actual input; a fixed 4GiB OOM-killed the join on big projects.
+
 	// Build one TSV keyed by (sampleId, clonotypeKey). Clean axis headers so the
 	// pt encode below references fixed names. abundance is the only 2-axis
 	// (sampleId, clonotypeKey) column, so it supplies the sampleId dimension of
@@ -45,8 +50,6 @@ self.body(func(inputs) {
 	// is unused downstream, so it's added here purely as the sampleId-axis
 	// carrier and left out of the packed string.
 	rawTsvBuilder := pframes.tsvFileBuilder()
-	rawTsvBuilder.cpu(2)
-	rawTsvBuilder.mem("4GiB")
 	rawTsvBuilder.setAxisHeader(sampleAxisSpec.name, "sampleId")
 	rawTsvBuilder.setAxisHeader(clonoAxisSpec.name, "clonotypeKey")
 	rawTsvBuilder.add({ spec: inputs.aaSpec, data: inputs.aaData }, { header: "aaSeqCDR3" })
@@ -69,7 +72,7 @@ self.body(func(inputs) {
 	// dropped by the select — it was only needed to establish the sampleId rows
 	// above). Null Pgen -> "" first, so concatStr keeps the row (a null element
 	// would null the whole packed value and drop the clone's CDR3s).
-	encWf := pt.workflow().mem("4GiB").cpu(2)
+	encWf := pt.workflow()
 	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
 	packFields := [pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")]
 	if hasPgen {
@@ -99,7 +102,7 @@ self.body(func(inputs) {
 		}],
 		storageFormat: "Parquet",
 		partitionKeyLength: 1
-	}, { splitDataAndSpec: true, mem: "4GiB", cpu: 2 })
+	}, { splitDataAndSpec: true })
 
 	return {
 		packed: encodedFrame["packed"].data

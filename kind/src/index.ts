@@ -10,8 +10,7 @@ import { name, version } from "../package.json" with { type: "json" };
  *
  * Left out: `datasetFacts` and `datasetLabel`, which the picker derives from
  * the chosen dataset (and which `app.ts` keeps refreshing from the block's own
- * outputs), the dead `settingsOpen` / `logsOpen` fields the UI no longer reads,
- * and the table / chart view state.
+ * outputs), and the table / chart view state.
  *
  * Because the facts snapshot is derived rather than templated, a block seeded
  * from params holds `datasetRef` without facts until the UI recomputes them --
@@ -35,7 +34,6 @@ export type BlockParams = {
   expectedFilterRef?: PlRef;
   expectedValues?: string[];
   groupingRef?: PlRef;
-  scoreWeight?: number;
   customBlockLabel?: string;
 };
 
@@ -55,7 +53,6 @@ function parseInitializationParams(value: unknown): BlockParams {
     expectedFilterRef,
     expectedValues,
     groupingRef,
-    scoreWeight,
     customBlockLabel,
   } = value;
 
@@ -71,7 +68,6 @@ function parseInitializationParams(value: unknown): BlockParams {
   assertOptionalNumber(nMin, "nMin");
   assertOptionalNumber(alpha, "alpha");
   assertOptionalNumber(clusterMin, "clusterMin");
-  assertOptionalNumber(scoreWeight, "scoreWeight");
 
   if (
     expectedValues !== undefined &&
@@ -95,7 +91,6 @@ function parseInitializationParams(value: unknown): BlockParams {
     expectedFilterRef,
     expectedValues: expectedValues as string[] | undefined,
     groupingRef,
-    scoreWeight,
     customBlockLabel,
   };
 }

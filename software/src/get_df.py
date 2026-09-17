@@ -1,106 +1,91 @@
 # get_df.py — fast-STAR neighbour-density computation.
 #
-# Vendored verbatim from statbiophys/STAR (file: all_class/get_df.py).
+# Derived from statbiophys/STAR (file: all_class/get_df.py).
 # Repository: https://github.com/statbiophys/STAR
 # Paper: Abbate et al., PNAS 2024 (DOI: 10.1073/pnas.2401058121).
 #
-# The implementation is the paper's fast-STAR density statistic:
+# The statistic is the paper's fast-STAR neighbour density, unchanged:
 #   - per aa CDR3, count Hamming-1 same-length aa neighbours
 #   - weight each neighbour by its nt-CDR3 multiplicity
 #   - normalise by the total unique nt CDR3 count (N)
-# Matches the paper's Methods section ("Computation of neighbour density").
+# Matches the paper's Methods section ("Computation of neighbour density"),
+# and is checked against the paper's own test input in
+# test/test_get_df_equivalence.py.
+#
+# INPUT SHAPE (MILAB-6650): this takes the PER-AA table — one row per unique
+# aa CDR3 with its nt multiplicity — not the per-clonotype table upstream
+# STAR read. The multiplicity collapse and the fan-back-out to per-clonotype
+# rows both moved into ptabler, which streams and spills; doing them here held
+# every clonotype's nt CDR3 in Python objects at once and a 15.7M-clonotype
+# sample needed ~40-60 GB. N (the normaliser) is the sum of the multiplicity
+# column, which is exactly the unique-nt count the collapse counted.
+#
+# Two things upstream computed that are gone with that input shape:
+#   - `Frequency` (per-aa share of CLONOTYPE rows) needed the pre-collapse row
+#     count. Nothing consumed it — compute_neighbours.py never selected it.
+#   - the dict round-trips (`set_index().to_dict()`, called twice, building
+#     four dicts to use two). Results are now carried as plain lists and
+#     assembled into the frame once.
+#
+# Earlier patch, kept: upstream called `multiplicity()` inside the inner
+# per-neighbour loop, recomputing the whole dict O(N*K) times, and assigned
+# results with `df.loc[k, col] = value` per row. Both are algebraic; same
+# result, dramatically faster (MILAB-6354, 2026-06-02).
 
-import os
-import numpy as np
 import pandas as pd
 import atriegc
 
-# Note: upstream STAR imports `from numba import jit` here, but never
-# actually applies @jit anywhere in this file. We drop the import to
-# avoid bundling numba in the runenv unnecessarily — the algorithm
-# runs at the same speed without it.
-#
-# PATCH (2026-06-02, MILAB-6354): upstream `neighbours()` had two
-# compounding performance bugs that made it ~hours-slow on real-world
-# inputs (~100K unique CDR3s):
-#   1. `self.multiplicity()` was called inside the inner per-neighbour
-#      loop — recomputed the entire dict O(N×K) times instead of once.
-#   2. `df_nb.loc[k1, col] = value` per row triggers pandas dtype
-#      checks + (in 2.x) copy-on-write per assignment — N×slow vs.
-#      one bulk column build.
-# Both fixes are algebraic; same result, dramatically faster (verified
-# on SRR8377674 / 83K CDR3s: ~30+ min → seconds).
-
 
 class Get_df:
+    """Neighbour density over a per-aa table.
+
+    `data` must carry `aaSeqCDR3` (unique) and `multiplicity` (count of
+    distinct nt CDR3s collapsed into that aa CDR3).
+    """
+
     def __init__(self, data):
         self.data = data
 
-    def frequency(self):
-        # PATCH: groupby().size() instead of dummy-size + groupby().sum().
-        # Upstream pattern triggers pandas 2.x string-concat / numeric_only
-        # deprecation warnings (and is slower); .size() is direct and safe.
-        n_df = len(self.data)
-        if n_df == 0:
-            return {}
-        sizes = self.data.groupby("aaSeqCDR3", sort=False).size()
-        return (sizes / n_df).to_dict()
-
-
-    def multiplicity(self):
-        # PATCH: same .size() rewrite as frequency().
-        unique_nucl = self.data.drop_duplicates("nSeqCDR3")
-        n_df = len(unique_nucl)
-        if n_df == 0:
-            return {}, 0
-        sizes = unique_nucl.groupby("aaSeqCDR3", sort=False).size().astype(int)
-        return sizes.to_dict(), n_df
-
-
-    def neighbours(self):
-        distance = 1
-        tr = atriegc.TrieAA()
-        df_nb = pd.DataFrame(self.data["aaSeqCDR3"])
-        df_nb.drop_duplicates("aaSeqCDR3", inplace=True)
-        df_nb.reset_index(drop=True, inplace=True)
-        n_df = len(df_nb)
-
-        # Hoist multiplicity() out of the loop (PATCH point 1) —
-        # it's invariant; upstream recomputed it N×K times.
-        dic, n_un = self.multiplicity()
-
-        for k1 in range(n_df):
-            tr.insert(df_nb["aaSeqCDR3"][k1])
-
-        # Collect per-row results in plain lists, build columns once
-        # (PATCH point 2) — upstream used df_nb.loc[k1, col]=value per
-        # row, which is ~100-1000× slower than bulk column assignment
-        # in pandas 2.x.
-        nb_neighbours_real = [0] * n_df
-        nb_freq = [0.0] * n_df
-        for k1 in range(n_df):
-            a = tr.neighbours(df_nb["aaSeqCDR3"][k1], distance)
-            c = 0
-            for d in a:
-                c += int(dic[d])
-            nb_neighbours_real[k1] = c - 1
-            nb_freq[k1] = (c - 1) / n_un
-        df_nb["nb_neighbours_real"] = nb_neighbours_real
-        df_nb["nb_freq"] = nb_freq
-
-        temp = df_nb.set_index("aaSeqCDR3").to_dict()["nb_neighbours_real"]
-        temp1 = df_nb.set_index("aaSeqCDR3").to_dict()["nb_freq"]
-        return temp, temp1
-
     def make(self):
-        df_read=pd.DataFrame(self.data["aaSeqCDR3"])
-        df_read.drop_duplicates("aaSeqCDR3",inplace=True)
-        df_read.reset_index(drop=True,inplace=True)
-        dic_1 = self.frequency()
-        dic_2 = self.multiplicity()[0]
-        dic_3, dic_4 = self.neighbours()
-        df_read["Frequency"]=df_read.aaSeqCDR3.map(dic_1)
-        df_read["Multiplicity"]=df_read.aaSeqCDR3.map(dic_2)
-        df_read["Neighbours"]=df_read.aaSeqCDR3.map(dic_3)
-        df_read["Nb_freq"]=df_read.aaSeqCDR3.map(dic_4)
-        return df_read
+        seqs = self.data["aaSeqCDR3"].astype(str).tolist()
+        mult = self.data["multiplicity"].astype(int).tolist()
+
+        if not seqs:
+            return pd.DataFrame(
+                {"aaSeqCDR3": [], "Multiplicity": [], "Neighbours": [], "Nb_freq": []}
+            )
+
+        # N — total unique nt CDR3s in the sample. The per-aa multiplicities
+        # partition the unique nt set, so their sum is that count exactly.
+        n_un = sum(mult)
+        if n_un == 0:
+            return pd.DataFrame(
+                {"aaSeqCDR3": seqs, "Multiplicity": mult, "Neighbours": [0] * len(seqs), "Nb_freq": [0.0] * len(seqs)}
+            )
+
+        dic = dict(zip(seqs, mult))
+
+        tr = atriegc.TrieAA()
+        for seq in seqs:
+            tr.insert(seq)
+
+        neighbours = [0] * len(seqs)
+        nb_freq = [0.0] * len(seqs)
+        for i, seq in enumerate(seqs):
+            # tr.neighbours() returns the sequences within Hamming distance 1
+            # INCLUDING seq itself; the paper subtracts one to exclude the
+            # clone itself, not its whole multiplicity.
+            c = 0
+            for d in tr.neighbours(seq, 1):
+                c += int(dic[d])
+            neighbours[i] = c - 1
+            nb_freq[i] = (c - 1) / n_un
+
+        return pd.DataFrame(
+            {
+                "aaSeqCDR3": seqs,
+                "Multiplicity": mult,
+                "Neighbours": neighbours,
+                "Nb_freq": nb_freq,
+            }
+        )
