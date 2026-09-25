@@ -110,6 +110,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
     // No init default of their own -- unset unless a template seeds them.
     // `thresholdL` deliberately stays absent (see above).
     datasetRef: params?.datasetRef,
+    filterRef: params?.filterRef,
     processLightChain: params?.processLightChain,
     thresholdL: params?.thresholdL,
     expectedFilterRef: params?.expectedFilterRef,

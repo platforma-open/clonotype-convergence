@@ -87,6 +87,10 @@ export type BlockArgs = {
   pgenRefHeavy?: PlRef;
   pgenRefLight?: PlRef;
 
+  /** Optional subset column restricting the dataset's clonotypes (see
+   *  BlockData.filterRef). Applies to both chains: they share the anchor. */
+  filterRef?: PlRef;
+
   /** Sample-size floor. Default 100. */
   nMin: number;
 
@@ -143,6 +147,9 @@ export type BlockData = {
    *  args.chainH or args.chainL depending on the picked chain's
    *  identity. */
   datasetRef?: PlRef;
+  /** Optional `pl7.app/isSubset` column picked alongside the dataset (e.g. a
+   *  repertoire-labeling label). Only clonotypes present in it are analysed. */
+  filterRef?: PlRef;
   /** Snapshot facts for `datasetRef`. Written by the picker handler in
    *  the same user-gesture as `datasetRef`. */
   datasetFacts?: UpstreamFacts;

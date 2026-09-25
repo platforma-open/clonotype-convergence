@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import type { PlRef } from "@platforma-sdk/model";
-import { PFrameImpl } from "@platforma-sdk/model";
+import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
+import { createDatasetSelection, createPrimaryRef, PFrameImpl } from "@platforma-sdk/model";
 import {
   PlAccordion,
   PlAccordionSection,
   PlCheckbox,
+  PlDatasetSelector,
   PlDropdown,
   PlDropdownMulti,
-  PlDropdownRef,
   PlNumberField,
   PlTooltip,
   useWatchFetch,
@@ -97,6 +97,22 @@ function onPickDataset(ref: PlRef | undefined) {
   app.model.data.processLightChain = false;
 }
 
+// The selector picks a dataset, or a dataset narrowed by one of its subset columns.
+// Stored as two refs so blocks saved before filters existed keep their `datasetRef`.
+// The filter is written first: `onPickDataset` returns early when only the filter
+// changed (same dataset), and the snapshot it guards doesn't depend on the filter.
+const datasetSelection = computed<DatasetSelection | undefined>({
+  get: () => {
+    const { datasetRef, filterRef } = app.model.data;
+    if (datasetRef === undefined) return undefined;
+    return createDatasetSelection(createPrimaryRef(datasetRef, filterRef));
+  },
+  set: (selection) => {
+    app.model.data.filterRef = selection?.primary.filter;
+    onPickDataset(selection?.primary.column);
+  },
+});
+
 // Which chain(s) are detected on the dataset pick. The dataset itself
 // may carry both chains (SC IG anchor) but we only AUTO-process the
 // heavy slot — LC opt-in goes through the SC checkbox. Bulk mode
@@ -137,19 +153,19 @@ function onToggleLightCheckbox(v: boolean) {
 </script>
 
 <template>
-  <PlDropdownRef
+  <PlDatasetSelector
+    v-model="datasetSelection"
     :options="app.model.outputs.datasetOptions"
-    :model-value="app.model.data.datasetRef"
     label="Input dataset"
     clearable
     required
-    @update:model-value="onPickDataset"
   >
     <template #tooltip>
       VDJ output to analyze. Accepts any B-cell receptor — bulk Heavy/Light, or single-cell. T-cell
-      receptors aren't supported. For in-vivo (immunised) repertoires only.
+      receptors aren't supported. For in-vivo (immunised) repertoires only. Pick one of its subsets
+      (for example a label from Repertoire Labeling) to analyze only the clonotypes in that subset.
     </template>
-  </PlDropdownRef>
+  </PlDatasetSelector>
 
   <!-- Heavy-chain fast-STAR threshold. fast-STAR runs on every chain, so this
        is always shown when heavy is processed. -->

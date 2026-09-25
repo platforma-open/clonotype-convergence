@@ -25,6 +25,7 @@ import { name, version } from "../package.json" with { type: "json" };
  */
 export type BlockParams = {
   datasetRef?: PlRef;
+  filterRef?: PlRef;
   processLightChain?: boolean;
   thresholdH?: number;
   thresholdL?: number;
@@ -45,6 +46,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   const {
     datasetRef,
+    filterRef,
     processLightChain,
     thresholdH,
     thresholdL,
@@ -60,6 +62,7 @@ function parseInitializationParams(value: unknown): BlockParams {
   } = value;
 
   assertOptionalPlRef(datasetRef, "datasetRef");
+  assertOptionalPlRef(filterRef, "filterRef");
   assertOptionalPlRef(expectedFilterRef, "expectedFilterRef");
   assertOptionalPlRef(groupingRef, "groupingRef");
 
@@ -85,6 +88,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   return {
     datasetRef,
+    filterRef,
     processLightChain,
     thresholdH,
     thresholdL,

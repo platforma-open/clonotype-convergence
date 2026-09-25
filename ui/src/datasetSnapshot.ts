@@ -27,6 +27,6 @@ export function factsFor(model: AppModel, ref: PlRef | undefined) {
 export function labelFor(model: AppModel, ref: PlRef | undefined): string | undefined {
   if (!ref) return undefined;
   return model.outputs.datasetOptions?.find(
-    (o) => o.ref.blockId === ref.blockId && o.ref.name === ref.name,
-  )?.label;
+    (o) => o.primary.ref.blockId === ref.blockId && o.primary.ref.name === ref.name,
+  )?.primary.label;
 }

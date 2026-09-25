@@ -151,6 +151,12 @@ wf.prepare(func(args) {
 		bb.addSingle(args.groupingRef, "grouping")
 	}
 
+	// Optional subset column picked alongside the dataset (PlDatasetSelector).
+	// Shared by both chains: they hang off the same anchor.
+	if !is_undefined(args.filterRef) {
+		bb.addSingle(args.filterRef, "subsetFilter")
+	}
+
 	return { columns: bb.build() }
 })
 
@@ -240,6 +246,13 @@ wf.body(func(args) {
 			pgenCol := columns.getColumn(pgenKey)
 			packInputs.pgenData = pgenCol.data
 			packInputs.pgenSpec = pgenCol.spec
+		}
+		// Optional subset filter: only its clonotypes are packed, so every later
+		// stage (neighbours, STAR, aggregation) sees the filtered set.
+		if !is_undefined(args.filterRef) {
+			filterCol := columns.getColumn("subsetFilter")
+			packInputs.filterData = filterCol.data
+			packInputs.filterSpec = filterCol.spec
 		}
 		packRender := render.create(packInputTpl, packInputs)
 		packedData := packRender.output("packed", 24 * times.hour)
