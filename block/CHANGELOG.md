@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence
 
+## 1.4.1
+
+### Patch Changes
+
+- ca3c31c: Update SDK: PlAgDataTable no longer recreates its grid in an endless loop
+
 ## 1.4.0
 
 ### Minor Changes
