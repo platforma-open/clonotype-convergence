@@ -11,6 +11,19 @@ import {
 import type { UpstreamFacts } from "./types";
 
 /**
+ * Whether a Pgen stamped with `pgenSubset` (undefined = computed on full data) can serve a run
+ * on `subsetId` (undefined = full data). Full-data Pgen always can: Pgen is per sequence. A
+ * subset's Pgen only serves that same subset; anywhere else the clonotypes outside it would be
+ * untestable.
+ */
+export function pgenUsableFor(
+  pgenSubset: string | undefined,
+  subsetId: string | undefined,
+): boolean {
+  return pgenSubset === undefined || pgenSubset === subsetId;
+}
+
+/**
  * Walk the siblings of `ref` on its shared axes and aggregate facts:
  * which chains appear, whether the required CDR3 + abundance siblings
  * are present, and the axis name (drives mode detection).
@@ -117,8 +130,7 @@ export function discoverUpstreamFacts<A, U>(
       // Same clonotype axis as the dataset ⇒ same clonotyping run.
       if (axisKey(a) !== cloneAxisKey) continue;
       // Generation Probability stamps a subset run's Pgen with `pl7.app/subset`.
-      const pgenSubset = s.domain?.[SUBSET_DOMAIN];
-      if (pgenSubset !== undefined && pgenSubset !== subsetId) continue;
+      if (!pgenUsableFor(s.domain?.[SUBSET_DOMAIN], subsetId)) continue;
       if (isSC) {
         const idx = s.domain?.["pl7.app/vdj/scClonotypeChain/index"];
         if (idx !== undefined && idx !== "primary") continue;
