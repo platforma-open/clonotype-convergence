@@ -81,8 +81,6 @@ self.body(func(inputs) {
 		filterColumn = { spec: inputs.filterSpec, data: inputs.filterData }
 	}
 	rawTsvBuilder := newTableBuilder(filterColumn)
-	rawTsvBuilder.cpu(2)
-	rawTsvBuilder.mem("4GiB")
 	rawTsvBuilder.setAxisHeader(sampleAxisSpec.name, "sampleId")
 	rawTsvBuilder.setAxisHeader(clonoAxisSpec.name, "clonotypeKey")
 	rawTsvBuilder.add({ spec: inputs.aaSpec, data: inputs.aaData }, { header: "aaSeqCDR3" })
@@ -104,7 +102,9 @@ self.body(func(inputs) {
 	// Pack aaSeqCDR3|nSeqCDR3(|Pgen) into one String per row (abundance is
 	// dropped by the select — it was only needed to establish the sampleId rows
 	// above). Null Pgen -> "" first, so concatStr keeps the row (a null element
-	// would null the whole packed value and drop the clone's CDR3s).
+	// would null the whole packed value and drop the clone's CDR3s). The CDR3s get
+	// the same treatment: the filtered table writes a missing value as an empty
+	// field rather than the quoted "" the xsv export writes.
 	encWf := pt.workflow()
 	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
 	packFields := [pt.col("aaSeqCDR3").fillNull(pt.lit("")), pt.col("nSeqCDR3").fillNull(pt.lit(""))]
@@ -135,7 +135,7 @@ self.body(func(inputs) {
 		}],
 		storageFormat: "Parquet",
 		partitionKeyLength: 1
-		}, { splitDataAndSpec: true })
+	}, { splitDataAndSpec: true })
 
 	return {
 		packed: encodedFrame["packed"].data
