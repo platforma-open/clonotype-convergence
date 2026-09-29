@@ -1,16 +1,29 @@
 import type { PlRef, RenderCtxBase } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
-import { isHeavy, isLight, PGEN_NAME, SC_AXIS, SC_CHAIN_FROM_LETTER } from "./chains";
+import {
+  isHeavy,
+  isLight,
+  PGEN_NAME,
+  SC_AXIS,
+  SC_CHAIN_FROM_LETTER,
+  SUBSET_DOMAIN,
+} from "./chains";
 import type { UpstreamFacts } from "./types";
 
 /**
  * Walk the siblings of `ref` on its shared axes and aggregate facts:
  * which chains appear, whether the required CDR3 + abundance siblings
  * are present, and the axis name (drives mode detection).
+ *
+ * `subsetId` is the column id of the subset this block runs on, undefined for a full-data
+ * run. A Pgen computed on a subset is taken only for that same subset: for any other input,
+ * clonotypes outside it would be untestable, and full-STAR would silently lose their hits.
+ * A full-data Pgen is always valid (Pgen is per sequence).
  */
 export function discoverUpstreamFacts<A, U>(
   ctx: RenderCtxBase<A, U>,
   ref: PlRef,
+  subsetId?: string,
 ): UpstreamFacts | undefined {
   const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
   if (!refSpec) return undefined;
@@ -103,6 +116,9 @@ export function discoverUpstreamFacts<A, U>(
       if (!s || !a) continue;
       // Same clonotype axis as the dataset ⇒ same clonotyping run.
       if (axisKey(a) !== cloneAxisKey) continue;
+      // Generation Probability stamps a subset run's Pgen with `pl7.app/subset`.
+      const pgenSubset = s.domain?.[SUBSET_DOMAIN];
+      if (pgenSubset !== undefined && pgenSubset !== subsetId) continue;
       if (isSC) {
         const idx = s.domain?.["pl7.app/vdj/scClonotypeChain/index"];
         if (idx !== undefined && idx !== "primary") continue;

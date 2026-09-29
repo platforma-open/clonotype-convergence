@@ -93,7 +93,7 @@ function onPickDataset(ref: PlRef | undefined) {
 
   app.model.data.datasetRef = ref;
   app.model.data.datasetFacts = factsFor(app.model, ref);
-  app.model.data.datasetLabel = labelFor(app.model, ref);
+  app.model.data.datasetLabel = labelFor(app.model, ref, app.model.data.filterRef);
   app.model.data.processLightChain = false;
 }
 
@@ -110,6 +110,15 @@ const datasetSelection = computed<DatasetSelection | undefined>({
   set: (selection) => {
     app.model.data.filterRef = selection?.primary.filter;
     onPickDataset(selection?.primary.column);
+    // A filter-only change leaves the dataset (and so onPickDataset) untouched, but it
+    // does change the subtitle label.
+    if (selection !== undefined) {
+      app.model.data.datasetLabel = labelFor(
+        app.model,
+        selection.primary.column,
+        selection.primary.filter,
+      );
+    }
   },
 });
 

@@ -22,6 +22,18 @@ export const inputAnchorSpecs = [
 
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
+// Domain key a block stamps on columns it computed on a subset of its dataset. Its value is
+// the subset column's id (see columnIdFromPlRef).
+export const SUBSET_DOMAIN = "pl7.app/subset";
+
+/**
+ * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). Passed
+ * to the workflow as a string and stamped verbatim as the `pl7.app/subset` value, so a
+ * consumer can compare it with the id of its own filter.
+ */
+export const columnIdFromPlRef = (ref: { blockId: string; name: string }): string =>
+  JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
+
 // Raw per-clonotype generation probability from the Generation Probability
 // block — full-STAR's input and the fast-STAR fallback trigger (A-0009).
 export const PGEN_NAME = "pl7.app/vdj/generationProbability";

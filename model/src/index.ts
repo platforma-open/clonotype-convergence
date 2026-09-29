@@ -18,6 +18,7 @@ import {
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
+  columnIdFromPlRef,
   DEFAULT_ALPHA,
   formatSubtitle,
   getDefaultBlockLabel,
@@ -91,6 +92,10 @@ function buildSkippedSamples<A, U>(
   const allEmpty = parsed.data.length === 0;
   return { belowMin, noCdr3, allEmpty, nMin };
 }
+
+// Column id of the block's subset filter, the form Generation Probability stamps on its Pgen.
+const subsetIdOf = (data: BlockData): string | undefined =>
+  data.filterRef && columnIdFromPlRef(data.filterRef);
 
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
   .args((data): BlockArgs => {
@@ -200,7 +205,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       args.clusterMin = clusterMin;
     }
     if (data.filterRef) {
-      args.filterRef = data.filterRef;
+      args.inputFilter = columnIdFromPlRef(data.filterRef);
     }
 
     // ---- Clonotype-only aggregation (A-0011) ----------------------
@@ -421,7 +426,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // keep the last-synced snapshot in that window rather than flip.
   .output("pgenStatus", (ctx) => {
     if (!ctx.data.datasetRef) return undefined;
-    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef);
+    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef, subsetIdOf(ctx.data));
     if (!facts) return undefined;
     return {
       hasPgenHeavy: facts.hasPgenHeavy,
@@ -453,7 +458,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     const options = ctx.resultPool.getOptions(inputAnchorSpecs);
     const result: Record<string, UpstreamFacts> = {};
     for (const opt of options) {
-      const facts = discoverUpstreamFacts(ctx, opt.ref);
+      const facts = discoverUpstreamFacts(ctx, opt.ref, subsetIdOf(ctx.data));
       if (facts) {
         const key = canonicalize(opt.ref as unknown as Record<string, unknown>);
         if (key !== undefined) result[key] = facts;
