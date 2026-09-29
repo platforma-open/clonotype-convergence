@@ -14,3 +14,6 @@ test-dry-run.json
 /.idea
 __pycache__/
 *.pyc
+
+# python test env / bytecode (software/scripts/run-python-tests.sh fallback)
+.cache/

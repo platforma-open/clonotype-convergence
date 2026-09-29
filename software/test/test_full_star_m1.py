@@ -5,7 +5,7 @@ committed as output/df_read_test.tsv (mirrored here as
 data/star_df_read_test_golden.tsv). It carries, per unique aa CDR3, the
 Neighbours count, the OLGA Pgen, STAR's Pvalue, and the full-STAR hit call.
 
-Per A-0016, the harness supplies the same Pgen values STAR's get_pgen would
+The harness supplies the same Pgen values STAR's get_pgen would
 compute (we read them straight from the golden file), so ONLY the output_MC
 step — Lambda -> capped Poisson tail -> Benjamini-Hochberg at alpha=0.005 —
 is under test. uniq_nucl is the unique-nt-CDR3 count of Test.tsv (== the
