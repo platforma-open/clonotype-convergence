@@ -140,7 +140,7 @@ function backfillDatasetSnapshot(model: AppModel) {
       const facts = factsFor(model, ref);
       if (!facts) return;
       model.data.datasetFacts = facts;
-      model.data.datasetLabel ??= labelFor(model, ref);
+      model.data.datasetLabel ??= labelFor(model, ref, model.data.filterRef);
     },
     { immediate: true, deep: true },
   );

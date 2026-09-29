@@ -1,4 +1,5 @@
 import type { PlRef } from "@platforma-sdk/model";
+import { plRefsEqual } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import type { useApp } from "./app";
 
@@ -23,10 +24,21 @@ export function factsFor(model: AppModel, ref: PlRef | undefined) {
   return facts ? { ...facts, chains: [...facts.chains] } : undefined;
 }
 
-/** The dataset label exactly as the dropdown shows it, for the page subtitle. */
-export function labelFor(model: AppModel, ref: PlRef | undefined): string | undefined {
+/**
+ * The picked entry's label exactly as the dropdown shows it, for the page subtitle: the
+ * subset's when one is picked (its label already carries the dataset as a prefix), else the
+ * dataset's.
+ */
+export function labelFor(
+  model: AppModel,
+  ref: PlRef | undefined,
+  filter: PlRef | undefined,
+): string | undefined {
   if (!ref) return undefined;
-  return model.outputs.datasetOptions?.find(
-    (o) => o.ref.blockId === ref.blockId && o.ref.name === ref.name,
-  )?.label;
+  const option = model.outputs.datasetOptions?.find((o) => plRefsEqual(o.primary.ref, ref, true));
+  if (filter !== undefined) {
+    const filterLabel = option?.filters?.find((f) => plRefsEqual(f.ref, filter, true))?.label;
+    if (filterLabel !== undefined) return filterLabel;
+  }
+  return option?.primary.label;
 }

@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import type { PlRef } from "@platforma-sdk/model";
-import { PFrameImpl } from "@platforma-sdk/model";
+import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
+import { createDatasetSelection, createPrimaryRef, PFrameImpl } from "@platforma-sdk/model";
 import {
   PlAccordion,
   PlAccordionSection,
   PlAlert,
   PlCheckbox,
+  PlDatasetSelector,
   PlDropdown,
   PlDropdownMulti,
-  PlDropdownRef,
   PlNumberField,
   PlTooltip,
   useWatchFetch,
@@ -86,9 +86,34 @@ function onPickDataset(ref: PlRef | undefined) {
 
   app.model.data.datasetRef = ref;
   app.model.data.datasetFacts = factsFor(app.model, ref);
-  app.model.data.datasetLabel = labelFor(app.model, ref);
+  app.model.data.datasetLabel = labelFor(app.model, ref, app.model.data.filterRef);
   app.model.data.processLightChain = false;
 }
+
+// The selector picks a dataset, or a dataset narrowed by one of its subset columns.
+// Stored as two refs so blocks saved before filters existed keep their `datasetRef`.
+// The filter is written first: `onPickDataset` returns early when only the filter
+// changed (same dataset), and the snapshot it guards doesn't depend on the filter.
+const datasetSelection = computed<DatasetSelection | undefined>({
+  get: () => {
+    const { datasetRef, filterRef } = app.model.data;
+    if (datasetRef === undefined) return undefined;
+    return createDatasetSelection(createPrimaryRef(datasetRef, filterRef));
+  },
+  set: (selection) => {
+    app.model.data.filterRef = selection?.primary.filter;
+    onPickDataset(selection?.primary.column);
+    // A filter-only change leaves the dataset (and so onPickDataset) untouched, but it
+    // does change the subtitle label.
+    if (selection !== undefined) {
+      app.model.data.datasetLabel = labelFor(
+        app.model,
+        selection.primary.column,
+        selection.primary.filter,
+      );
+    }
+  },
+});
 
 // Which chain(s) are detected on the dataset pick. The dataset itself
 // may carry both chains (SC IG anchor) but we only AUTO-process the
@@ -151,19 +176,19 @@ const fullStarHint = computed<string | undefined>(() => {
 </script>
 
 <template>
-  <PlDropdownRef
+  <PlDatasetSelector
+    v-model="datasetSelection"
     :options="app.model.outputs.datasetOptions"
-    :model-value="app.model.data.datasetRef"
     label="Input dataset"
     clearable
     required
-    @update:model-value="onPickDataset"
   >
     <template #tooltip>
       VDJ output to analyze. Accepts any B-cell receptor — bulk Heavy/Light, or single-cell. T-cell
-      receptors aren't supported. For in-vivo (immunised) repertoires only.
+      receptors aren't supported. For in-vivo (immunised) repertoires only. Pick one of its subsets
+      (for example a label from Repertoire Labeling) to analyze only the clonotypes in that subset.
     </template>
-  </PlDropdownRef>
+  </PlDatasetSelector>
 
   <PlAlert v-if="fullStarHint" type="info">
     {{ fullStarHint }}

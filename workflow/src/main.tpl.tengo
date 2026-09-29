@@ -157,6 +157,12 @@ wf.prepare(func(args) {
 		bb.addSingle(args.groupingRef, "grouping")
 	}
 
+	// Optional subset column picked alongside the dataset (PlDatasetSelector).
+	// Shared by both chains: they hang off the same anchor.
+	if !is_undefined(args.inputFilter) {
+		bb.addSingle(json.decode(args.inputFilter), "subsetFilter")
+	}
+
 	return { columns: bb.build() }
 })
 
@@ -249,6 +255,13 @@ wf.body(func(args) {
 			packInputs.pgenData = pgenCol.data
 			packInputs.pgenSpec = pgenCol.spec
 		}
+		// Optional subset filter: only its clonotypes are packed, so every later
+		// stage (neighbours, STAR, aggregation) sees the filtered set.
+		if !is_undefined(args.inputFilter) {
+			filterCol := columns.getColumn("subsetFilter")
+			packInputs.filterData = filterCol.data
+			packInputs.filterSpec = filterCol.spec
+		}
 		packRender := render.create(packInputTpl, packInputs)
 		packedData := packRender.output("packed", 24 * times.hour)
 		packedColumn := {
@@ -277,6 +290,12 @@ wf.body(func(args) {
 		// is defined <=> SC mode.
 		isSC := !is_undefined(scLetter)
 		convDomain := { "pl7.app/block": blockId }
+		// A run on a subset stamps the subset's column id, so a consumer (e.g. Repertoire
+		// Score) can tell it from a full-data run: its results depend on which clonotypes
+		// were in the input.
+		if !is_undefined(args.inputFilter) {
+			convDomain["pl7.app/subset"] = args.inputFilter
+		}
 		if isSC {
 			convDomain["pl7.app/vdj/scClonotypeChain"] = scLetter
 		} else {
@@ -490,7 +509,13 @@ wf.body(func(args) {
 		// dataset. customBlockLabel (user override) wins; else the
 		// parameter-encoding defaultBlockLabel; static name as last resort.
 		traceLabel := args.customBlockLabel || args.defaultBlockLabel || "Clonotype convergence"
-		trace := pSpec.makeTrace(anchorSpec, {
+		// With a subset filter the trace roots in the filter: its own trace is dataset -> the
+		// block that made the subset, so downstream labels name the subset.
+		traceSourceSpec := anchorSpec
+		if !is_undefined(args.inputFilter) {
+			traceSourceSpec = columns.getSpec("subsetFilter")
+		}
+		trace := pSpec.makeTrace(traceSourceSpec, {
 			type: "milaboratories.clonotype-convergence",
 			id: blockId,
 			importance: 50,

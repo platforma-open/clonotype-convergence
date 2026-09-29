@@ -1,6 +1,7 @@
 import type {
   ColumnRecipe,
   ColumnVisibilityRule,
+  DatasetOption,
   PColumnSpec,
   InferOutputsType,
   PFrameHandle,
@@ -9,15 +10,18 @@ import type {
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
+  buildDatasetOptions,
   ColumnsCollection,
   createPlDataTableSheet,
   createPlDataTableV3,
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
+  plRefsEqual,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
+  columnIdFromPlRef,
   DEFAULT_ALPHA,
   formatSubtitle,
   getDefaultBlockLabel,
@@ -361,6 +365,10 @@ function visibilityRules(
   return rules;
 }
 
+// Column id of the block's subset filter, the form Generation Probability stamps on its Pgen.
+const subsetIdOf = (data: BlockData): string | undefined =>
+  data.filterRef && columnIdFromPlRef(data.filterRef);
+
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
   .args((data): BlockArgs => {
     if (!data.datasetRef || !data.datasetFacts) {
@@ -484,6 +492,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     if (clusterMin !== undefined) {
       args.clusterMin = clusterMin;
     }
+    if (data.filterRef) {
+      args.inputFilter = columnIdFromPlRef(data.filterRef);
+    }
 
     // ---- Clonotype-only aggregation ----------------------
     // The metadata refs, projected here, establish the samples-block dependency
@@ -509,6 +520,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // states are view state; neither is configuration a template carries.
   .templateParams((data) => ({
     datasetRef: data.datasetRef,
+    filterRef: data.filterRef,
     processLightChain: data.processLightChain,
     thresholdH: data.thresholdH,
     thresholdL: data.thresholdL,
@@ -532,10 +544,36 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   //     anchor); reject receptor == "TCRAB" / "TCRGD".
   // Mode (bulk vs SC) is detected post-selection by inspecting the
   // axis name on the picked spec.
-  .output("datasetOptions", (ctx) => {
+  .output("datasetOptions", (ctx): DatasetOption[] => {
     const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
     const selectedRef = ctx.data.datasetRef;
-    return broad.filter((opt) => {
+
+    // Subset columns (`pl7.app/isSubset`) on each dataset's axes, e.g. repertoire-labeling
+    // labels or Lead Selection picks. Only the filters are taken from here: its primary refs
+    // carry `requireEnrichments`, which would make this block depend on every block between
+    // it and the dataset, and would not match `datasetRef`s saved before filters existed.
+    // The primary predicate only has to cover the datasets below: results are matched to them by ref.
+    const withFilters =
+      buildDatasetOptions(ctx, {
+        primary: (spec) =>
+          isPColumnSpec(spec) &&
+          spec.annotations?.["pl7.app/isAnchor"] === "true" &&
+          spec.axesSpec[0]?.name === "pl7.app/sampleId",
+        // Only subsets keyed by the clonotype axis alone. The SDK already limits filter axes to
+        // the dataset's; a sample axis would add rows per sample to the per-clonotype input.
+        filter: (spec) =>
+          isPColumnSpec(spec) &&
+          spec.axesSpec.length === 1 &&
+          spec.axesSpec[0]?.name !== "pl7.app/sampleId",
+      }) ?? [];
+    const withFiltersFor = (primary: (typeof broad)[number]): DatasetOption => {
+      const filters = withFilters.find((o) =>
+        plRefsEqual(o.primary.ref, primary.ref, true),
+      )?.filters;
+      return filters === undefined ? { primary } : { primary, filters };
+    };
+
+    const gated = broad.filter((opt) => {
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
       // it drops out of the options and the `required` dropdown reconciles to
@@ -595,6 +633,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       // false one.
       return true;
     });
+    return gated.map(withFiltersFor);
   })
 
   // Source identifier for the main table's per-source state cache.
@@ -687,7 +726,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // keep the last-synced snapshot in that window rather than flip.
   .output("pgenStatus", (ctx) => {
     if (!ctx.data.datasetRef) return undefined;
-    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef);
+    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef, subsetIdOf(ctx.data));
     if (!facts) return undefined;
     return {
       hasPgenHeavy: pgenHeavyAvailable(facts),
@@ -719,7 +758,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     const options = ctx.resultPool.getOptions(inputAnchorSpecs);
     const result: Record<string, UpstreamFacts> = {};
     for (const opt of options) {
-      const facts = discoverUpstreamFacts(ctx, opt.ref);
+      const facts = discoverUpstreamFacts(ctx, opt.ref, subsetIdOf(ctx.data));
       if (facts) {
         const key = canonicalize(opt.ref as unknown as Record<string, unknown>);
         if (key !== undefined) result[key] = facts;
