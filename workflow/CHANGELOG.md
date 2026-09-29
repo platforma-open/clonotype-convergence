@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence.workflow
 
+## 1.5.0
+
+### Minor Changes
+
+- ee77937: Allow selection of filtered data
+
 ## 1.4.0
 
 ### Minor Changes

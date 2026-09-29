@@ -1,5 +1,16 @@
 # @platforma-open/milaboratories.clonotype-convergence.ui
 
+## 1.5.0
+
+### Minor Changes
+
+- ee77937: Allow selection of filtered data
+
+### Patch Changes
+
+- Updated dependencies [ee77937]
+  - @platforma-open/milaboratories.clonotype-convergence.model@1.6.0
+
 ## 1.4.0
 
 ### Minor Changes
