@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence.model
 
+## 1.7.0
+
+### Minor Changes
+
+- aa8fbbf: Update input subset domain annotation
+
 ## 1.6.0
 
 ### Minor Changes
