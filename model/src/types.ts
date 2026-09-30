@@ -89,7 +89,7 @@ export type BlockArgs = {
 
   /** Optional subset column restricting the dataset's clonotypes (see
    *  BlockData.filterRef), as its column id. Applies to both chains: they share
-   *  the anchor. The workflow stamps this string as the outputs' `pl7.app/subset`. */
+   *  the anchor. The workflow stamps this string as the outputs' `pl7.app/inputSubset`. */
   inputFilter?: string;
 
   /** Sample-size floor. Default 100. */

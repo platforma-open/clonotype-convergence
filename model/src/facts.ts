@@ -6,7 +6,7 @@ import {
   PGEN_NAME,
   SC_AXIS,
   SC_CHAIN_FROM_LETTER,
-  SUBSET_DOMAIN,
+  inputSubsetOf,
 } from "./chains";
 import type { UpstreamFacts } from "./types";
 
@@ -147,8 +147,8 @@ export function discoverUpstreamFacts<A, U>(
       if (!s || !a) continue;
       // Same clonotype axis as the dataset ⇒ same clonotyping run.
       if (axisKey(a) !== cloneAxisKey) continue;
-      // Generation Probability stamps a subset run's Pgen with `pl7.app/subset`.
-      if (!pgenUsableFor(s.domain?.[SUBSET_DOMAIN], subsetId)) continue;
+      // Generation Probability stamps a subset run's Pgen with `pl7.app/inputSubset`.
+      if (!pgenUsableFor(inputSubsetOf(s.domain), subsetId)) continue;
       if (isSC) {
         const idx = s.domain?.["pl7.app/vdj/scClonotypeChain/index"];
         if (idx !== undefined && idx !== "primary") continue;

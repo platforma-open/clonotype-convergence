@@ -294,7 +294,7 @@ wf.body(func(args) {
 		// Score) can tell it from a full-data run: its results depend on which clonotypes
 		// were in the input.
 		if !is_undefined(args.inputFilter) {
-			convDomain["pl7.app/subset"] = args.inputFilter
+			convDomain["pl7.app/inputSubset"] = args.inputFilter
 		}
 		if isSC {
 			convDomain["pl7.app/vdj/scClonotypeChain"] = scLetter
