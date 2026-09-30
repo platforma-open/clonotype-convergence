@@ -24,11 +24,19 @@ export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
 // Domain key a block stamps on columns it computed on a subset of its dataset. Its value is
 // the subset column's id (see columnIdFromPlRef).
-export const SUBSET_DOMAIN = "pl7.app/subset";
+export const SUBSET_DOMAIN = "pl7.app/inputSubset";
+// The earlier name of SUBSET_DOMAIN, still carried by columns from runs made before the rename.
+const LEGACY_SUBSET_DOMAIN = "pl7.app/subset";
+
+/** The subset a column was computed on, read from its domain under either name
+ *  (undefined = full data). */
+export function inputSubsetOf(domain: Record<string, string> | undefined): string | undefined {
+  return domain?.[SUBSET_DOMAIN] ?? domain?.[LEGACY_SUBSET_DOMAIN];
+}
 
 /**
  * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). Passed
- * to the workflow as a string and stamped verbatim as the `pl7.app/subset` value, so a
+ * to the workflow as a string and stamped verbatim as the `pl7.app/inputSubset` value, so a
  * consumer can compare it with the id of its own filter.
  */
 export const columnIdFromPlRef = (ref: { blockId: string; name: string }): string =>
