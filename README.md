@@ -10,16 +10,16 @@ Open-source analysis block for Platforma, the biologics discovery platform by Mi
 
 When an antigen drives selection, unrelated B-cell lineages arrive at similar CDR3 solutions independently. That convergence leaves a statistical trace: a clonotype whose CDR3 has an unusual number of near-identical neighbors in the same repertoire is more likely to be antigen-specific than one sitting alone in sequence space.
 
-The block measures that neighbor density — how many other CDR3s in the sample are exactly one amino acid away — and then decides which densities are surprising. There are two ways it does so:
+The block measures that neighbor density — how many other CDR3s in the sample are exactly one amino acid away — and then decides which densities are surprising. There are two ways it does so, run side by side:
 
 * **full-STAR**, the primary path, tests each clonotype against a null model of what neighbor density to expect by chance. That null comes from the clonotype's **generation probability** (Pgen) — how likely V(D)J recombination is to produce that CDR3 at all — supplied by the [Generation Probability](https://github.com/platforma-open/generation-probability) block upstream. The result is a Poisson-tail p-value per clonotype, with hits selected under Benjamini–Hochberg FDR control at a target alpha (0.005 by default). Clonotypes without a Pgen cannot be tested; they are excluded from the FDR set rather than counted against it, and reported as not hit.
-* **fast-STAR** is the fallback when no Pgen is available. It calls hits from a neighbor-frequency threshold you set per chain. Simpler, no upstream dependency, and no formal error control — the block tells you explicitly when it has fallen back to this path.
+* **fast-STAR** always runs, alongside full-STAR or alone when no Pgen is available. It calls hits from a neighbor-frequency threshold you set per chain. Simpler, no upstream dependency, and no formal error control — the block tells you explicitly when full-STAR could not be added.
 
-Hits come with a **starScore** derived from the p-value, so candidates can be ranked rather than only split into hit and not-hit.
+Hits come with a **score** — derived from the p-value for full-STAR, the neighbor frequency for fast-STAR — so candidates can be ranked rather than only split into hit and not-hit.
 
 ### Cross-sample reproducibility
 
-Convergence in one sample can be noise. If your study has independent units — several donors, several animals — nominate the metadata column that identifies them and the block requires a clonotype to be a hit in more than one unit before it counts, and folds that reproducibility into starScore. The balance between raw signal strength and cross-unit support is controlled by a weight (0.5 by default). You can also mark which samples convergence is biologically *expected* in, so the analysis is anchored on the arm where selection should have happened.
+Convergence in one sample can be noise. If your study has independent units — several donors, several animals — nominate the metadata column that identifies them and the block combines evidence across units rather than samples, and reports a reproducibility ratio — the share of units in which a clonotype is a hit. You can also mark which samples convergence is biologically *expected* in, so the analysis is anchored on the arm where selection should have happened.
 
 ### Additional controls
 
@@ -30,7 +30,7 @@ Results are explored as a main table, a score distribution, a per-sample table, 
 ## Inputs & outputs
 
 * **Input:** clonotype-level BCR data with CDR3 amino acid sequence, CDR3 nucleotide sequence, and per-clonotype abundance — bulk heavy, bulk light, or single-cell IG. Light-chain analysis on single-cell data is an explicit opt-in. For the full-STAR path, a per-clonotype Pgen column from [Generation Probability](https://github.com/platforma-open/generation-probability). TCR datasets are not offered.
-* **Output:** per clonotype and chain — neighbor count, neighbor frequency, a p-value and starScore on the full-STAR path, and a Hit / Not hit call; optionally a stricter cluster-filtered call. All exposed as columns for downstream filtering and ranking.
+* **Output:** per clonotype and chain — neighbor count, neighbor frequency, a score (−log10 of the p-value) on the full-STAR path, a Hit / Not hit call and a reproducibility ratio per method; optionally a stricter cluster-filtered call. All exposed as columns for downstream filtering and ranking.
 
 ## Specifications
 
@@ -38,9 +38,9 @@ Results are explored as a main table, a score distribution, a per-sample table, 
 |---|---|
 | Block title in app | Clonotype Convergence |
 | Method | STAR — one-amino-acid-neighbor density among CDR3s within a sample |
-| Hit calling | full-STAR (Pgen-based null, Benjamini–Hochberg FDR, default alpha 0.005) when Pgen is available; fast-STAR neighbor-frequency threshold otherwise |
+| Hit calling | fast-STAR neighbor-frequency threshold always; full-STAR (Pgen-based null, Benjamini–Hochberg FDR, default alpha 0.005) added when Pgen is available |
 | Data types | Bulk heavy, bulk light, single-cell IG — BCR only, TCR filtered out |
-| Reproducibility | Optional grouping column (e.g. donor) requiring hits in multiple independent units, folded into starScore with a configurable weight (default 0.5) |
+| Reproducibility | Optional grouping column (e.g. donor) defining independent units; per-clonotype reproducibility ratio across them |
 | Expected-sample filter | Optional metadata column and values marking where convergence is biologically expected |
 | Sample floor | Minimum unique CDR3 count per sample; skipped samples reported |
 | Cluster filter | Optional stricter binder call requiring a cluster of at least a minimum size; off by default |
@@ -51,7 +51,7 @@ Results are explored as a main table, a score distribution, a per-sample table, 
 * **Antigen-specific BCR discovery:** identify likely antigen-specific receptors from repertoire sequencing alone, without antigen-labeled sorting.
 * **Post-immunization repertoires:** find the clonotypes that responded, by the convergence signature immunization leaves.
 * **Infection and vaccine response:** detect convergent lineages in a response where the target is known but the binders are not.
-* **Prioritizing for expression:** rank candidates by starScore before committing to synthesis and testing.
+* **Prioritizing for expression:** rank candidates by score before committing to synthesis and testing.
 * **Cross-donor validation:** require convergence to reproduce across donors, so single-sample noise does not reach the shortlist.
 * **Stricter binder calls:** enable the cluster filter to reproduce the source paper's binder definition when you want the most conservative set.
 
@@ -67,7 +67,7 @@ full-STAR tests each clonotype against a null model built from its generation pr
 
 ### Do I need the Generation Probability block?
 
-For full-STAR, yes. Without a per-clonotype Pgen there is no null model, and the block falls back to fast-STAR thresholds. Since full-STAR is the primary and better-calibrated path, running Generation Probability upstream is recommended. The block reports when full-STAR was not computed for a chain, so you always know which path produced your results.
+For full-STAR, yes. Without a per-clonotype Pgen there is no null model, and the block reports fast-STAR only. Since full-STAR is the primary and better-calibrated path, running Generation Probability upstream is recommended. The block reports when full-STAR was not computed for a chain, so you always know which path produced your results.
 
 ### Why can't I use this on my display library?
 
@@ -79,7 +79,7 @@ No. The method and its validation are for BCR repertoires, and TCR datasets are 
 
 ### What does the grouping column do?
 
-It tells the block which samples are independent units — typically donors or animals. With it set, a clonotype must be a hit in more than one unit to count, and cross-unit support becomes part of starScore. This is the strongest available guard against single-sample false positives.
+It tells the block which samples are independent units — typically donors or animals. With it set, evidence is combined across units rather than samples, and the block reports the share of units in which each clonotype is a hit. This is the strongest available guard against single-sample false positives.
 
 ### What is the cluster filter for?
 
