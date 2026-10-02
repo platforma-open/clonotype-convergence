@@ -79,7 +79,7 @@ No. The method and its validation are for BCR repertoires, and TCR datasets are 
 
 ### What does the grouping column do?
 
-It tells the block which samples are independent units — typically donors or animals. With it set, evidence is combined across units rather than samples, and the block reports the share of units in which each clonotype is a hit. Filtering on that ratio is the strongest available guard against single-sample false positives — the block does not apply it for you, so a clonotype that is a hit in only one unit is still reported as a Hit.
+It tells the block which samples are independent units — typically donors or animals. With it set, evidence is combined across units rather than samples, and the block reports the share of units in which each clonotype is a hit. Filtering on that ratio is the strongest available guard against single-sample false positives. The block does not require a minimum reproducibility ratio for a Hit call, but combining evidence across units can still make a clonotype that is a hit in only one unit report as Not hit.
 
 ### What is the cluster filter for?
 
