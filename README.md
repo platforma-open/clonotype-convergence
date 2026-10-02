@@ -52,7 +52,7 @@ Results are explored as a main table, a score distribution, a per-sample table, 
 * **Post-immunization repertoires:** find the clonotypes that responded, by the convergence signature immunization leaves.
 * **Infection and vaccine response:** detect convergent lineages in a response where the target is known but the binders are not.
 * **Prioritizing for expression:** rank candidates by score before committing to synthesis and testing.
-* **Cross-donor validation:** require convergence to reproduce across donors, so single-sample noise does not reach the shortlist.
+* **Cross-donor validation:** filter on the reproducibility ratio to require convergence to reproduce across donors, so single-sample noise does not reach the shortlist.
 * **Stricter binder calls:** enable the cluster filter to reproduce the source paper's binder definition when you want the most conservative set.
 
 ## FAQ
@@ -79,7 +79,7 @@ No. The method and its validation are for BCR repertoires, and TCR datasets are 
 
 ### What does the grouping column do?
 
-It tells the block which samples are independent units — typically donors or animals. With it set, evidence is combined across units rather than samples, and the block reports the share of units in which each clonotype is a hit. This is the strongest available guard against single-sample false positives.
+It tells the block which samples are independent units — typically donors or animals. With it set, evidence is combined across units rather than samples, and the block reports the share of units in which each clonotype is a hit. Filtering on that ratio is the strongest available guard against single-sample false positives — the block does not apply it for you, so a clonotype that is a hit in only one unit is still reported as a Hit.
 
 ### What is the cluster filter for?
 
