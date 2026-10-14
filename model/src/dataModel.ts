@@ -73,6 +73,15 @@ export const blockDataModel = new DataModelBuilder({ kind })
       graphStatePerSample: p.graphStatePerSample ?? distGraphState("Per-sample distribution"),
     };
   })
+  // v5 — reset both table states. A state saved under an older
+  // `mainTableSourceId` format keeps that stale sourceId, and PlAgDataTableV2
+  // then serves an empty datasource and waits for a state write that a table
+  // without sheets never makes, so the table stays on "Loading" forever.
+  .migrate<BlockData>("v5", (prev) => ({
+    ...prev,
+    mainTableState: createPlDataTableStateV2(),
+    aggregatedTableState: createPlDataTableStateV2(),
+  }))
   .init(({ params }) => ({
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
