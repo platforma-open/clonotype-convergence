@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence
 
+## 1.7.1
+
+### Patch Changes
+
+- d21bbcf: Fix migration from previous versions
+
 ## 1.7.0
 
 ### Minor Changes
