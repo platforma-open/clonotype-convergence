@@ -35,27 +35,25 @@ pt := import("@platforma-sdk/workflow-tengo:pt")
 self.defineOutputs("packed")
 
 // A TSV builder restricted to the rows of an optional subset column. Without one it is
-// the plain xsv builder. With one, every column becomes its own primary carrying the
-// filter, full-joined: tableBuilder full-joins addColumn entries onto the filtered
-// primary, which would bring the filtered-out rows back.
+// the plain xsv builder. With one, addRows adds the filtered primary that sets the rows,
+// and add left-joins a column onto them.
 newTableBuilder := func(filterColumn) {
 	if is_undefined(filterColumn) {
-		return pframes.tsvFileBuilder()
+		b := pframes.tsvFileBuilder()
+		return {
+			add: b.add,
+			addRows: b.add,
+			setAxisHeader: b.setAxisHeader,
+			build: b.build
+		}
 	}
-	tb := pframes.tableBuilder("tsv").setJoinMode("full")
-	nColumns := 0
+	tb := pframes.tableBuilder("tsv").setColumnJoin("left")
 	return {
-		add: func(column, opts) {
-			tb.addPrimary("col" + string(nColumns), {
-				__isPrimaryRef: "v1",
-				column: column,
-				filter: filterColumn
-				}, opts)
-			nColumns += 1
+		add: func(column, opts) { tb.addColumn(column, opts) },
+		addRows: func(column, opts) {
+			tb.addPrimary("main", { __isPrimaryRef: "v1", column: column, filter: filterColumn }, opts)
 		},
 		setAxisHeader: func(matcher, header) { tb.setAxisHeader(matcher, header) },
-		mem: func(amount) { tb.mem(amount) },
-		cpu: func(amount) { tb.cpu(amount) },
 		build: func() { return tb.build() }
 	}
 }
@@ -85,7 +83,7 @@ self.body(func(inputs) {
 	rawTsvBuilder.setAxisHeader(clonoAxisSpec.name, "clonotypeKey")
 	rawTsvBuilder.add({ spec: inputs.aaSpec, data: inputs.aaData }, { header: "aaSeqCDR3" })
 	rawTsvBuilder.add({ spec: inputs.ntSpec, data: inputs.ntData }, { header: "nSeqCDR3" })
-	rawTsvBuilder.add({ spec: inputs.abundanceSpec, data: inputs.abundanceData }, { header: "abundance" })
+	rawTsvBuilder.addRows({ spec: inputs.abundanceSpec, data: inputs.abundanceData }, { header: "abundance" })
 	// full-STAR path is driven by the EXPLICIT hasPgen flag from the caller
 	// (NOT inferred from pgenData presence) — the per-sample body uses the same
 	// flag for the unpack pattern, so pack/unpack field counts always agree

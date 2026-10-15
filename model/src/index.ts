@@ -17,7 +17,6 @@ import {
   getUniquePartitionKeys,
   isPColumnSpec,
   parseResourceMap,
-  plRefsEqual,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
@@ -142,6 +141,9 @@ function buildPerSampleLogs<A, U>(
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 }
+
+// Key axes of the datasets this block accepts: bulk and single-cell clonotypes.
+const DATASET_KEY_AXES: ReadonlySet<string> = new Set(inputAnchorSpecs.map((s) => s.axes[1].name));
 
 // gen-prob's columns. A full-STAR INPUT, not a convergence result — enrichment
 // finds them on the clonotype axis, but in a convergence table they are noise.
@@ -545,35 +547,26 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // Mode (bulk vs SC) is detected post-selection by inspecting the
   // axis name on the picked spec.
   .output("datasetOptions", (ctx): DatasetOption[] => {
-    const broad = ctx.resultPool.getOptions(inputAnchorSpecs);
     const selectedRef = ctx.data.datasetRef;
-
-    // Subset columns (`pl7.app/isSubset`) on each dataset's axes, e.g. repertoire-labeling
-    // labels or Lead Selection picks. Only the filters are taken from here: its primary refs
-    // carry `requireEnrichments`, which would make this block depend on every block between
-    // it and the dataset, and would not match `datasetRef`s saved before filters existed.
-    // The primary predicate only has to cover the datasets below: results are matched to them by ref.
-    const withFilters =
+    // Datasets, each with its subset columns (`pl7.app/isSubset`, e.g. repertoire-labeling
+    // labels or Lead Selection picks) as filters.
+    const broad =
       buildDatasetOptions(ctx, {
         primary: (spec) =>
           isPColumnSpec(spec) &&
           spec.annotations?.["pl7.app/isAnchor"] === "true" &&
-          spec.axesSpec[0]?.name === "pl7.app/sampleId",
-        // Only subsets keyed by the clonotype axis alone. The SDK already limits filter axes to
-        // the dataset's; a sample axis would add rows per sample to the per-clonotype input.
+          spec.axesSpec.length === 2 &&
+          spec.axesSpec[0].name === "pl7.app/sampleId" &&
+          DATASET_KEY_AXES.has(spec.axesSpec[1].name),
+        // Only subsets keyed by the clonotype axis alone.
         filter: (spec) =>
           isPColumnSpec(spec) &&
           spec.axesSpec.length === 1 &&
-          spec.axesSpec[0]?.name !== "pl7.app/sampleId",
+          DATASET_KEY_AXES.has(spec.axesSpec[0].name),
+        requireEnrichments: false,
       }) ?? [];
-    const withFiltersFor = (primary: (typeof broad)[number]): DatasetOption => {
-      const filters = withFilters.find((o) =>
-        plRefsEqual(o.primary.ref, primary.ref, true),
-      )?.filters;
-      return filters === undefined ? { primary } : { primary, filters };
-    };
 
-    const gated = broad.filter((opt) => {
+    return broad.filter(({ primary: opt }) => {
       // Keep the already-selected dataset present unconditionally. Otherwise,
       // when post-run pool churn briefly fails its CDR3-readiness gate below,
       // it drops out of the options and the `required` dropdown reconciles to
@@ -633,7 +626,6 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       // false one.
       return true;
     });
-    return gated.map(withFiltersFor);
   })
 
   // Source identifier for the main table's per-source state cache.
