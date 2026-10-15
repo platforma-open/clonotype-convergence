@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.clonotype-convergence.workflow
 
+## 1.7.2
+
+### Patch Changes
+
+- 8fd860e: SDK Upgrade, fix published software version
+- Updated dependencies [8fd860e]
+  - @platforma-open/milaboratories.clonotype-convergence.software@1.3.1
+
 ## 1.6.0
 
 ### Minor Changes
