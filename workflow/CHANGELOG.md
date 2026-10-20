@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.clonotype-convergence.workflow
 
+## 1.7.3
+
+### Patch Changes
+
+- 75c32f1: Release every package through npm trusted publishing (OIDC) so each package's trusted publisher is used before it expires.
+- Updated dependencies [75c32f1]
+  - @platforma-open/milaboratories.clonotype-convergence.software@1.3.2
+
 ## 1.7.2
 
 ### Patch Changes

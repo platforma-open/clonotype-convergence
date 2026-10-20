@@ -1,6 +1,6 @@
 {
   "name": "@platforma-open/milaboratories.clonotype-convergence.workflow",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "description": "Block Workflow",
   "type": "module",

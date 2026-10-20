@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.clonotype-convergence.ui
 
+## 1.7.3
+
+### Patch Changes
+
+- 75c32f1: Release every package through npm trusted publishing (OIDC) so each package's trusted publisher is used before it expires.
+- Updated dependencies [75c32f1]
+  - @platforma-open/milaboratories.clonotype-convergence.model@1.7.3
+
 ## 1.7.2
 
 ### Patch Changes
