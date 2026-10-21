@@ -1,7 +1,13 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import type { ColumnUniversalId, PlRef } from "@platforma-sdk/model";
-import { createPlDataTableStateV2, DataModelBuilder, isColumnValueId } from "@platforma-sdk/model";
+import type { ColumnUniversalId, ColumnValueId, PlRef } from "@platforma-sdk/model";
+import {
+  createColumnValueId,
+  createPlDataTableStateV2,
+  DataModelBuilder,
+  isColumnValueId,
+  isPlRef,
+} from "@platforma-sdk/model";
 import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import { toColumnId } from "./columns";
 import type {
@@ -134,8 +140,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
  * Moves stored data to column ids. A ref to an upstream output becomes the result-pool id of that
  * output, which names the same block and column: the dataset, its subset, the Generation
  * Probability columns of the dataset snapshot, and the expected-filter and grouping columns. The
- * expected values were stored as plain values of the expected-filter column, which name no
- * producing block, so they are dropped, to be picked again; the expected-filter column stays.
+ * expected values become column value ids of the converted expected-filter column.
  */
 function toColumnIds(data: BlockDataV5): BlockData {
   const { datasetRef, filterRef, datasetFacts, expectedFilterRef, groupingRef } = data;
@@ -145,9 +150,34 @@ function toColumnIds(data: BlockDataV5): BlockData {
     filterRef: optionalColumnId(filterRef),
     datasetFacts: datasetFacts === undefined ? undefined : factsWithColumnIds(datasetFacts),
     expectedFilterRef: optionalColumnId(expectedFilterRef),
-    expectedValues: data.expectedValues.filter(isColumnValueId),
+    expectedValues: toColumnValueIds(
+      isPlRef(expectedFilterRef) ? toColumnId(expectedFilterRef) : undefined,
+      data.expectedValues,
+    ),
     groupingRef: optionalColumnId(groupingRef),
   };
+}
+
+/**
+ * Picks of one column as column value ids, in their stored order, duplicates included. A pick
+ * stored as a plain value of the column becomes the id of that value of `column`, as stored: the
+ * stored data does not say whether the column holds numbers, so text stays text. A plain pick is
+ * dropped when there is no column to name, or when it is neither text nor a finite number; a pick
+ * that already is a column value id is kept as is.
+ */
+function toColumnValueIds(
+  column: ColumnUniversalId | undefined,
+  picks: readonly unknown[],
+): ColumnValueId[] {
+  return picks.flatMap((pick) => {
+    if (isColumnValueId(pick)) return [pick];
+    if (column === undefined || !isColumnValue(pick)) return [];
+    return [createColumnValueId({ column, value: pick })];
+  });
+}
+
+function isColumnValue(value: unknown): value is string | number {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }
 
 function factsWithColumnIds(facts: UpstreamFactsV2): UpstreamFacts {

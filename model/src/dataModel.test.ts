@@ -1,5 +1,5 @@
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import { createGlobalPObjectId } from "@platforma-sdk/model";
+import { createColumnValueId, createGlobalPObjectId } from "@platforma-sdk/model";
 import { describe, expect, test } from "vitest";
 import { blockDataModel } from "./dataModel";
 
@@ -43,9 +43,34 @@ describe("v6 migration", () => {
     expect(data.groupingRef).toBe(createGlobalPObjectId("samples", "metadata.donor"));
   });
 
-  test("plain expected values are dropped, the expected-filter column stays", () => {
-    expect(data.expectedValues).toEqual([]);
-    expect(data.expectedFilterRef).toBeDefined();
+  test("plain expected values become values of the converted expected-filter column", () => {
+    const column = createGlobalPObjectId("samples", "metadata.timepoint");
+    expect(data.expectedValues).toEqual([createColumnValueId({ column, value: "day 7" })]);
+  });
+
+  test("picks keep their order and duplicates; text stays text, column value ids stay", () => {
+    const column = createGlobalPObjectId("samples", "metadata.timepoint");
+    const picked = createColumnValueId({ column, value: "day 0" });
+    const { expectedValues } = blockDataModel.migrate({
+      version: "v5",
+      data: { ...storedAtV5, expectedValues: ["day 7", picked, "7", "day 7", 3, Number.NaN, null] },
+    }).data;
+    expect(expectedValues).toEqual([
+      createColumnValueId({ column, value: "day 7" }),
+      picked,
+      createColumnValueId({ column, value: "7" }),
+      createColumnValueId({ column, value: "day 7" }),
+      createColumnValueId({ column, value: 3 }),
+    ]);
+  });
+
+  test("plain expected values without an expected-filter column are dropped", () => {
+    const migrated = blockDataModel.migrate({
+      version: "v5",
+      data: { ...storedAtV5, expectedFilterRef: undefined },
+    }).data;
+    expect(migrated.expectedFilterRef).toBeUndefined();
+    expect(migrated.expectedValues).toEqual([]);
   });
 
   test("the rest of the dataset snapshot is kept", () => {
