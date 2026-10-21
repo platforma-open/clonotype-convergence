@@ -1,11 +1,11 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
-import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
+import type { ColumnUniversalId, ColumnValueId, PlDataTableStateV2 } from "@platforma-sdk/model";
 
 /**
- * Facts about an upstream input ref, snapshotted into BlockData at
+ * Facts about the picked input dataset, snapshotted into BlockData at
  * user-gesture time. One snapshot per populated chain.
  * The args lambda validates from these snapshots — never from
- * ctx.resultPool — because args lambdas are `data`-only (snapshot
+ * the result pool — because args lambdas are `data`-only (snapshot
  * pattern).
  *
  * `chains` carries the verbatim VDJ chain DOMAIN values from MiXCR
@@ -29,28 +29,29 @@ export type UpstreamFacts = {
    *  below (single source of truth). */
   hasPgenHeavy: boolean;
   hasPgenLight: boolean;
-  /** PlRef to the Generation Probability block's per-clonotype Pgen column
-   *  for the heavy / light chain, matched by name + this dataset's clonotype
+  /** Result-pool id of the Generation Probability block's per-clonotype Pgen
+   *  column for the heavy / light chain, matched by name + this dataset's clonotype
    *  axis (so it can't grab a Pgen from another run). Carried into args so the
    *  platform records convergence's DEPENDENCY on gen-prob — that edge is what
    *  pulls gen-prob's Pgen export into the WORKFLOW's context pool (the model's
    *  full-project pool sees it regardless; the workflow only sees upstreams).
    *  Without it the workflow's anchored query finds no Pgen and full-STAR
    *  silently degrades to 0 hits. Snapshotted at pick time. */
-  pgenRefHeavy?: PlRef;
-  pgenRefLight?: PlRef;
+  pgenRefHeavy?: ColumnUniversalId;
+  pgenRefLight?: ColumnUniversalId;
 };
 
 /** Args passed to the workflow — output shape of `.args(...)`.
  *  Per-chain slots; at least one of chainH/chainL must be populated.
  *  The mode (bulk vs SC) is inferred from the chain facts'
- *  `clonotypeKeyAxisName`. */
+ *  `clonotypeKeyAxisName`. Columns are result-pool column ids; the expected
+ *  values are column value ids of the expected-filter column. */
 export type BlockArgs = {
   /** Heavy-chain anchor; populated when the user's dataset pick has a
    *  heavy chain (bulk-heavy OR SC paired — SC anchors carry both
    *  chains as column-domain siblings, so chainH and chainL hold
-   *  the SAME ref in that case). */
-  chainH?: PlRef;
+   *  the SAME id in that case). */
+  chainH?: ColumnUniversalId;
   /** Verbatim chain domain value of the heavy anchor (always
    *  "IGHeavy" when present). */
   chainHName?: string;
@@ -65,7 +66,7 @@ export type BlockArgs = {
 
   /** Light-chain anchor; populated when the dataset pick is bulk-light
    *  OR when SC paired data carries an IGLight sibling. */
-  chainL?: PlRef;
+  chainL?: ColumnUniversalId;
   /** Verbatim chain domain value of the light anchor (e.g.
    *  "IGLight", "IGKappa", "IGLambda"). */
   chainLName?: string;
@@ -80,17 +81,17 @@ export type BlockArgs = {
    *  whether it consumes the Pgen sibling. Set only for a processed chain. */
   hasPgenHeavy?: boolean;
   hasPgenLight?: boolean;
-  /** PlRef to gen-prob's per-clonotype Pgen column for the heavy / light
-   *  chain. Projected ONLY for a full-STAR chain (hasPgen*). Its presence in
-   *  args establishes the cross-block dependency on gen-prob so the workflow
-   *  can resolve the Pgen data by ref (bb.addSingle). */
-  pgenRefHeavy?: PlRef;
-  pgenRefLight?: PlRef;
+  /** Result-pool id of gen-prob's per-clonotype Pgen column for the heavy /
+   *  light chain. Projected ONLY for a full-STAR chain (hasPgen*). Its presence
+   *  in args establishes the cross-block dependency on gen-prob so the workflow
+   *  can resolve the Pgen data by id (bb.addSingle). */
+  pgenRefHeavy?: ColumnUniversalId;
+  pgenRefLight?: ColumnUniversalId;
 
   /** Optional subset column restricting the dataset's clonotypes (see
    *  BlockData.filterRef), as its column id. Applies to both chains: they share
    *  the anchor. The workflow stamps this string as the outputs' `pl7.app/inputSubset`. */
-  inputFilter?: string;
+  inputFilter?: ColumnUniversalId;
 
   /** Sample-size floor. Default 100. */
   nMin: number;
@@ -102,20 +103,20 @@ export type BlockArgs = {
   // ---- Clonotype-only aggregation ---------------------------------
   // Optional metadata-driven refinements of the exported aggregate; all absent
   // → the default path (every sample an independent, eligible unit).
-  /** PlRef to a sampleId-keyed metadata column (`pl7.app/metadata`) whose
-   *  selected values mark the biologically-expected (post-exposure) samples.
-   *  Its presence in args establishes the samples-block dependency (like the
-   *  Pgen ref). Only expected samples enter the EXPORTED aggregate; the block's
-   *  own per-sample table keeps all samples. */
-  expectedFilterRef?: PlRef;
+  /** Result-pool id of a sampleId-keyed metadata column (`pl7.app/metadata`)
+   *  whose selected values mark the biologically-expected (post-exposure)
+   *  samples. Its presence in args establishes the samples-block dependency
+   *  (like the Pgen id). Only expected samples enter the EXPORTED aggregate; the
+   *  block's own per-sample table keeps all samples. */
+  expectedFilterRef?: ColumnUniversalId;
   /** Values of `expectedFilterRef` that count as expected. */
-  expectedValues?: string[];
-  /** PlRef to a sampleId-keyed metadata column marking independent units
+  expectedValues?: ColumnValueId[];
+  /** Result-pool id of a sampleId-keyed metadata column marking independent units
    *  (e.g. donor) — drives the two-level aggregation: the units full-STAR's
    *  evidence is combined across, the units fast-STAR's median is taken over,
    *  and the units the reproducibility ratio counts. Unset → every sample is
    *  its own unit. `alpha` is the only statistical knob. */
-  groupingRef?: PlRef;
+  groupingRef?: ColumnUniversalId;
 
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
@@ -136,17 +137,19 @@ export type BlockArgs = {
   defaultBlockLabel: string;
 };
 
-/** Unified V3 data model — block args inputs PLUS UI state. */
+/** Unified V3 data model — block args inputs PLUS UI state. Columns are
+ *  result-pool column ids; the expected values are column value ids of the
+ *  expected-filter column. */
 export type BlockData = {
   // Workflow-bound fields (projected into args by the .args() lambda).
   /** The user's input dataset pick (accepts any BCR-compatible
    *  anchor: heavy bulk, light bulk, or single-cell IG). Drives
    *  args.chainH or args.chainL depending on the picked chain's
    *  identity. */
-  datasetRef?: PlRef;
+  datasetRef?: ColumnUniversalId;
   /** Optional `pl7.app/isSubset` column picked alongside the dataset (e.g. a
    *  repertoire-labeling label). Only clonotypes present in it are analysed. */
-  filterRef?: PlRef;
+  filterRef?: ColumnUniversalId;
   /** Snapshot facts for `datasetRef`. Written by the picker handler in
    *  the same user-gesture as `datasetRef`. */
   datasetFacts?: UpstreamFacts;
@@ -184,14 +187,15 @@ export type BlockData = {
   // Clonotype-only aggregation controls. All optional; unset → the
   // default aggregation (every sample an independent, eligible unit).
   /** Sample-metadata column marking biologically-expected samples. */
-  expectedFilterRef?: PlRef;
-  /** Selected expected values of `expectedFilterRef`. */
-  expectedValues?: string[];
+  expectedFilterRef?: ColumnUniversalId;
+  /** Selected expected values of `expectedFilterRef`. A value the column no
+   *  longer holds stays selected and is shown as not available. */
+  expectedValues: ColumnValueId[];
   /** Sample-metadata column marking independent units (e.g. donor). Setting it
    *  makes a donor's samples collapse together before the cross-donor
    *  aggregation and defines the reproducibility denominator; no
    *  separate toggle, threshold or weight. */
-  groupingRef?: PlRef;
+  groupingRef?: ColumnUniversalId;
 
   // UI-only state (never projects to args). Panel open/close is NOT here: it
   // lives in a local reactive in MainPage, so toggling a modal never writes to
@@ -214,24 +218,4 @@ export type BlockData = {
    *  placeholder in the page header. Mirrors the pattern in
    *  immune-assay-data / clonotype-clustering. */
   customBlockLabel: string;
-};
-
-/** Legacy (v1) persisted facts shape — uses `axisName` where the current
- *  shape uses `clonotypeKeyAxisName`. Used only by the data-model migration. */
-export type UpstreamFactsV1 = Omit<
-  UpstreamFacts,
-  "clonotypeKeyAxisName" | "hasPgenHeavy" | "hasPgenLight" | "pgenRefHeavy" | "pgenRefLight"
-> & { axisName: string };
-
-/** Legacy (v1) persisted block data — carries separate main/light ref
- *  snapshots. Used only by the data-model migration. */
-export type BlockDataV1 = Omit<
-  BlockData,
-  "datasetRef" | "datasetFacts" | "datasetLabel" | "processLightChain"
-> & {
-  mainRef?: PlRef;
-  mainRefFacts?: UpstreamFactsV1;
-  mainRefLabel?: string;
-  lightRef?: PlRef;
-  lightRefFacts?: UpstreamFactsV1;
 };

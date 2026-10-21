@@ -1,6 +1,6 @@
 import { assertParamsObject, defineBlockKind } from "@platforma-sdk/block-kind";
-import type { PlRef } from "@platforma-sdk/model";
-import { isPlRef } from "@platforma-sdk/model";
+import type { ColumnUniversalId, ColumnValueId } from "@platforma-sdk/model";
+import { isColumnUniversalId, isColumnValueId } from "@platforma-sdk/model";
 import { name, version } from "../package.json" with { type: "json" };
 
 /**
@@ -17,14 +17,19 @@ import { name, version } from "../package.json" with { type: "json" };
  * the same state the UI itself passes through between picking a dataset and the
  * facts landing.
  *
+ * Columns are result-pool column ids, each naming the block that produced the
+ * column. The expected values are column value ids of the expected-filter
+ * column: each names the column it was picked from, and through it the block
+ * that produced the value.
+ *
  * Every field is optional: the projection hands live state back untouched, and
  * a half-configured block is ordinary state the UI reaches. Requiring one would
  * make the block export a file its own kind refuses to apply, so export and
  * apply would stop being inverses.
  */
 export type BlockParams = {
-  datasetRef?: PlRef;
-  filterRef?: PlRef;
+  datasetRef?: ColumnUniversalId;
+  filterRef?: ColumnUniversalId;
   processLightChain?: boolean;
   thresholdH?: number;
   thresholdL?: number;
@@ -32,9 +37,9 @@ export type BlockParams = {
   alpha?: number;
   applyClusterFilter?: boolean;
   clusterMin?: number;
-  expectedFilterRef?: PlRef;
-  expectedValues?: string[];
-  groupingRef?: PlRef;
+  expectedFilterRef?: ColumnUniversalId;
+  expectedValues?: ColumnValueId[];
+  groupingRef?: ColumnUniversalId;
   customBlockLabel?: string;
 };
 
@@ -58,10 +63,10 @@ function parseInitializationParams(value: unknown): BlockParams {
     customBlockLabel,
   } = value;
 
-  assertOptionalPlRef(datasetRef, "datasetRef");
-  assertOptionalPlRef(filterRef, "filterRef");
-  assertOptionalPlRef(expectedFilterRef, "expectedFilterRef");
-  assertOptionalPlRef(groupingRef, "groupingRef");
+  assertOptionalColumn(datasetRef, "datasetRef");
+  assertOptionalColumn(filterRef, "filterRef");
+  assertOptionalColumn(expectedFilterRef, "expectedFilterRef");
+  assertOptionalColumn(groupingRef, "groupingRef");
 
   assertOptionalBoolean(processLightChain, "processLightChain");
   assertOptionalBoolean(applyClusterFilter, "applyClusterFilter");
@@ -72,11 +77,17 @@ function parseInitializationParams(value: unknown): BlockParams {
   assertOptionalNumber(alpha, "alpha");
   assertOptionalNumber(clusterMin, "clusterMin");
 
+  // The expected values are values of the expected-filter column, so any value
+  // the user's metadata holds is legal -- only the column value id form is
+  // checked. A value the column no longer holds stays picked and is shown as
+  // not available.
   if (
     expectedValues !== undefined &&
-    (!Array.isArray(expectedValues) || expectedValues.some((v) => typeof v !== "string"))
+    (!Array.isArray(expectedValues) || !expectedValues.every(isColumnValueId))
   ) {
-    throw new Error("'expectedValues' must be an array of strings.");
+    throw new Error(
+      "'expectedValues' must be an array of column values, written as column value ids.",
+    );
   }
   if (customBlockLabel !== undefined && typeof customBlockLabel !== "string") {
     throw new Error("'customBlockLabel' must be a string.");
@@ -93,17 +104,21 @@ function parseInitializationParams(value: unknown): BlockParams {
     applyClusterFilter,
     clusterMin,
     expectedFilterRef,
-    expectedValues: expectedValues as string[] | undefined,
+    expectedValues,
     groupingRef,
     customBlockLabel,
   };
 }
 
-function assertOptionalPlRef(value: unknown, field: string): asserts value is PlRef | undefined {
-  if (value !== undefined && !isPlRef(value)) {
-    throw new Error(
-      `'${field}' must be a reference to an upstream column, written as { block, name }.`,
-    );
+// `isColumnUniversalId` is the SDK's own guard, so a column is recognized the
+// same way here as everywhere else. Ids are placeholders during the pre-flight
+// check that runs before any block exists, so shape is all that can be checked.
+function assertOptionalColumn(
+  value: unknown,
+  field: string,
+): asserts value is ColumnUniversalId | undefined {
+  if (value !== undefined && !isColumnUniversalId(value)) {
+    throw new Error(`'${field}' must be an upstream column, written as a column id.`);
   }
 }
 

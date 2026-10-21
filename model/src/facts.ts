@@ -1,4 +1,9 @@
-import type { PlRef, RenderCtxBase } from "@platforma-sdk/model";
+import type {
+  AxisSpec,
+  ColumnRecipe,
+  ColumnUniversalId,
+  RenderCtxBase,
+} from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
   isHeavy,
@@ -8,6 +13,7 @@ import {
   SC_CHAIN_FROM_LETTER,
   inputSubsetOf,
 } from "./chains";
+import { axisSelector, exact, findColumn, resultPool } from "./columns";
 import type { UpstreamFacts } from "./types";
 
 /**
@@ -24,73 +30,40 @@ export function pgenUsableFor(
 }
 
 /**
- * Walk the siblings of `ref` on its shared axes and aggregate facts:
+ * Walk the siblings of the dataset on its shared axes and aggregate facts:
  * which chains appear, whether the required CDR3 + abundance siblings
- * are present, and the axis name (drives mode detection).
+ * are present, and the axis name (drives mode detection). `undefined` while
+ * the dataset column is still resolving and once it is gone.
  *
  * `subsetId` is the column id of the subset this block runs on, undefined for a full-data
  * run. A Pgen computed on a subset is taken only for that same subset: for any other input,
  * clonotypes outside it would be untestable, and full-STAR would silently lose their hits.
  * A full-data Pgen is always valid (Pgen is per sequence).
  */
-export function discoverUpstreamFacts<A, U>(
-  ctx: RenderCtxBase<A, U>,
-  ref: PlRef,
-  subsetId?: string,
+export function discoverUpstreamFacts(
+  ctx: RenderCtxBase,
+  datasetId: ColumnUniversalId,
+  subsetId: ColumnUniversalId | undefined,
 ): UpstreamFacts | undefined {
-  const refSpec = ctx.resultPool.getPColumnSpecByRef(ref);
-  if (!refSpec) return undefined;
+  const datasetSpec = findColumn(ctx, datasetId)?.getSpec();
+  if (!datasetSpec) return undefined;
+  const [sampleAxis, cloneAxis] = datasetSpec.axesSpec;
   // Name of the second axis = clonotype-key axis. Drives
   // mode detection and the BULK-vs-SC handling below.
-  const clonotypeKeyAxisName = refSpec.axesSpec[1]?.name ?? "";
+  const clonotypeKeyAxisName = cloneAxis?.name ?? "";
   const isSC = clonotypeKeyAxisName === SC_AXIS;
-
-  // MiXCR partitions outputs across two axis frames: per-(sample,
-  // clonotype) and per-clonotype. The anchored selector matches axes
-  // exactly, so we need both queries.
-  //
-  // `dontWaitAllData` is load-bearing. Without it the query returns undefined
-  // for the WHOLE request as soon as any matching column's data is incomplete,
-  // and the `?? []` below would read that as "this dataset has no siblings" —
-  // no CDR3, no chains. The selectors here match every column on the anchor's
-  // clonotype axis, which includes columns another block is still computing:
-  // while Generation Probability runs, its Pgen columns sit on exactly that
-  // axis, so the dataset it is computing on looked empty and dropped out of the
-  // picker. Only its specs are read below, never data, so skipping in-flight
-  // columns costs nothing.
-  const opts = { dontWaitAllData: true };
-  const perSampleClonotype =
-    ctx.resultPool.getAnchoredPColumns(
-      { main: ref },
-      [
-        {
-          axes: [
-            { anchor: "main", idx: 0 },
-            { anchor: "main", idx: 1 },
-          ],
-        },
-      ],
-      opts,
-    ) ?? [];
-  const perClonotype =
-    ctx.resultPool.getAnchoredPColumns(
-      { main: ref },
-      [{ axes: [{ anchor: "main", idx: 1 }] }],
-      opts,
-    ) ?? [];
 
   const chains = new Set<string>();
   // Aggregate (dataset-level) presence: does the dataset carry ANY aa-CDR3 /
-  // nt-CDR3 / abundance sibling? These feed only the dropdown's "is this
-  // dataset usable" gate. Per-chain validation is the workflow's job — it
-  // fetches each chain's CDR3/abundance columns separately and errors if any
-  // are missing.
+  // nt-CDR3 / abundance sibling? These feed only the args gate. Per-chain
+  // validation is the workflow's job — it fetches each chain's CDR3/abundance
+  // columns separately and errors if any are missing.
   let hasAaCDR3 = false;
   let hasNtCDR3 = false;
   let hasAbundance = false;
 
-  for (const col of [...perSampleClonotype, ...perClonotype]) {
-    const spec = col.spec;
+  for (const column of siblingColumns(ctx, sampleAxis, cloneAxis)) {
+    const spec = column.getSpec();
 
     // Chain identity differs between bulk and SC outputs from MiXCR:
     //   - Bulk: chain in axis domain or column domain via `pl7.app/vdj/chain`.
@@ -119,32 +92,28 @@ export function discoverUpstreamFacts<A, U>(
     if (spec.annotations?.["pl7.app/isAbundance"] === "true") hasAbundance = true;
   }
 
-  // Pgen refs — resolve gen-prob's per-clonotype Pgen column(s) for THIS
-  // dataset and attribute each to a chain. Uses getOptions (which returns
-  // PlRefs — the dependency handle the args lambda needs to make convergence
-  // depend on gen-prob) rather than getAnchoredPColumns (specs, no ref).
+  // Pgen columns — gen-prob's per-clonotype Pgen column(s) for THIS dataset,
+  // each attributed to a chain. Their result-pool ids are the dependency
+  // handle the args lambda needs to make convergence depend on gen-prob.
   // Matched by name + the dataset's OWN clonotype axis, so a Pgen from a
   // different clonotyping run in the same project can't be grabbed. hasPgen*
-  // is derived purely from ref presence (single source of truth) so args and
-  // the workflow can never disagree — a stale "has Pgen but no ref" would make
+  // is derived purely from id presence (single source of truth) so args and
+  // the workflow can never disagree — a stale "has Pgen but no id" would make
   // full-STAR silently produce 0 hits.
-  let pgenRefHeavy: PlRef | undefined;
-  let pgenRefLight: PlRef | undefined;
-  const cloneAxis = refSpec.axesSpec[1];
+  let pgenRefHeavy: ColumnUniversalId | undefined;
+  let pgenRefLight: ColumnUniversalId | undefined;
   if (cloneAxis) {
-    const axisKey = (a: { name: string; type: string; domain?: Record<string, string> }) =>
-      canonicalize({ name: a.name, type: a.type, domain: a.domain ?? {} } as unknown as Record<
-        string,
-        unknown
-      >);
     const cloneAxisKey = axisKey(cloneAxis);
     // Bulk is single-chain — the (chain-less) Pgen is attributed to whichever
     // chain the dataset carries.
     const bulkChain = isSC ? undefined : Array.from(chains).find((c) => isHeavy(c) || isLight(c));
-    for (const opt of ctx.resultPool.getOptions({ name: PGEN_NAME })) {
-      const s = ctx.resultPool.getPColumnSpecByRef(opt.ref);
-      const a = s?.axesSpec[0];
-      if (!s || !a) continue;
+    const pgenColumns = resultPool(ctx)
+      .filter({ include: { name: [exact(PGEN_NAME)] } })
+      .getColumns();
+    for (const pgen of pgenColumns) {
+      const s = pgen.getSpec();
+      const a = s.axesSpec[0];
+      if (!a) continue;
       // Same clonotype axis as the dataset ⇒ same clonotyping run.
       if (axisKey(a) !== cloneAxisKey) continue;
       // Generation Probability stamps a subset run's Pgen with `pl7.app/inputSubset`.
@@ -153,12 +122,12 @@ export function discoverUpstreamFacts<A, U>(
         const idx = s.domain?.["pl7.app/vdj/scClonotypeChain/index"];
         if (idx !== undefined && idx !== "primary") continue;
         const letter = s.domain?.["pl7.app/vdj/scClonotypeChain"];
-        if (letter === "A") pgenRefHeavy = opt.ref;
-        else if (letter === "B") pgenRefLight = opt.ref;
+        if (letter === "A") pgenRefHeavy = pgen.id;
+        else if (letter === "B") pgenRefLight = pgen.id;
       } else if (isHeavy(bulkChain)) {
-        pgenRefHeavy = opt.ref;
+        pgenRefHeavy = pgen.id;
       } else if (isLight(bulkChain)) {
-        pgenRefLight = opt.ref;
+        pgenRefLight = pgen.id;
       }
     }
   }
@@ -174,4 +143,33 @@ export function discoverUpstreamFacts<A, U>(
     pgenRefHeavy,
     pgenRefLight,
   };
+}
+
+// Internals
+
+/**
+ * Columns of the dataset's clonotyping run. MiXCR partitions its outputs
+ * across two axis frames: per-(sample, clonotype) and per-clonotype, so both
+ * are matched exactly. Only specs are read, never data, so columns another
+ * block is still computing on the same axes cost nothing.
+ */
+function siblingColumns(
+  ctx: RenderCtxBase,
+  sampleAxis: AxisSpec | undefined,
+  cloneAxis: AxisSpec | undefined,
+): ColumnRecipe[] {
+  if (sampleAxis === undefined || cloneAxis === undefined) return [];
+  return resultPool(ctx)
+    .filter({
+      include: [
+        { axes: [axisSelector(sampleAxis), axisSelector(cloneAxis)], partialAxesMatch: false },
+        { axes: [axisSelector(cloneAxis)], partialAxesMatch: false },
+      ],
+    })
+    .getColumns();
+}
+
+/** An axis identity: name, type and domain. */
+function axisKey(axis: AxisSpec): string | undefined {
+  return canonicalize({ name: axis.name, type: axis.type, domain: axis.domain ?? {} });
 }

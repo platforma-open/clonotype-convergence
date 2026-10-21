@@ -6,24 +6,10 @@ import type { BlockData, UpstreamFacts } from "./types";
  * from `index.ts` so the model builder stays readable.
  */
 
-// Datasets the dropdown offers — anchors on the clonotype-keyed axes.
-// Bulk uses pl7.app/vdj/clonotypeKey; single-cell uses
-// pl7.app/vdj/scClonotypeKey.
-export const inputAnchorSpecs = [
-  {
-    axes: [{ name: "pl7.app/sampleId" }, { name: "pl7.app/vdj/clonotypeKey" }],
-    annotations: { "pl7.app/isAnchor": "true" },
-  },
-  {
-    axes: [{ name: "pl7.app/sampleId" }, { name: "pl7.app/vdj/scClonotypeKey" }],
-    annotations: { "pl7.app/isAnchor": "true" },
-  },
-];
-
 export const SC_AXIS = "pl7.app/vdj/scClonotypeKey";
 
 // Domain key a block stamps on columns it computed on a subset of its dataset. Its value is
-// the subset column's id (see columnIdFromPlRef).
+// the subset column's result-pool id.
 export const SUBSET_DOMAIN = "pl7.app/inputSubset";
 // The earlier name of SUBSET_DOMAIN, still carried by columns from runs made before the rename.
 const LEGACY_SUBSET_DOMAIN = "pl7.app/subset";
@@ -33,14 +19,6 @@ const LEGACY_SUBSET_DOMAIN = "pl7.app/subset";
 export function inputSubsetOf(domain: Record<string, string> | undefined): string | undefined {
   return domain?.[SUBSET_DOMAIN] ?? domain?.[LEGACY_SUBSET_DOMAIN];
 }
-
-/**
- * A result-pool column id: the canonical JSON of its PlRef (keys in sorted order). Passed
- * to the workflow as a string and stamped verbatim as the `pl7.app/inputSubset` value, so a
- * consumer can compare it with the id of its own filter.
- */
-export const columnIdFromPlRef = (ref: { blockId: string; name: string }): string =>
-  JSON.stringify({ __isRef: true, blockId: ref.blockId, name: ref.name });
 
 // Raw per-clonotype generation probability from the Generation Probability
 // block — full-STAR's input, and what decides per chain whether full-STAR is

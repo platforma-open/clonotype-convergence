@@ -1,8 +1,18 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
+import type { ColumnUniversalId, PlRef } from "@platforma-sdk/model";
+import { createPlDataTableStateV2, DataModelBuilder, isColumnValueId } from "@platforma-sdk/model";
 import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
-import type { BlockData, BlockDataV1 } from "./types";
+import { toColumnId } from "./columns";
+import type {
+  BlockDataV1,
+  BlockDataV2,
+  BlockDataV3,
+  BlockDataV4,
+  BlockDataV5,
+  UpstreamFactsV2,
+} from "./stored_data";
+import type { BlockData, UpstreamFacts } from "./types";
 
 // Default distribution chart state. One state per selector-driven
 // page. Log Y on both — not a parameter: every score these pages plot is
@@ -22,7 +32,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
   // v2 — collapse the v1 dual-ref (mainRef/lightRef) into a single dataset
   // snapshot plus a `processLightChain` boolean, and map `axisName` →
   // `clonotypeKeyAxisName`.
-  .migrate<BlockData>(
+  .migrate<BlockDataV2>(
     "v2",
     ({ mainRef, mainRefFacts, mainRefLabel, lightRef, lightRefFacts, ...rest }) => {
       void lightRefFacts; // dropped — equal to mainRefFacts
@@ -52,36 +62,32 @@ export const blockDataModel = new DataModelBuilder({ kind })
   // (This step also used to backfill a starScore weight; the aggregation no
   // longer has a weight, so the field is gone. Legacy data may
   // still carry it; it is simply unused.)
-  .migrate<BlockData>("v3", (prev) => {
-    const p = prev as Partial<BlockData>;
-    return {
-      ...prev,
-      expectedValues: p.expectedValues ?? [],
-      aggregatedTableState: p.aggregatedTableState ?? createPlDataTableStateV2(),
-    };
-  })
+  .migrate<BlockDataV3>("v3", (prev) => ({
+    ...prev,
+    expectedValues: prev.expectedValues ?? [],
+    aggregatedTableState: prev.aggregatedTableState ?? createPlDataTableStateV2(),
+  }))
   // v4 — parallel fast/full modes. The four per-chain histogram
   // states (graphStateHistogram/Score Heavy/Light) are replaced by two
   // selector-driven chart states (aggregated + per-sample). Backfill the two so
   // GraphMaker never gets an undefined state; the old fields, if present on
   // legacy data, are simply left unused.
-  .migrate<BlockData>("v4", (prev) => {
-    const p = prev as Partial<BlockData>;
-    return {
-      ...prev,
-      graphStateAggregated: p.graphStateAggregated ?? distGraphState("Score distribution"),
-      graphStatePerSample: p.graphStatePerSample ?? distGraphState("Per-sample distribution"),
-    };
-  })
+  .migrate<BlockDataV4>("v4", (prev) => ({
+    ...prev,
+    graphStateAggregated: prev.graphStateAggregated ?? distGraphState("Score distribution"),
+    graphStatePerSample: prev.graphStatePerSample ?? distGraphState("Per-sample distribution"),
+  }))
   // v5 — reset both table states. A state saved under an older
   // `mainTableSourceId` format keeps that stale sourceId, and PlAgDataTableV2
   // then serves an empty datasource and waits for a state write that a table
   // without sheets never makes, so the table stays on "Loading" forever.
-  .migrate<BlockData>("v5", (prev) => ({
+  .migrate<BlockDataV5>("v5", (prev) => ({
     ...prev,
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
   }))
+  // v6 — columns become result-pool ids, the expected values column value ids.
+  .migrate<BlockData>("v6", toColumnIds)
   .init(({ params }) => ({
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
@@ -121,3 +127,37 @@ export const blockDataModel = new DataModelBuilder({ kind })
     expectedFilterRef: params?.expectedFilterRef,
     groupingRef: params?.groupingRef,
   }));
+
+// Internals
+
+/**
+ * Moves stored data to column ids. A ref to an upstream output becomes the result-pool id of that
+ * output, which names the same block and column: the dataset, its subset, the Generation
+ * Probability columns of the dataset snapshot, and the expected-filter and grouping columns. The
+ * expected values were stored as plain values of the expected-filter column, which name no
+ * producing block, so they are dropped, to be picked again; the expected-filter column stays.
+ */
+function toColumnIds(data: BlockDataV5): BlockData {
+  const { datasetRef, filterRef, datasetFacts, expectedFilterRef, groupingRef } = data;
+  return {
+    ...data,
+    datasetRef: optionalColumnId(datasetRef),
+    filterRef: optionalColumnId(filterRef),
+    datasetFacts: datasetFacts === undefined ? undefined : factsWithColumnIds(datasetFacts),
+    expectedFilterRef: optionalColumnId(expectedFilterRef),
+    expectedValues: data.expectedValues.filter(isColumnValueId),
+    groupingRef: optionalColumnId(groupingRef),
+  };
+}
+
+function factsWithColumnIds(facts: UpstreamFactsV2): UpstreamFacts {
+  return {
+    ...facts,
+    pgenRefHeavy: optionalColumnId(facts.pgenRefHeavy),
+    pgenRefLight: optionalColumnId(facts.pgenRefLight),
+  };
+}
+
+function optionalColumnId(ref: PlRef | undefined): ColumnUniversalId | undefined {
+  return ref === undefined ? undefined : toColumnId(ref);
+}

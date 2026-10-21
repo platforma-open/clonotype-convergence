@@ -44,6 +44,8 @@ pframes := import("@platforma-sdk/workflow-tengo:pframes")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 pt := import("@platforma-sdk/workflow-tengo:pt")
+ll := import("@platforma-sdk/workflow-tengo:ll")
+columnValue := import("@platforma-sdk/workflow-tengo:workflow.column-value")
 json := import("json")
 times := import("times")
 
@@ -53,6 +55,18 @@ packInputTpl := assets.importTemplate(":pack-input")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 aggregateSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:aggregate")
 
+// The upstream output a result-pool column id names, as the ref an anchor is resolved from.
+// A result-pool id is the canonical JSON of that ref.
+columnIdToRef := func(id) {
+	ref := json.decode(id)
+	if !is_map(ref) || ref.__isRef != true {
+		ll.panic("expected a result-pool column id, got %v", id)
+	}
+	return ref
+}
+
+// Every column the user picked arrives as a result-pool column id; the expected values as
+// column value ids of the expected-filter column.
 wf.prepare(func(args) {
 	bb := wf.createPBundleBuilder()
 	// ignoreMissingDomains tolerates MiXCR placing chain on the
@@ -78,10 +92,10 @@ wf.prepare(func(args) {
 	}
 
 	// Anchor + CDR3 siblings per populated chain. In SC paired mode
-	// chainH and chainL hold the SAME ref but the scClonotypeChain
+	// chainH and chainL hold the SAME id but the scClonotypeChain
 	// letter on the domain filter keeps each chain's siblings distinct.
 	if !is_undefined(args.chainH) {
-		bb.addAnchor("heavy", args.chainH)
+		bb.addAnchor("heavy", columnIdToRef(args.chainH))
 		bb.addSingle({
 			axes: [{ anchor: "heavy", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
@@ -104,13 +118,13 @@ wf.prepare(func(args) {
 			axes: [{ anchor: "heavy", idx: 1 }],
 			name: "pl7.app/label"
 		}, "heavyCloneLabel")
-		// Raw Pgen — resolved BY REF from args (gen-prob's Pgen column, which the
-		// model matched by name + this dataset's clonotype axis). The ref's
+		// Raw Pgen — resolved BY ID from args (gen-prob's Pgen column, which the
+		// model matched by name + this dataset's clonotype axis). The id's
 		// presence in args is what makes convergence DEPEND on gen-prob, so its
 		// Pgen export is in THIS workflow's context pool. An anchored query can't
 		// reach it: gen-prob is a sibling under MiXCR, not an upstream, so it's
 		// absent from the workflow pool and the query would silently find nothing
-		// (→ full-STAR degrades to 0 hits). By-ref resolution lands the data.
+		// (→ full-STAR degrades to 0 hits). By-id resolution lands the data.
 		if !is_undefined(args.pgenRefHeavy) {
 			bb.addSingle(args.pgenRefHeavy, "heavyPgen")
 		}
@@ -118,9 +132,9 @@ wf.prepare(func(args) {
 
 	if !is_undefined(args.chainL) {
 		// In SC mode chainL === chainH (same anchor); re-binding under a
-		// distinct alias is a no-op for the underlying ref but lets us
+		// distinct alias is a no-op for the underlying column but lets us
 		// label-tag the heavy / light siblings separately.
-		bb.addAnchor("light", args.chainL)
+		bb.addAnchor("light", columnIdToRef(args.chainL))
 		bb.addSingle({
 			axes: [{ anchor: "light", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
@@ -146,9 +160,9 @@ wf.prepare(func(args) {
 
 	// Optional sample metadata for the clonotype-only aggregation,
 	// dataset-level and sampleId-keyed: the expected-sample eligibility filter
-	// and the independence grouping. Resolved BY REF — the model carries these
-	// PlRefs in args to establish the dependency on the samples block, exactly
-	// like the Pgen ref. Absent → the aggregation runs its default (every
+	// and the independence grouping. Resolved BY ID — the model carries these
+	// column ids in args to establish the dependency on the samples block, exactly
+	// like the Pgen id. Absent → the aggregation runs its default (every
 	// sample an independent, eligible unit).
 	if !is_undefined(args.expectedFilterRef) {
 		bb.addSingle(args.expectedFilterRef, "expectedFilter")
@@ -169,6 +183,16 @@ wf.prepare(func(args) {
 wf.body(func(args) {
 	blockId := wf.blockId().getDataAsJson()
 	columns := args.columns
+
+	// The aggregation compares the expected values with the expected-filter column's cells as
+	// written to its metadata table, i.e. as text: numeric picks are passed as text too.
+	expectedValues := undefined
+	if !is_undefined(args.expectedValues) {
+		expectedValues = []
+		for value in columnValue.valuesOf(args.expectedValues) {
+			expectedValues = append(expectedValues, string(value))
+		}
+	}
 
 	// Friendly chain qualifier appended to user-facing column labels
 	// ONLY in dual-chain mode (SC paired — both chainH and chainL set).
@@ -612,8 +636,8 @@ wf.body(func(args) {
 			}
 			if !is_undefined(metaTsv) {
 				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
-				if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
-					cmd = cmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+				if !is_undefined(args.expectedFilterRef) && !is_undefined(expectedValues) {
+					cmd = cmd.arg("--expected-values").arg(string(json.encode(expectedValues)))
 				}
 			}
 			return cmd.run().getFile("aggregated.tsv")
@@ -648,8 +672,8 @@ wf.body(func(args) {
 				saveFile("aggregated.tsv")
 			if !is_undefined(metaTsv) {
 				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
-				if !is_undefined(args.expectedFilterRef) && !is_undefined(args.expectedValues) {
-					cmd = cmd.arg("--expected-values").arg(string(json.encode(args.expectedValues)))
+				if !is_undefined(args.expectedFilterRef) && !is_undefined(expectedValues) {
+					cmd = cmd.arg("--expected-values").arg(string(json.encode(expectedValues)))
 				}
 			}
 			return cmd.run().getFile("aggregated.tsv")
@@ -838,7 +862,7 @@ wf.body(func(args) {
 	// Heavy pipeline — runs when chainH is populated.
 	if !is_undefined(args.chainH) {
 		heavy := runChainPipeline(
-			args.chainH,
+			columnIdToRef(args.chainH),
 			"heavyAaCDR3",
 			"heavyNtCDR3",
 			"heavySampleLabel",
@@ -872,7 +896,7 @@ wf.body(func(args) {
 	// Light pipeline — runs when chainL is populated.
 	if !is_undefined(args.chainL) {
 		light := runChainPipeline(
-			args.chainL,
+			columnIdToRef(args.chainL),
 			"lightAaCDR3",
 			"lightNtCDR3",
 			"lightSampleLabel",
