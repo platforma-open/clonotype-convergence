@@ -10,6 +10,7 @@ import {
   PlDropdown,
   PlNumberField,
   PlTooltip,
+  usePlColumnValueSettings,
 } from "@platforma-sdk/ui-vue";
 import {
   fromDatasetSelection,
@@ -34,6 +35,12 @@ const convergenceContextOpen = ref(true);
 // Sample-metadata columns offered for the expected-sample filter and the
 // independence grouping (both sampleId-keyed `pl7.app/metadata`).
 const metadataColumnOptions = computed(() => app.model.outputs.metadataOptions ?? []);
+
+/** What the expected-values picker offers: the values of the expected-filter column picked now. */
+const expectedValues = usePlColumnValueSettings({
+  source: () => app.model.outputs.expectedFilterValues,
+  valueColumn: () => app.model.data.expectedFilterRef,
+});
 
 // The expected values are values of the expected-filter column, so picking another column (or
 // none) invalidates them outright. Cleared in the user's gesture, so a remount or a sync from
@@ -264,8 +271,7 @@ const fullStarHint = computed<string | undefined>(() => {
              values to choose). -->
         <PlColumnValueDropdownMulti
           v-model="app.model.data.expectedValues"
-          :source="app.model.outputs.expectedFilterValues"
-          :value-column="app.model.data.expectedFilterRef"
+          :settings="expectedValues"
           group-position="bottom"
           :disabled="!app.model.data.expectedFilterRef"
         />
