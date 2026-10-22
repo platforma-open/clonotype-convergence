@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence.workflow
 
+## 1.8.0
+
+### Minor Changes
+
+- 54a11f6: Update the SDK and build the dataset list with buildDatasetOptions (requireEnrichments: false), replacing the custom merge of datasets and their subset filters. With a subset filter, the input table now has one filtered primary (abundance) with the CDR3 and Pgen columns left-joined onto it, instead of a filtered primary per column. Results are unchanged.
+
 ## 1.7.3
 
 ### Patch Changes

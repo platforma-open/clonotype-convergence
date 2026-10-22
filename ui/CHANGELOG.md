@@ -1,5 +1,12 @@
 # @platforma-open/milaboratories.clonotype-convergence.ui
 
+## 1.8.0
+
+### Patch Changes
+
+- Updated dependencies [54a11f6]
+  - @platforma-open/milaboratories.clonotype-convergence.model@1.8.0
+
 ## 1.7.3
 
 ### Patch Changes
