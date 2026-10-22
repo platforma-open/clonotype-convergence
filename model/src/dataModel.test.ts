@@ -48,7 +48,7 @@ describe("v6 migration", () => {
     expect(data.expectedValues).toEqual([createColumnValueId({ column, value: "day 7" })]);
   });
 
-  test("picks keep their order and duplicates; text stays text, column value ids stay", () => {
+  test("picks keep their order and duplicates; numbers become text, column value ids stay", () => {
     const column = createGlobalPObjectId("samples", "metadata.timepoint");
     const picked = createColumnValueId({ column, value: "day 0" });
     const { expectedValues } = blockDataModel.migrate({
@@ -60,7 +60,7 @@ describe("v6 migration", () => {
       picked,
       createColumnValueId({ column, value: "7" }),
       createColumnValueId({ column, value: "day 7" }),
-      createColumnValueId({ column, value: 3 }),
+      createColumnValueId({ column, value: "3" }),
     ]);
   });
 

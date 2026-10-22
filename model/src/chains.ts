@@ -101,8 +101,9 @@ export function getDefaultBlockLabel(data: BlockData): string {
     const primaryIsHeavy = facts.chains.some(isHeavy);
     // The threshold labels a chain ONLY where full-STAR is absent (no Pgen);
     // full-STAR uses alpha and hides the threshold, so surfacing it would
-    // misrepresent the run. Mixed methods are designed out (args throws), so
-    // the primary chain's Pgen availability decides for both.
+    // misrepresent the run. Each chain picks its method from its own Pgen, and no
+    // args issue rejects mixed Pgen availability; the label still lets the
+    // primary chain's Pgen availability decide for both.
     const runsFallback = primaryIsHeavy ? !pgenHeavyAvailable(facts) : !pgenLightAvailable(facts);
     if (runsFallback) {
       // Only CUSTOM settings belong in the label — the same rule nMin and alpha

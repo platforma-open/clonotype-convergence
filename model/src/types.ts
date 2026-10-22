@@ -4,9 +4,9 @@ import type { ColumnUniversalId, ColumnValueId, PlDataTableStateV2 } from "@plat
 /**
  * Facts about the picked input dataset, snapshotted into BlockData at
  * user-gesture time. One snapshot per populated chain.
- * The args lambda validates from these snapshots — never from
- * the result pool — because args lambdas are `data`-only (snapshot
- * pattern).
+ * The args issues are computed from these snapshots — never from
+ * the result pool — because the args and argsIssues lambdas are
+ * `data`-only (snapshot pattern).
  *
  * `chains` carries the verbatim VDJ chain DOMAIN values from MiXCR
  * (e.g. "IGHeavy", "IGLight", "IGKappa", "IGLambda", "TCRAlpha"). The
@@ -93,8 +93,8 @@ export type BlockArgs = {
    *  the anchor. The workflow stamps this string as the outputs' `pl7.app/inputSubset`. */
   inputFilter?: ColumnUniversalId;
 
-  /** Sample-size floor. Default 100. */
-  nMin: number;
+  /** Sample-size floor. Default 100. Absent only while the block cannot run. */
+  nMin?: number;
 
   /** full-STAR FDR target (Benjamini–Hochberg alpha). Default 0.005. The
    *  full-STAR knob; the workflow also defaults it if absent. */

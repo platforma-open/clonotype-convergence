@@ -5,7 +5,7 @@ import {
   PlBlockPage,
   PlBtnGhost,
   PlDialogModal,
-  PlIcon24,
+  PlMaskIcon24,
   PlSlideModal,
   usePlDataTableSettingsV2,
 } from "@platforma-sdk/ui-vue";
@@ -137,19 +137,19 @@ const customBlockLabel = computed({
       <PlBtnGhost v-if="hasAnyStats" @click.stop="() => setPanel('stats')">
         Stats
         <template #append>
-          <PlIcon24 name="statistics" />
+          <PlMaskIcon24 name="statistics" />
         </template>
       </PlBtnGhost>
       <PlBtnGhost @click.stop="() => setPanel('logs')">
         Logs
         <template #append>
-          <PlIcon24 name="file-logs" />
+          <PlMaskIcon24 name="file-logs" />
         </template>
       </PlBtnGhost>
       <PlBtnGhost @click.stop="() => setPanel('settings')">
         Settings
         <template #append>
-          <PlIcon24 name="settings" />
+          <PlMaskIcon24 name="settings" />
         </template>
       </PlBtnGhost>
     </template>

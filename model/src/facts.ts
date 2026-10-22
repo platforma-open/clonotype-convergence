@@ -55,7 +55,7 @@ export function discoverUpstreamFacts(
 
   const chains = new Set<string>();
   // Aggregate (dataset-level) presence: does the dataset carry ANY aa-CDR3 /
-  // nt-CDR3 / abundance sibling? These feed only the args gate. Per-chain
+  // nt-CDR3 / abundance sibling? These feed only the args issues. Per-chain
   // validation is the workflow's job — it fetches each chain's CDR3/abundance
   // columns separately and errors if any are missing.
   let hasAaCDR3 = false;

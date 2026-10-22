@@ -91,9 +91,9 @@ export function getDatasetOptions(
     .isEmpty();
 
   // NO CDR3-readiness check here, deliberately — the equivalent check lives
-  // in the args lambda instead. Hiding is the wrong response to an unusable
+  // in the args issues instead. Hiding is the wrong response to an unusable
   // dataset: it is indistinguishable from the block not seeing it at all. So
-  // the picker offers every BCR anchor, and args refuses to build (Run
+  // the picker offers every BCR anchor, and the args issues report an error (Run
   // disabled, with a reason) when the snapshot says the columns aren't there.
   const anchors = getAnchorColumns(ctx);
   const specs = new Map(anchors.getColumns().map((column) => [column.id, column.getSpec()]));

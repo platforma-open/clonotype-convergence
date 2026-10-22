@@ -10,6 +10,7 @@ import {
   PlDropdownMulti,
   PlNumberField,
   PlTooltip,
+  useColumnValueOptions,
 } from "@platforma-sdk/ui-vue";
 import {
   fromDatasetSelection,
@@ -35,16 +36,28 @@ const convergenceContextOpen = ref(true);
 // independence grouping (both sampleId-keyed `pl7.app/metadata`).
 const metadataColumnOptions = computed(() => app.model.outputs.metadataOptions ?? []);
 
+/** The values of the expected-filter column picked now, as far as they are read. */
+const expectedFilterValues = useColumnValueOptions({
+  source: () => app.model.outputs.expectedFilterValues,
+  column: () => app.model.data.expectedFilterRef,
+});
+
 /**
- * Values of the expected-filter column, while they describe the column picked now. The model
- * output follows the pick with a lag; until it catches up the picker shows as loading. A picked
- * value missing from them stays picked and is shown as not available.
+ * Values of the expected-filter column as options of the expected-values picker. `undefined`
+ * while they are read, so the picker shows as loading. A column whose values are gone or cannot
+ * be read offers none; a picked value missing from them stays picked and is shown as not
+ * available.
  */
 const expectedValueOptions = computed(() => {
-  const output = app.model.outputs.expectedValueOptions;
-  const expectedFilterRef = app.model.data.expectedFilterRef;
-  if (output === undefined || expectedFilterRef === undefined) return undefined;
-  return output.computedFor === expectedFilterRef ? output.options : undefined;
+  const state = expectedFilterValues.value;
+  if (state === undefined || state.type === "loading") return undefined;
+  return state.type === "read" ? state.options : [];
+});
+
+/** Why the values of the expected-filter column could not be read. */
+const expectedValuesError = computed(() => {
+  const state = expectedFilterValues.value;
+  return state?.type === "failed" ? state.message : undefined;
 });
 
 // The expected values are values of the expected-filter column, so picking another column (or
@@ -277,6 +290,7 @@ const fullStarHint = computed<string | undefined>(() => {
         <PlDropdownMulti
           v-model="app.model.data.expectedValues"
           :options="expectedValueOptions"
+          :error="expectedValuesError"
           group-position="bottom"
           :disabled="!app.model.data.expectedFilterRef"
         />

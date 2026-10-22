@@ -6,10 +6,12 @@ import type {
   PColumnSpec,
   PFrameHandle,
   RenderCtxBase,
+  ArgsIssue,
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
   ColumnsCollection,
+  createColumnValuesSource,
   createPlDataTableSheet,
   createPlDataTableV3,
   deriveAxisValuesLabels,
@@ -41,14 +43,13 @@ import {
 import { blockDataModel } from "./dataModel";
 import { getDatasetCandidates, getDatasetOptions } from "./dataset";
 import { discoverUpstreamFacts } from "./facts";
-import { getExpectedValueOptions, getMetadataOptions } from "./metadata";
+import { getMetadataOptions } from "./metadata";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
 export type { ColumnPickerOption } from "./columns";
 export type { DatasetPick } from "./dataset";
-export type { ExpectedValueOptions } from "./metadata";
 export { blockDataModel } from "./dataModel";
 export { toColumnId } from "./columns";
 export { fromDatasetSelection, toDatasetSelection } from "./dataset";
@@ -62,90 +63,13 @@ export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } fro
 // hang off the same anchor — the user opts in via the LC checkbox.
 
 export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
+  // Args are built from whatever is set; `argsIssues` below decides whether
+  // they may run. A chain slot is filled only once a dataset is picked.
   .args((data): BlockArgs => {
-    if (!data.datasetRef || !data.datasetFacts) {
-      throw new Error("Select a dataset");
-    }
     const facts = data.datasetFacts;
-    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
+    const { heavy, light } = processedChains(data);
 
-    // Input-completeness gate. This is the ONLY thing standing between a
-    // dataset that can't be processed and a Run: `datasetOptions` deliberately
-    // offers every BCR anchor (gating the dropdown on sibling discovery hid
-    // valid datasets for as long as any other block in the project was
-    // running). Validating here instead keeps the dropdown honest AND the Run
-    // button correct — and it reads the pick-time SNAPSHOT, which cannot
-    // flicker with pool churn the way a live query can.
-    //
-    // Dataset-level, not per-chain: these flags are aggregates over the
-    // anchor's siblings (facts.ts). Per-chain presence stays the workflow's
-    // assertion — this gate only stops the runs that cannot possibly work.
-    if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
-      throw new Error(
-        "This dataset has no amino-acid and nucleotide CDR3 columns — convergence needs both",
-      );
-    }
-    if (!facts.hasAbundance) {
-      throw new Error("This dataset has no abundance column");
-    }
-
-    // ---- Heavy slot (always from the dataset when it has heavy) ---
-    const datasetHeavy = facts.chains.find(isHeavy);
-
-    // ---- Light slot (explicit) ------------------------------------
-    // Two sources, mutually exclusive — both on the SAME dataset anchor:
-    //  1. dataset is bulk-light        → chainL ← the dataset pick;
-    //  2. SC paired + processLightChain → chainL ← the same anchor (heavy
-    //     and light hang off it as column-domain siblings).
-    // Both sources take the light chain off the SAME dataset anchor, so the
-    // slot is filled identically either way — only the CONDITION differs:
-    // bulk-light needs no opt-in (it is the only chain there), SC paired does.
-    const datasetLight = facts.chains.find(isLight);
-    const lightProcessed =
-      datasetLight !== undefined && (datasetHeavy === undefined || data.processLightChain === true);
-
-    // At least one chain slot must be filled. Nothing upstream guarantees it:
-    // the dropdown offers BCR anchors without inspecting the snapshot, and a
-    // snapshot whose `chains` came back empty fills neither slot — the workflow
-    // then skips both chain branches and the block "succeeds" with no outputs
-    // at all. Fail here instead, where it reads as a bad input.
-    if (datasetHeavy === undefined && !lightProcessed) {
-      throw new Error("No BCR chain detected in this dataset — re-select it to refresh");
-    }
-
-    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
-    // Parallel modes: fast-STAR runs on every processed
-    // chain; full-STAR is ADDED on a chain when its Pgen is available. No
-    // shared-method constraint and no disable-light — heavy and light are
-    // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
-    // always required for each processed chain (heavy has a default; light must
-    // be set explicitly).
-    if (datasetHeavy !== undefined && data.thresholdH === undefined) {
-      throw new Error("Heavy-chain threshold is required");
-    }
-    if (lightProcessed && data.thresholdL === undefined) {
-      throw new Error("Light-chain threshold is required");
-    }
-
-    // ---- nMin -----------------------------------------------------
-    if (data.nMin === undefined) {
-      throw new Error("Minimum unique CDR3 per sample is required");
-    }
-
-    // ---- Cluster filter -------------------------------------------
     const applyClusterFilter = data.applyClusterFilter ?? false;
-    let clusterMin: number | undefined;
-    if (applyClusterFilter) {
-      if (data.clusterMin === undefined) {
-        throw new Error("Minimum cluster size is required");
-      }
-      clusterMin = data.clusterMin;
-    }
-
-    // SC mode → the workflow needs the scClonotypeChain LETTER ("A"/"B") to
-    // filter sibling columns to the right chain. Both chains ride the same
-    // anchor, so `isSC` (from the dataset's own axis name) governs both.
-
     const args: BlockArgs = {
       nMin: data.nMin,
       alpha: data.alpha ?? DEFAULT_ALPHA,
@@ -153,27 +77,34 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       customBlockLabel: data.customBlockLabel,
       defaultBlockLabel: getDefaultBlockLabel(data),
     };
-    if (datasetHeavy !== undefined) {
-      args.chainH = data.datasetRef;
-      args.chainHName = datasetHeavy;
-      args.hasPgenHeavy = pgenHeavyAvailable(facts);
-      // full-STAR is added when Pgen is present; the id establishes the gen-prob
-      // dependency so the workflow can resolve Pgen data by id.
-      if (pgenHeavyAvailable(facts)) args.pgenRefHeavy = facts.pgenRefHeavy;
-      // fast-STAR always runs → its threshold is always projected.
-      args.thresholdH = data.thresholdH;
-      if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[datasetHeavy];
+
+    // SC mode → the workflow needs the scClonotypeChain LETTER ("A"/"B") to
+    // filter sibling columns to the right chain. Both chains ride the same
+    // anchor, so `isSC` (from the dataset's own axis name) governs both.
+    if (data.datasetRef && facts) {
+      const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
+      if (heavy !== undefined) {
+        args.chainH = data.datasetRef;
+        args.chainHName = heavy;
+        args.hasPgenHeavy = pgenHeavyAvailable(facts);
+        // full-STAR is added when Pgen is present; the id establishes the gen-prob
+        // dependency so the workflow can resolve Pgen data by id.
+        if (pgenHeavyAvailable(facts)) args.pgenRefHeavy = facts.pgenRefHeavy;
+        // fast-STAR always runs → its threshold is always projected.
+        args.thresholdH = data.thresholdH;
+        if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[heavy];
+      }
+      if (light !== undefined) {
+        args.chainL = data.datasetRef;
+        args.chainLName = light;
+        args.hasPgenLight = pgenLightAvailable(facts);
+        if (pgenLightAvailable(facts)) args.pgenRefLight = facts.pgenRefLight;
+        args.thresholdL = data.thresholdL;
+        if (isSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[light];
+      }
     }
-    if (lightProcessed) {
-      args.chainL = data.datasetRef;
-      args.chainLName = datasetLight;
-      args.hasPgenLight = pgenLightAvailable(facts);
-      if (pgenLightAvailable(facts)) args.pgenRefLight = facts.pgenRefLight;
-      args.thresholdL = data.thresholdL;
-      if (isSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[datasetLight];
-    }
-    if (clusterMin !== undefined) {
-      args.clusterMin = clusterMin;
+    if (applyClusterFilter && data.clusterMin !== undefined) {
+      args.clusterMin = data.clusterMin;
     }
     if (data.filterRef) {
       args.inputFilter = data.filterRef;
@@ -194,6 +125,70 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       args.groupingRef = data.groupingRef;
     }
     return args;
+  })
+
+  // Input-completeness gate. This is the ONLY thing standing between a
+  // dataset that can't be processed and a Run: `datasetOptions` deliberately
+  // offers every BCR anchor (gating the dropdown on sibling discovery hid
+  // valid datasets for as long as any other block in the project was
+  // running). Validating here instead keeps the dropdown honest AND the Run
+  // button correct — and it reads the pick-time SNAPSHOT, which cannot
+  // flicker with pool churn the way a live query can.
+  .argsIssues(({ data }) => {
+    if (!data.datasetRef || !data.datasetFacts) {
+      return [{ severity: "error", message: "Select a dataset" }];
+    }
+    const facts = data.datasetFacts;
+    const { heavy, light } = processedChains(data);
+    const issues: ArgsIssue[] = [];
+
+    // Dataset-level, not per-chain: these flags are aggregates over the
+    // anchor's siblings (facts.ts). Per-chain presence stays the workflow's
+    // assertion — this gate only stops the runs that cannot possibly work.
+    if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
+      issues.push({
+        severity: "error",
+        message:
+          "This dataset has no amino-acid and nucleotide CDR3 columns — convergence needs both",
+      });
+    }
+    if (!facts.hasAbundance) {
+      issues.push({ severity: "error", message: "This dataset has no abundance column" });
+    }
+
+    // At least one chain slot must be filled. Nothing upstream guarantees it:
+    // the dropdown offers BCR anchors without inspecting the snapshot, and a
+    // snapshot whose `chains` came back empty fills neither slot — the workflow
+    // then skips both chain branches and the block "succeeds" with no outputs
+    // at all. Fail here instead, where it reads as a bad input.
+    if (heavy === undefined && light === undefined) {
+      issues.push({
+        severity: "error",
+        message: "No BCR chain detected in this dataset — re-select it to refresh",
+      });
+    }
+
+    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
+    // Parallel modes: fast-STAR runs on every processed
+    // chain; full-STAR is ADDED on a chain when its Pgen is available. No
+    // shared-method constraint and no disable-light — heavy and light are
+    // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
+    // always required for each processed chain (heavy has a default; light must
+    // be set explicitly).
+    if (heavy !== undefined && data.thresholdH === undefined) {
+      issues.push({ severity: "error", message: "Heavy-chain threshold is required" });
+    }
+    if (light !== undefined && data.thresholdL === undefined) {
+      issues.push({ severity: "error", message: "Light-chain threshold is required" });
+    }
+
+    if (data.nMin === undefined) {
+      issues.push({ severity: "error", message: "Minimum unique CDR3 per sample is required" });
+    }
+    if ((data.applyClusterFilter ?? false) && data.clusterMin === undefined) {
+      issues.push({ severity: "error", message: "Minimum cluster size is required" });
+    }
+    return issues;
   })
 
   // Inverse of the kind's init-params contract: the dataset pick, the
@@ -320,8 +315,13 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // for the aggregation's expected-sample filter and independence grouping.
   .output("metadataOptions", (ctx) => getMetadataOptions(ctx))
 
-  // Options of the expected-values picker: the values of the expected-filter column.
-  .output("expectedValueOptions", (ctx) => getExpectedValueOptions(ctx, ctx.data.expectedFilterRef))
+  // Where the UI reads the values of the expected-filter column from, for the expected-values
+  // picker.
+  .output("expectedFilterValues", (ctx) => {
+    const expectedFilterRef = ctx.data.expectedFilterRef;
+    if (expectedFilterRef === undefined) return undefined;
+    return createColumnValuesSource(ctx, expectedFilterRef);
+  })
 
   // Dataset id → UpstreamFacts for every dataset the picker can offer. The
   // UI snapshot writer reads this to write the id + facts in one tick.
@@ -603,6 +603,27 @@ export type BlockOutputs = InferOutputsType<typeof platforma>;
 // Internals
 
 type Ctx = RenderCtxBase<BlockArgs, BlockData>;
+
+/**
+ * The chains the dataset pick processes, read from its snapshot; both
+ * undefined while no snapshot is set.
+ *  - heavy: the dataset's heavy chain, always processed when present.
+ *  - light: the dataset's light chain when it is processed. Two sources,
+ *    mutually exclusive, both on the SAME dataset anchor: a bulk-light dataset
+ *    (its only chain, no opt-in needed), or SC paired data with
+ *    `processLightChain` (heavy and light hang off the anchor as column-domain
+ *    siblings).
+ */
+function processedChains(data: BlockData): {
+  heavy: string | undefined;
+  light: string | undefined;
+} {
+  const chains = data.datasetFacts?.chains ?? [];
+  const heavy = chains.find(isHeavy);
+  const datasetLight = chains.find(isLight);
+  const lightProcessed = heavy === undefined || data.processLightChain === true;
+  return { heavy, light: lightProcessed ? datasetLight : undefined };
+}
 
 /** sampleId → label for the dataset's sampleId axis. Undefined when the
  *  dataset or its spec isn't resolvable; callers fall back to the raw sampleId. */

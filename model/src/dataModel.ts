@@ -106,7 +106,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
     // thresholdL deliberately has NO default: the heavy-calibrated
     // value over-flags the lower-diversity light chain, so the user must enter
     // it explicitly. Until they do, a processed light chain leaves the block
-    // non-runnable (the args gate throws → Run disabled).
+    // non-runnable (the args issues report an error → Run disabled).
     thresholdH: params?.thresholdH ?? DEFAULT_THRESHOLD_H,
     nMin: params?.nMin ?? DEFAULT_NMIN,
     // full-STAR FDR target (Benjamini–Hochberg). STAR default 0.005.
@@ -160,10 +160,10 @@ function toColumnIds(data: BlockDataV5): BlockData {
 
 /**
  * Picks of one column as column value ids, in their stored order, duplicates included. A pick
- * stored as a plain value of the column becomes the id of that value of `column`, as stored: the
- * stored data does not say whether the column holds numbers, so text stays text. A plain pick is
- * dropped when there is no column to name, or when it is neither text nor a finite number; a pick
- * that already is a column value id is kept as is.
+ * stored as a plain value of the column becomes the id of that value of `column` as text, the form
+ * every column value id carries: text stays as stored, a number becomes its decimal text. A plain
+ * pick is dropped when there is no column to name, or when it is neither text nor a finite number;
+ * a pick that already is a column value id is kept as is.
  */
 function toColumnValueIds(
   column: ColumnUniversalId | undefined,
@@ -172,7 +172,7 @@ function toColumnValueIds(
   return picks.flatMap((pick) => {
     if (isColumnValueId(pick)) return [pick];
     if (column === undefined || !isColumnValue(pick)) return [];
-    return [createColumnValueId({ column, value: pick })];
+    return [createColumnValueId({ column, value: String(pick) })];
   });
 }
 
