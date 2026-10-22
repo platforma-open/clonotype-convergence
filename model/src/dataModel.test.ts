@@ -1,5 +1,9 @@
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import { createColumnValueId, createGlobalPObjectId } from "@platforma-sdk/model";
+import {
+  createColumnValueId,
+  createGlobalPObjectId,
+  createPlDataTableStateV2,
+} from "@platforma-sdk/model";
 import { describe, expect, test } from "vitest";
 import { blockDataModel } from "./dataModel";
 
@@ -71,6 +75,16 @@ describe("v6 migration", () => {
     }).data;
     expect(migrated.expectedFilterRef).toBeUndefined();
     expect(migrated.expectedValues).toEqual([]);
+  });
+
+  test("both table states are reset, their source id format changed", () => {
+    const stale = { ...createPlDataTableStateV2(), pTableParams: { sourceId: "stale" } };
+    const migrated = blockDataModel.migrate({
+      version: "v5",
+      data: { ...storedAtV5, mainTableState: stale, aggregatedTableState: stale },
+    }).data;
+    expect(migrated.mainTableState).toEqual(createPlDataTableStateV2());
+    expect(migrated.aggregatedTableState).toEqual(createPlDataTableStateV2());
   });
 
   test("the rest of the dataset snapshot is kept", () => {

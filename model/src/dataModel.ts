@@ -93,7 +93,13 @@ export const blockDataModel = new DataModelBuilder({ kind })
     aggregatedTableState: createPlDataTableStateV2(),
   }))
   // v6 — columns become result-pool ids, the expected values column value ids.
-  .migrate<BlockData>("v6", toColumnIds)
+  // `mainTableSourceId` now carries the dataset's result-pool id, so both table
+  // states are reset for the same reason as in v5.
+  .migrate<BlockData>("v6", (prev) => ({
+    ...toColumnIds(prev),
+    mainTableState: createPlDataTableStateV2(),
+    aggregatedTableState: createPlDataTableStateV2(),
+  }))
   .init(({ params }) => ({
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
