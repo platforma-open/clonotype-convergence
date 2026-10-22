@@ -287,7 +287,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // always describe the same run.
     const dataset = ctx.activeArgs?.chainH ?? ctx.activeArgs?.chainL;
     if (!dataset) return undefined;
-    return sampleSheets(ctx, findColumn(ctx, dataset));
+    return sampleSheets(ctx, findColumn(dataset));
   })
 
   // LIVE Generation Probability availability for the picked dataset.
@@ -301,7 +301,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // keep the last-synced snapshot in that window rather than flip.
   .output("pgenStatus", (ctx) => {
     if (!ctx.data.datasetRef) return undefined;
-    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef, ctx.data.filterRef);
+    const facts = discoverUpstreamFacts(ctx.data.datasetRef, ctx.data.filterRef);
     if (!facts) return undefined;
     return {
       hasPgenHeavy: pgenHeavyAvailable(facts),
@@ -313,7 +313,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
 
   // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
   // for the aggregation's expected-sample filter and independence grouping.
-  .output("metadataOptions", (ctx) => getMetadataOptions(ctx))
+  .output("metadataOptions", () => getMetadataOptions())
 
   // The values of the expected-filter column, for the expected-values picker.
   .output("expectedFilterValues", (ctx) => {
@@ -326,8 +326,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // UI snapshot writer reads this to write the id + facts in one tick.
   .output("factsByDataset", (ctx) => {
     const result: Record<string, UpstreamFacts> = {};
-    for (const datasetId of getDatasetCandidates(ctx)) {
-      const facts = discoverUpstreamFacts(ctx, datasetId, ctx.data.filterRef);
+    for (const datasetId of getDatasetCandidates()) {
+      const facts = discoverUpstreamFacts(datasetId, ctx.data.filterRef);
       if (facts) result[datasetId] = facts;
     }
     return result;
@@ -407,7 +407,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     const pframeField = args.chainH !== undefined ? "convergencePf" : "lightConvergencePf";
     const dataset = args.chainH ?? args.chainL;
     if (!dataset) return undefined;
-    if (findColumn(ctx, dataset) === undefined) return undefined;
+    if (findColumn(dataset) === undefined) return undefined;
 
     const pframe = ctx.outputs?.resolve({
       field: pframeField,
@@ -479,7 +479,7 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
     const dataset = args.chainH ?? args.chainL;
     if (!dataset) return undefined;
-    if (findColumn(ctx, dataset) === undefined) return undefined;
+    if (findColumn(dataset) === undefined) return undefined;
 
     // Anchor on this block's aggregated (clonotype-only) fastStar column — the
     // one column every chain emits, whether or not full-STAR was added.
@@ -626,11 +626,10 @@ function processedChains(data: BlockData): {
 
 /** sampleId → label for the dataset's sampleId axis. Undefined when the
  *  dataset or its spec isn't resolvable; callers fall back to the raw sampleId. */
-function sampleLabels(ctx: Ctx, dataset: ColumnUniversalId | undefined) {
-  const sampleAxis =
-    dataset === undefined ? undefined : findColumn(ctx, dataset)?.getSpec().axesSpec[0];
+function sampleLabels(dataset: ColumnUniversalId | undefined) {
+  const sampleAxis = dataset === undefined ? undefined : findColumn(dataset)?.getSpec().axesSpec[0];
   if (sampleAxis === undefined) return undefined;
-  const labelColumns = resultPool(ctx).filter({
+  const labelColumns = resultPool().filter({
     include: {
       name: [exact("pl7.app/label")],
       axes: [axisSelector(sampleAxis)],
@@ -669,7 +668,7 @@ function buildSkippedSamples(
   );
   if (!parsed.isComplete) return undefined;
   const args = ctx.activeArgs;
-  const labels = sampleLabels(ctx, args ? chainDataset(args) : undefined);
+  const labels = sampleLabels(args ? chainDataset(args) : undefined);
   const nMin = parsed.data[0]?.value?.nMin ?? args?.nMin;
   const belowMin: string[] = [];
   const noCdr3: string[] = [];
@@ -717,7 +716,7 @@ function buildPerSampleLogs(
   );
   if (parsed.data.length === 0) return undefined;
   const args = ctx.activeArgs;
-  const labels = sampleLabels(ctx, args ? chainDataset(args) : undefined);
+  const labels = sampleLabels(args ? chainDataset(args) : undefined);
   return parsed.data
     .map((e) => {
       const sampleId = String(e.key[0]);
@@ -843,7 +842,6 @@ function bothChainColumns(
 ): ColumnRecipe[] | undefined {
   const of = (field: string) =>
     getOutputColumns(
-      ctx,
       ctx.outputs?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true }),
     )?.getColumns() ?? [];
   const columns = [...of(heavyField), ...of(lightField)];

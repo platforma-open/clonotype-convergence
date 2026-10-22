@@ -30,8 +30,8 @@ export type DatasetPick = {
  * dataset picker can offer: bulk (`pl7.app/vdj/clonotypeKey`) or single-cell
  * (`pl7.app/vdj/scClonotypeKey`) clonotypes per sample.
  */
-export function getDatasetCandidates(ctx: RenderCtxBase): ColumnUniversalId[] {
-  return getAnchorColumns(ctx).getColumnIds();
+export function getDatasetCandidates(): ColumnUniversalId[] {
+  return getAnchorColumns().getColumnIds();
 }
 
 /**
@@ -86,7 +86,7 @@ export function getDatasetOptions(
   // too); the scClonotypeKey/structure domain is an unfinished placeholder
   // shared with paired SC, so it can't discriminate. The marker is looked up
   // by name alone across the whole result pool.
-  const poolHasScFv = !resultPool(ctx)
+  const poolHasScFv = !resultPool()
     .filter({ include: { name: [exact(SCFV_MARKER)] } })
     .isEmpty();
 
@@ -95,7 +95,7 @@ export function getDatasetOptions(
   // dataset: it is indistinguishable from the block not seeing it at all. So
   // the picker offers every BCR anchor, and the args issues report an error (Run
   // disabled, with a reason) when the snapshot says the columns aren't there.
-  const anchors = getAnchorColumns(ctx);
+  const anchors = getAnchorColumns();
   const specs = new Map(anchors.getColumns().map((column) => [column.id, column.getSpec()]));
   const options: DatasetOption[] = [];
   for (const { id, label } of deriveColumnOptions(anchors)) {
@@ -143,8 +143,8 @@ const DATASET_ANCHORS: RelaxedColumnSelector[] = [...DATASET_KEY_AXES].map((clon
   annotations: ANCHOR_ANNOTATIONS,
 }));
 
-function getAnchorColumns(ctx: RenderCtxBase) {
-  return resultPool(ctx).filter({ include: DATASET_ANCHORS });
+function getAnchorColumns() {
+  return resultPool().filter({ include: DATASET_ANCHORS });
 }
 
 /** Whether the anchor's clonotypes are of a B-cell receptor chain. */

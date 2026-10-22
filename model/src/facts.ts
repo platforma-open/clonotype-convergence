@@ -1,9 +1,4 @@
-import type {
-  AxisSpec,
-  ColumnRecipe,
-  ColumnUniversalId,
-  RenderCtxBase,
-} from "@platforma-sdk/model";
+import type { AxisSpec, ColumnRecipe, ColumnUniversalId } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
   isHeavy,
@@ -41,11 +36,10 @@ export function pgenUsableFor(
  * A full-data Pgen is always valid (Pgen is per sequence).
  */
 export function discoverUpstreamFacts(
-  ctx: RenderCtxBase,
   datasetId: ColumnUniversalId,
   subsetId: ColumnUniversalId | undefined,
 ): UpstreamFacts | undefined {
-  const datasetSpec = findColumn(ctx, datasetId)?.getSpec();
+  const datasetSpec = findColumn(datasetId)?.getSpec();
   if (!datasetSpec) return undefined;
   const [sampleAxis, cloneAxis] = datasetSpec.axesSpec;
   // Name of the second axis = clonotype-key axis. Drives
@@ -62,7 +56,7 @@ export function discoverUpstreamFacts(
   let hasNtCDR3 = false;
   let hasAbundance = false;
 
-  for (const column of siblingColumns(ctx, sampleAxis, cloneAxis)) {
+  for (const column of siblingColumns(sampleAxis, cloneAxis)) {
     const spec = column.getSpec();
 
     // Chain identity differs between bulk and SC outputs from MiXCR:
@@ -107,7 +101,7 @@ export function discoverUpstreamFacts(
     // Bulk is single-chain — the (chain-less) Pgen is attributed to whichever
     // chain the dataset carries.
     const bulkChain = isSC ? undefined : Array.from(chains).find((c) => isHeavy(c) || isLight(c));
-    const pgenColumns = resultPool(ctx)
+    const pgenColumns = resultPool()
       .filter({ include: { name: [exact(PGEN_NAME)] } })
       .getColumns();
     for (const pgen of pgenColumns) {
@@ -154,12 +148,11 @@ export function discoverUpstreamFacts(
  * block is still computing on the same axes cost nothing.
  */
 function siblingColumns(
-  ctx: RenderCtxBase,
   sampleAxis: AxisSpec | undefined,
   cloneAxis: AxisSpec | undefined,
 ): ColumnRecipe[] {
   if (sampleAxis === undefined || cloneAxis === undefined) return [];
-  return resultPool(ctx)
+  return resultPool()
     .filter({
       include: [
         { axes: [axisSelector(sampleAxis), axisSelector(cloneAxis)], partialAxesMatch: false },
