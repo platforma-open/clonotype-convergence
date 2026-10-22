@@ -11,7 +11,7 @@ import type {
 import {
   BlockModelV3,
   ColumnsCollection,
-  createColumnValuesSource,
+  createColumnValueOptions,
   createPlDataTableSheet,
   createPlDataTableV3,
   deriveAxisValuesLabels,
@@ -315,12 +315,11 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // for the aggregation's expected-sample filter and independence grouping.
   .output("metadataOptions", (ctx) => getMetadataOptions(ctx))
 
-  // Where the UI reads the values of the expected-filter column from, for the expected-values
-  // picker.
+  // The values of the expected-filter column, for the expected-values picker.
   .output("expectedFilterValues", (ctx) => {
     const expectedFilterRef = ctx.data.expectedFilterRef;
     if (expectedFilterRef === undefined) return undefined;
-    return createColumnValuesSource(ctx, expectedFilterRef);
+    return createColumnValueOptions({ valueColumn: expectedFilterRef });
   })
 
   // Dataset id → UpstreamFacts for every dataset the picker can offer. The
