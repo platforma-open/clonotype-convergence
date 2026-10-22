@@ -1,6 +1,5 @@
-import type { PlRef } from "@platforma-sdk/model";
-import { plRefsEqual } from "@platforma-sdk/model";
-import canonicalize from "canonicalize";
+import type { ColumnUniversalId } from "@platforma-sdk/model";
+import { toColumnId } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import type { useApp } from "./app";
 
 type AppModel = ReturnType<typeof useApp>["model"];
@@ -14,11 +13,9 @@ type AppModel = ReturnType<typeof useApp>["model"];
  * template-seeded block would end up with a snapshot the picker would not have
  * produced.
  */
-export function factsFor(model: AppModel, ref: PlRef | undefined) {
-  if (!ref) return undefined;
-  const key = canonicalize(ref as unknown as Record<string, unknown>);
-  if (key === undefined) return undefined;
-  const facts = model.outputs.factsByRef?.[key];
+export function factsFor(model: AppModel, dataset: ColumnUniversalId | undefined) {
+  if (!dataset) return undefined;
+  const facts = model.outputs.factsByDataset?.[dataset];
   // Return a copy so the persisted snapshot in `data` doesn't alias the
   // reactive outputs object.
   return facts ? { ...facts, chains: [...facts.chains] } : undefined;
@@ -31,13 +28,13 @@ export function factsFor(model: AppModel, ref: PlRef | undefined) {
  */
 export function labelFor(
   model: AppModel,
-  ref: PlRef | undefined,
-  filter: PlRef | undefined,
+  dataset: ColumnUniversalId | undefined,
+  filter: ColumnUniversalId | undefined,
 ): string | undefined {
-  if (!ref) return undefined;
-  const option = model.outputs.datasetOptions?.find((o) => plRefsEqual(o.primary.ref, ref, true));
+  if (!dataset) return undefined;
+  const option = model.outputs.datasetOptions?.find((o) => toColumnId(o.primary.ref) === dataset);
   if (filter !== undefined) {
-    const filterLabel = option?.filters?.find((f) => plRefsEqual(f.ref, filter, true))?.label;
+    const filterLabel = option?.filters?.find((f) => toColumnId(f.ref) === filter)?.label;
     if (filterLabel !== undefined) return filterLabel;
   }
   return option?.primary.label;

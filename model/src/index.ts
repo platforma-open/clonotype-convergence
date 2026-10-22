@@ -1,45 +1,58 @@
 import type {
   ColumnRecipe,
+  ColumnUniversalId,
   ColumnVisibilityRule,
-  DatasetOption,
-  PColumnSpec,
   InferOutputsType,
+  PColumnSpec,
   PFrameHandle,
-  PlRef,
-  RenderCtx,
+  RenderCtxBase,
+  ArgsIssue,
 } from "@platforma-sdk/model";
 import {
   BlockModelV3,
-  buildDatasetOptions,
   ColumnsCollection,
+  createColumnValueOptions,
   createPlDataTableSheet,
   createPlDataTableV3,
+  deriveAxisValuesLabels,
   getUniquePartitionKeys,
-  isPColumnSpec,
+  hasReachableData,
   parseResourceMap,
+  TreeNodeAccessor,
 } from "@platforma-sdk/model";
 import canonicalize from "canonicalize";
 import {
-  columnIdFromPlRef,
   DEFAULT_ALPHA,
   formatSubtitle,
   getDefaultBlockLabel,
-  inputAnchorSpecs,
   isHeavy,
   isLight,
   pgenHeavyAvailable,
   pgenLightAvailable,
   SC_AXIS,
-  SC_BCR_RECEPTOR,
   SC_LETTER_FROM_CHAIN,
 } from "./chains";
+import {
+  axisSelector,
+  exact,
+  findColumn,
+  getOutputColumns,
+  resultPool,
+  toIdsAndSpecs,
+} from "./columns";
 import { blockDataModel } from "./dataModel";
+import { getDatasetCandidates, getDatasetOptions } from "./dataset";
 import { discoverUpstreamFacts } from "./facts";
+import { getMetadataOptions } from "./metadata";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
 import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 
 export type { BlockArgs, BlockData, UpstreamFacts };
+export type { ColumnPickerOption } from "./columns";
+export type { DatasetPick } from "./dataset";
 export { blockDataModel } from "./dataModel";
+export { toColumnId } from "./columns";
+export { fromDatasetSelection, toDatasetSelection } from "./dataset";
 // Shared chain constants/helpers, so the UI imports them instead of redefining.
 export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } from "./chains";
 
@@ -49,11 +62,581 @@ export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } fro
 // SC paired data never auto-populates chainL even though both chains
 // hang off the same anchor — the user opts in via the LC checkbox.
 
-/** sampleId → label for a chain anchor's sampleId axis. Undefined when the ref
- *  or its spec isn't resolvable; callers fall back to the raw sampleId. */
-function sampleLabels<A, U>(ctx: RenderCtx<A, U>, ref: PlRef | undefined) {
-  const axis = ref ? ctx.resultPool.getPColumnSpecByRef(ref)?.axesSpec[0] : undefined;
-  return axis ? ctx.resultPool.findLabels(axis) : undefined;
+export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
+  // Args are built from whatever is set; `argsIssues` below decides whether
+  // they may run. A chain slot is filled only once a dataset is picked.
+  .args((data): BlockArgs => {
+    const facts = data.datasetFacts;
+    const { heavy, light } = processedChains(data);
+
+    const applyClusterFilter = data.applyClusterFilter ?? false;
+    const args: BlockArgs = {
+      nMin: data.nMin,
+      alpha: data.alpha ?? DEFAULT_ALPHA,
+      applyClusterFilter,
+      customBlockLabel: data.customBlockLabel,
+      defaultBlockLabel: getDefaultBlockLabel(data),
+    };
+
+    // SC mode → the workflow needs the scClonotypeChain LETTER ("A"/"B") to
+    // filter sibling columns to the right chain. Both chains ride the same
+    // anchor, so `isSC` (from the dataset's own axis name) governs both.
+    if (data.datasetRef && facts) {
+      const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
+      if (heavy !== undefined) {
+        args.chainH = data.datasetRef;
+        args.chainHName = heavy;
+        args.hasPgenHeavy = pgenHeavyAvailable(facts);
+        // full-STAR is added when Pgen is present; the id establishes the gen-prob
+        // dependency so the workflow can resolve Pgen data by id.
+        if (pgenHeavyAvailable(facts)) args.pgenRefHeavy = facts.pgenRefHeavy;
+        // fast-STAR always runs → its threshold is always projected.
+        args.thresholdH = data.thresholdH;
+        if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[heavy];
+      }
+      if (light !== undefined) {
+        args.chainL = data.datasetRef;
+        args.chainLName = light;
+        args.hasPgenLight = pgenLightAvailable(facts);
+        if (pgenLightAvailable(facts)) args.pgenRefLight = facts.pgenRefLight;
+        args.thresholdL = data.thresholdL;
+        if (isSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[light];
+      }
+    }
+    if (applyClusterFilter && data.clusterMin !== undefined) {
+      args.clusterMin = data.clusterMin;
+    }
+    if (data.filterRef) {
+      args.inputFilter = data.filterRef;
+    }
+
+    // ---- Clonotype-only aggregation ----------------------
+    // The metadata columns, projected here, establish the samples-block
+    // dependency so the workflow can resolve them; both optional (absent → the
+    // default path: every sample its own independent, eligible unit). There is
+    // no other aggregation knob — `alpha` drives both BH levels.
+    if (data.expectedFilterRef) {
+      args.expectedFilterRef = data.expectedFilterRef;
+      if (data.expectedValues.length > 0) {
+        args.expectedValues = data.expectedValues;
+      }
+    }
+    if (data.groupingRef) {
+      args.groupingRef = data.groupingRef;
+    }
+    return args;
+  })
+
+  // Input-completeness gate. This is the ONLY thing standing between a
+  // dataset that can't be processed and a Run: `datasetOptions` deliberately
+  // offers every BCR anchor (gating the dropdown on sibling discovery hid
+  // valid datasets for as long as any other block in the project was
+  // running). Validating here instead keeps the dropdown honest AND the Run
+  // button correct — and it reads the pick-time SNAPSHOT, which cannot
+  // flicker with pool churn the way a live query can.
+  .argsIssues(({ data }) => {
+    if (!data.datasetRef || !data.datasetFacts) {
+      return [{ severity: "error", message: "Select a dataset" }];
+    }
+    const facts = data.datasetFacts;
+    const { heavy, light } = processedChains(data);
+    const issues: ArgsIssue[] = [];
+
+    // Dataset-level, not per-chain: these flags are aggregates over the
+    // anchor's siblings (facts.ts). Per-chain presence stays the workflow's
+    // assertion — this gate only stops the runs that cannot possibly work.
+    if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
+      issues.push({
+        severity: "error",
+        message:
+          "This dataset has no amino-acid and nucleotide CDR3 columns — convergence needs both",
+      });
+    }
+    if (!facts.hasAbundance) {
+      issues.push({ severity: "error", message: "This dataset has no abundance column" });
+    }
+
+    // At least one chain slot must be filled. Nothing upstream guarantees it:
+    // the dropdown offers BCR anchors without inspecting the snapshot, and a
+    // snapshot whose `chains` came back empty fills neither slot — the workflow
+    // then skips both chain branches and the block "succeeds" with no outputs
+    // at all. Fail here instead, where it reads as a bad input.
+    if (heavy === undefined && light === undefined) {
+      issues.push({
+        severity: "error",
+        message: "No BCR chain detected in this dataset — re-select it to refresh",
+      });
+    }
+
+    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
+    // Parallel modes: fast-STAR runs on every processed
+    // chain; full-STAR is ADDED on a chain when its Pgen is available. No
+    // shared-method constraint and no disable-light — heavy and light are
+    // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
+    // always required for each processed chain (heavy has a default; light must
+    // be set explicitly).
+    if (heavy !== undefined && data.thresholdH === undefined) {
+      issues.push({ severity: "error", message: "Heavy-chain threshold is required" });
+    }
+    if (light !== undefined && data.thresholdL === undefined) {
+      issues.push({ severity: "error", message: "Light-chain threshold is required" });
+    }
+
+    if (data.nMin === undefined) {
+      issues.push({ severity: "error", message: "Minimum unique CDR3 per sample is required" });
+    }
+    if ((data.applyClusterFilter ?? false) && data.clusterMin === undefined) {
+      issues.push({ severity: "error", message: "Minimum cluster size is required" });
+    }
+    return issues;
+  })
+
+  // Inverse of the kind's init-params contract: the dataset pick, the
+  // light-chain opt-in and every analysis knob — the fields a user sets by
+  // hand. `datasetFacts` and `datasetLabel` are derived from the pick (and
+  // refreshed from this block's outputs by the UI), and the table / chart
+  // states are view state; neither is configuration a template carries.
+  .templateParams((data) => ({
+    datasetRef: data.datasetRef,
+    filterRef: data.filterRef,
+    processLightChain: data.processLightChain,
+    thresholdH: data.thresholdH,
+    thresholdL: data.thresholdL,
+    nMin: data.nMin,
+    alpha: data.alpha,
+    applyClusterFilter: data.applyClusterFilter,
+    clusterMin: data.clusterMin,
+    expectedFilterRef: data.expectedFilterRef,
+    expectedValues: data.expectedValues,
+    groupingRef: data.groupingRef,
+    customBlockLabel: data.customBlockLabel,
+  }))
+
+  // Dropdown offers any BCR-compatible anchor, with its subsets — see
+  // getDatasetOptions.
+  .output("datasetOptions", (ctx) => getDatasetOptions(ctx, ctx.data.datasetRef))
+
+  // Source identifier for the main table's per-source state cache.
+  // Derived from `activeArgs` (= the args that produced the CURRENT
+  // outputs), so it only changes after a Run completes — picking a
+  // new dataset before pressing Run doesn't flip the sourceId and the
+  // table stays put. After Run, the new sourceId triggers a fresh
+  // hidden-columns / sort state (so stale column IDs from the old
+  // dataset don't haunt the new one).
+  //
+  // It keys on the dataset AND on which column FAMILIES the run emits, because
+  // the saved hidden-column list does not merge with the visibility rules — it
+  // replaces them (`computeHiddenColumns`: `hiddenSpecs` wins outright over the
+  // rule-derived optional set). So a state captured while full-STAR existed
+  // keeps hiding the fast-STAR family after Pgen is removed, and with full-STAR
+  // gone too the table renders empty but for the clone id. Anything that
+  // changes which columns exist has to reset that state.
+  .output("mainTableSourceId", (ctx) => {
+    // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
+    // running/loading overlay when it takes the `sourceId: null` branch
+    // (pending: !model.stable); a table with a defined sourceId and no sheets
+    // (the aggregated Main table) would otherwise sit on the not-ready
+    // placeholder for the whole run. The per-sample table gets this for free
+    // because its `sheets` go undefined mid-run; the aggregated table has no
+    // sheets, so the sourceId is its only lever. Returning undefined here routes
+    // it into the pending branch → the running overlay shows.
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    const args = ctx.activeArgs;
+    if (!args) return undefined;
+    const dataset = args.chainH ?? args.chainL;
+    if (!dataset) return undefined;
+    return canonicalize({
+      dataset,
+      heavy: args.chainH !== undefined,
+      light: args.chainL !== undefined,
+      fullStarHeavy: args.hasPgenHeavy === true,
+      fullStarLight: args.hasPgenLight === true,
+      clusterFilter: args.applyClusterFilter,
+    });
+  })
+
+  // Canonical id of the args that produced the current render (activeArgs).
+  // Changes only when a Run actually commits new args — so the UI can
+  // auto-close the Settings panel deterministically, regardless of run
+  // duration or whether the transient `isRunning` edge was observed. The
+  // isRunning-only close raced on the running-state sync and missed fast /
+  // cached recomputes (threshold or export-sample changes).
+  .output("runArgsId", (ctx) => {
+    const args = ctx.activeArgs;
+    return args ? canonicalize(args) : undefined;
+  })
+
+  // Sample picker above the mainTable. Extracts unique sampleId
+  // partition keys from the picked anchor (which IS sample-partitioned
+  // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
+  // one sample at a time. SDK pins to a single sample — there is no
+  // "all samples" entry. Cross-sample comparison is left to downstream
+  // blocks operating on the long-format PColumns.
+  //
+  // Gated on outputs readiness: when sheets is defined, the table
+  // settings skip their pending branch and the running-state overlay
+  // never appears. Returning undefined during a run keeps the table
+  // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
+  .output("mainTableSheets", (ctx) => {
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    // From activeArgs, NOT ctx.data.datasetRef: the table this picker sits above
+    // is built from the args that produced the CURRENT rows. Reading the live
+    // pick instead let the two disagree — select another dataset, don't press
+    // Run, and the picker listed the new dataset's samples over the old
+    // dataset's data. Same source as mainTableSourceId, so sheet and table
+    // always describe the same run.
+    const dataset = ctx.activeArgs?.chainH ?? ctx.activeArgs?.chainL;
+    if (!dataset) return undefined;
+    return sampleSheets(ctx, findColumn(dataset));
+  })
+
+  // LIVE Generation Probability availability for the picked dataset.
+  // Re-discovers gen-prob's Pgen from the CURRENT result pool every render (not
+  // the pick-time snapshot), so the method + Pgen id track gen-prob being
+  // added / removed / re-created. The args callback can't reach the pool (it
+  // receives only `data`), so a UI watcher mirrors this into
+  // `data.datasetFacts` to keep args fresh — this output is the single live
+  // source both the UI and that sync read. Undefined when no dataset is picked
+  // or the dataset spec isn't resolvable yet (transient pool churn) — callers
+  // keep the last-synced snapshot in that window rather than flip.
+  .output("pgenStatus", (ctx) => {
+    if (!ctx.data.datasetRef) return undefined;
+    const facts = discoverUpstreamFacts(ctx.data.datasetRef, ctx.data.filterRef);
+    if (!facts) return undefined;
+    return {
+      hasPgenHeavy: pgenHeavyAvailable(facts),
+      hasPgenLight: pgenLightAvailable(facts),
+      pgenRefHeavy: facts.pgenRefHeavy,
+      pgenRefLight: facts.pgenRefLight,
+    };
+  })
+
+  // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
+  // for the aggregation's expected-sample filter and independence grouping.
+  .output("metadataOptions", () => getMetadataOptions())
+
+  // The values of the expected-filter column, for the expected-values picker.
+  .output("expectedFilterValues", (ctx) => {
+    const expectedFilterRef = ctx.data.expectedFilterRef;
+    if (expectedFilterRef === undefined) return undefined;
+    return createColumnValueOptions({ valueColumn: expectedFilterRef });
+  })
+
+  // Dataset id → UpstreamFacts for every dataset the picker can offer. The
+  // UI snapshot writer reads this to write the id + facts in one tick.
+  .output("factsByDataset", (ctx) => {
+    const result: Record<string, UpstreamFacts> = {};
+    for (const datasetId of getDatasetCandidates()) {
+      const facts = discoverUpstreamFacts(datasetId, ctx.data.filterRef);
+      if (facts) result[datasetId] = facts;
+    }
+    return result;
+  })
+
+  // Per-sample run logs. The per-sample fan-out captures each
+  // sample's compute-neighbours stdout as String content, collected into a
+  // Resource keyed by sampleId. Read each partition's text and attach the real
+  // sample label (label column on the anchor's sampleId axis), sorted by label.
+  //
+  // `addEntriesWithNoData: true`: the ResourceMap is locked with all sampleId
+  // keys up front, but a sample's content only resolves once it finishes — so
+  // every sample appears immediately with `text: undefined` until then. The UI
+  // shows a "Starting…" placeholder for those and swaps in the full log once
+  // ready (one atomic step, no blink). `getDataAsString` returns undefined
+  // while computing (no throw) and registers readiness, so the lambda re-runs
+  // when each sample's content lands. Plain (NOT retentive) output so the swap
+  // re-renders. SC paired mode emits both chains — the UI stacks them.
+  .output("perSampleLogsHeavy", (ctx) =>
+    buildPerSampleLogs(ctx, "heavyPerSampleLogs", (a) => a.chainH),
+  )
+  .output("perSampleLogsLight", (ctx) =>
+    buildPerSampleLogs(ctx, "lightPerSampleLogs", (a) => a.chainL),
+  )
+
+  .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
+
+  // Page-header subtitle. Returns undefined when nothing
+  // meaningful to show; the page binds it as a placeholder.
+  .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
+
+  // Per-sample distribution p-frame: the per-sample convergence
+  // columns for BOTH chains combined (heavy `convergencePf` + light
+  // `lightConvergencePf`), so the single selector-driven Per-sample chart page
+  // can offer every per-sample score across chain × mode. Each chain's pframe
+  // bundles its own sample/clone labels; absent chains contribute nothing.
+  .outputWithStatus("perSampleDistributionPf", (ctx): PFrameHandle | undefined => {
+    const columns = bothChainColumns(ctx, "convergencePf", "lightConvergencePf");
+    return columns ? ctx.createPFrame(columns.map((column) => column.id)) : undefined;
+  })
+  .output("perSampleDistributionPfPcols", (ctx) => {
+    const columns = bothChainColumns(ctx, "convergencePf", "lightConvergencePf");
+    return columns ? toIdsAndSpecs(columns) : undefined;
+  })
+  .output("heavyFastStats", (ctx) => hitStats(ctx, "heavyFastStats"))
+  .output("heavyFullStats", (ctx) => hitStats(ctx, "heavyFullStats"))
+  .output("lightFastStats", (ctx) => hitStats(ctx, "lightFastStats"))
+  .output("lightFullStats", (ctx) => hitStats(ctx, "lightFullStats"))
+
+  // Skipped-samples warning per chain — see buildSkippedSamples. UI
+  // surfaces a PlAlert above the main table per case.
+  .output("heavySkippedSamples", (ctx) =>
+    buildSkippedSamples(ctx, "heavyPerSampleStatus", (a) => a.chainH),
+  )
+  .output("lightSkippedSamples", (ctx) =>
+    buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
+  )
+
+  // mainTable — the per-sample QC table. Anchored on the chain's fastStar
+  // column (emitted on every chain, so it is the one reliable anchor) —
+  // heavy when chainH is populated (any mode that processes heavy);
+  // light when only chainL is populated (bulk-light mode).
+  //
+  // KNOWN GAP: in dual-chain SC mode this table is heavy-only and there is no
+  // light counterpart, so the light per-sample family is reachable only through
+  // the Per-sample distribution chart. (Both chains' AGGREGATED families do
+  // reach the Main table — they share the clonotype axis, so enrichment picks
+  // up the light one.) Readiness gate avoids
+  // showing partial PFrames mid-run.
+  .outputWithStatus("mainTable", (ctx) => {
+    const args = ctx.activeArgs;
+    if (!args) return undefined;
+    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+
+    // Pick which chain's p-frame anchors the main table. Heavy when
+    // populated; else light.
+    const pframeField = args.chainH !== undefined ? "convergencePf" : "lightConvergencePf";
+    const dataset = args.chainH ?? args.chainL;
+    if (!dataset) return undefined;
+    if (findColumn(dataset) === undefined) return undefined;
+
+    const pframe = ctx.outputs?.resolve({
+      field: pframeField,
+      assertFieldType: "Input",
+      allowPermanentAbsence: true,
+    });
+    if (!pframe) return undefined;
+    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    if (!anchorRecipe) return undefined;
+    const hitAnchorSpec = anchorRecipe.getSpec();
+
+    // Discover first, then filter in JS — see keepTableColumn.
+    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: hitAnchorSpec },
+        mode: "enrichment",
+        // Direct-only: no cross-domain linker hops. Without this, enrichment
+        // traverses linkers from the clonotype axis into other blocks' axis
+        // systems (e.g. clonotype-clustering's cluster-id axis,
+        // clonotype-space's), pulling their columns AND introducing extra
+        // axes into the table. maxHops:0 keeps enrichment to columns on the
+        // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
+        // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
+        // optional via the visibility rules below.
+        maxHops: 0,
+        exclude: [
+          // Drop per-sample-only columns (Sample label, donor, dataset,
+          // metadata) — the sample sheet pins one sampleId at a time,
+          // so these columns would just repeat the picked value
+          // on every row. `partialAxesMatch: false` excludes only
+          // columns whose axes are *exactly* [sampleId] (multi-axis
+          // columns that include sampleId stay).
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: false,
+          },
+          EXCLUDE_PGEN,
+        ],
+      })
+      .getColumns();
+
+    const keep = keepTableColumn(thisBlockId, { requireSampleIdAxis: true });
+    const kept = discovered.filter(keep);
+    const rest = withoutAnchor(kept, hitAnchorSpec);
+    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
+
+    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
+    // through `columns`, which is the set the visibility rules can reach.
+    return createPlDataTableV3(ctx, {
+      primaryColumns: [anchorRecipe],
+      columns: rest,
+      tableState: ctx.data.mainTableState,
+      displayOptions: {
+        visibility: visibilityRules(args, keptSpecs, { perSampleOnly: true }),
+      },
+    });
+  })
+
+  // Clonotype-only aggregated table — the DEFAULT (Main) view and the
+  // downstream-consumable shape: one row per clonotype (each emitted
+  // mode's score, hit and reproducibility; no sampleId axis → no sample
+  // sheet). Anchored on the populated
+  // chain (heavy if present, else light); in dual-chain SC only the heavy family
+  // is tabled here (the light family still exports to the pool).
+  .outputWithStatus("aggregatedTable", (ctx) => {
+    const args = ctx.activeArgs;
+    if (!args) return undefined;
+    const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
+    const dataset = args.chainH ?? args.chainL;
+    if (!dataset) return undefined;
+    if (findColumn(dataset) === undefined) return undefined;
+
+    // Anchor on this block's aggregated (clonotype-only) fastStar column — the
+    // one column every chain emits, whether or not full-STAR was added.
+    // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
+    // run the field isn't ready yet, and a plain resolve marks the render
+    // context UNSTABLE, so outputWithStatus reports "loading" and the table
+    // shows the running overlay. `allowPermanentAbsence: true` would instead
+    // treat the missing field as a stable absence → the not-ready placeholder
+    // stays up during the whole run (this view has no `sheets` to drive the
+    // pending state, so the model status is the only signal). The field always
+    // exists for the chosen chain (args.chainH/L gates which one we request).
+    const pframe = ctx.outputs?.resolve(field);
+    if (!pframe) return undefined;
+    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    if (!anchorRecipe) return undefined;
+    const hitAnchorSpec = anchorRecipe.getSpec();
+
+    // Same enrichment as the per-sample mainTable, but on the clonotype-only
+    // axis: pull every column sharing the clonotypeKey axis from the pool
+    // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
+    // columns) so they're available in the column settings — hidden by
+    // default, convergence columns default-visible. maxHops:0 keeps
+    // enrichment to the anchor's own axis (no linker hops into cluster/space
+    // axis systems).
+    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
+    const discovered = ColumnsCollection()
+      .discover({
+        anchors: { main: hitAnchorSpec },
+        mode: "enrichment",
+        maxHops: 0,
+        exclude: [
+          // One row per clonotype: drop any column carrying a sampleId axis (the
+          // per-sample convergence family — including the exported neighbours
+          // column — and per-sample metadata) so enrichment doesn't fan the
+          // table back out over samples. partialAxesMatch:true excludes columns
+          // that merely INCLUDE sampleId, not only exact [sampleId].
+          {
+            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
+            partialAxesMatch: true,
+          },
+          EXCLUDE_PGEN,
+        ],
+      })
+      .getColumns();
+
+    // No sampleId-axis clause here: this table IS the clonotype-only shape, so
+    // our own export family is exactly what it should show.
+    const keep = keepTableColumn(thisBlockId);
+    const kept = discovered.filter(keep);
+    const rest = withoutAnchor(kept, hitAnchorSpec);
+    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
+
+    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
+    // through `columns`, which is the set the visibility rules can reach.
+    return createPlDataTableV3(ctx, {
+      primaryColumns: [anchorRecipe],
+      columns: rest,
+      tableState: ctx.data.aggregatedTableState,
+      displayOptions: {
+        visibility: visibilityRules(args, keptSpecs),
+      },
+    });
+  })
+
+  // Aggregated distribution p-frame: the exported clonotype-only
+  // convergence columns for BOTH chains combined (heavy + light aggregated
+  // families), so the single selector-driven Aggregated chart page can offer
+  // every aggregated score across chain × mode. Absent chains contribute nothing.
+  .outputWithStatus("aggregatedDistributionPf", (ctx): PFrameHandle | undefined => {
+    const columns = bothChainColumns(ctx, "heavyAggregatedPf", "lightAggregatedPf");
+    return columns ? ctx.createPFrame(columns.map((column) => column.id)) : undefined;
+  })
+  .output("aggregatedDistributionPfPcols", (ctx) => {
+    const columns = bothChainColumns(ctx, "heavyAggregatedPf", "lightAggregatedPf");
+    return columns ? toIdsAndSpecs(columns) : undefined;
+  })
+
+  // Sections: the aggregated clonotype-only table is the default
+  // (Main) view; the per-sample table is a separate QC section. The per-chain
+  // histogram routes are replaced by TWO selector-driven chart pages — an
+  // Aggregated distribution and a Per-sample distribution — each offering every
+  // score across chain × mode via a graph-maker data-column predicate.
+  .sections((ctx) => {
+    const args = ctx.activeArgs;
+    const ready = ctx.data.datasetRef !== undefined && args !== undefined;
+    const hasAny = ready && (args?.chainH !== undefined || args?.chainL !== undefined);
+
+    const sections: {
+      type: "link";
+      href: "/" | "/per-sample" | "/distribution/aggregated" | "/distribution/per-sample";
+      label: string;
+    }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
+
+    if (hasAny) {
+      sections.push(
+        {
+          type: "link" as const,
+          href: "/distribution/aggregated" as const,
+          label: "Score distribution",
+        },
+        { type: "link" as const, href: "/per-sample" as const, label: "Per-sample table" },
+        {
+          type: "link" as const,
+          href: "/distribution/per-sample" as const,
+          label: "Per-sample distribution",
+        },
+      );
+    }
+    return sections;
+  })
+
+  .title(() => "Clonotype Convergence")
+  .subtitle((ctx) => ctx.data.customBlockLabel || formatSubtitle(ctx.data) || "")
+
+  .done();
+
+export type Platforma = typeof platforma;
+export type BlockOutputs = InferOutputsType<typeof platforma>;
+
+// Internals
+
+type Ctx = RenderCtxBase<BlockArgs, BlockData>;
+
+/**
+ * The chains the dataset pick processes, read from its snapshot; both
+ * undefined while no snapshot is set.
+ *  - heavy: the dataset's heavy chain, always processed when present.
+ *  - light: the dataset's light chain when it is processed. Two sources,
+ *    mutually exclusive, both on the SAME dataset anchor: a bulk-light dataset
+ *    (its only chain, no opt-in needed), or SC paired data with
+ *    `processLightChain` (heavy and light hang off the anchor as column-domain
+ *    siblings).
+ */
+function processedChains(data: BlockData): {
+  heavy: string | undefined;
+  light: string | undefined;
+} {
+  const chains = data.datasetFacts?.chains ?? [];
+  const heavy = chains.find(isHeavy);
+  const datasetLight = chains.find(isLight);
+  const lightProcessed = heavy === undefined || data.processLightChain === true;
+  return { heavy, light: lightProcessed ? datasetLight : undefined };
+}
+
+/** sampleId → label for the dataset's sampleId axis. Undefined when the
+ *  dataset or its spec isn't resolvable; callers fall back to the raw sampleId. */
+function sampleLabels(dataset: ColumnUniversalId | undefined) {
+  const sampleAxis = dataset === undefined ? undefined : findColumn(dataset)?.getSpec().axesSpec[0];
+  if (sampleAxis === undefined) return undefined;
+  const labelColumns = resultPool().filter({
+    include: {
+      name: [exact("pl7.app/label")],
+      axes: [axisSelector(sampleAxis)],
+      partialAxesMatch: false,
+    },
+  });
+  return deriveAxisValuesLabels(labelColumns)(sampleAxis);
 }
 
 // Skipped-samples warning, shared by both chains. Reads a per-sample
@@ -67,10 +650,10 @@ function sampleLabels<A, U>(ctx: RenderCtx<A, U>, ref: PlRef | undefined) {
 //              double-alert ("no chain data" + "N with no usable CDR3").
 // nMin comes from the run's status (falls back to activeArgs). Gated on parse
 // completeness so the warning doesn't flicker on partial mid-run status.
-function buildSkippedSamples<A, U>(
-  ctx: RenderCtx<A, U>,
+function buildSkippedSamples(
+  ctx: Ctx,
   statusField: string,
-  chainRef: (args: BlockArgs) => PlRef | undefined,
+  chainDataset: (args: BlockArgs) => ColumnUniversalId | undefined,
 ) {
   const acc = ctx.outputs?.resolve({
     field: statusField,
@@ -84,8 +667,8 @@ function buildSkippedSamples<A, U>(
     false,
   );
   if (!parsed.isComplete) return undefined;
-  const args = ctx.activeArgs as BlockArgs | undefined;
-  const labels = sampleLabels(ctx, args ? chainRef(args) : undefined);
+  const args = ctx.activeArgs;
+  const labels = sampleLabels(args ? chainDataset(args) : undefined);
   const nMin = parsed.data[0]?.value?.nMin ?? args?.nMin;
   const belowMin: string[] = [];
   const noCdr3: string[] = [];
@@ -115,10 +698,10 @@ function buildSkippedSamples<A, U>(
  * content lands; `getDataAsString` returns undefined while not ready (no
  * throw). Consumed by PLAIN (not retentive) outputs so the swap re-renders.
  */
-function buildPerSampleLogs<A, U>(
-  ctx: RenderCtx<A, U>,
+function buildPerSampleLogs(
+  ctx: Ctx,
   logsField: string,
-  chainRef: (args: BlockArgs) => PlRef | undefined,
+  chainDataset: (args: BlockArgs) => ColumnUniversalId | undefined,
 ) {
   const acc = ctx.outputs?.resolve({
     field: logsField,
@@ -132,8 +715,8 @@ function buildPerSampleLogs<A, U>(
     true,
   );
   if (parsed.data.length === 0) return undefined;
-  const args = ctx.activeArgs as BlockArgs | undefined;
-  const labels = sampleLabels(ctx, args ? chainRef(args) : undefined);
+  const args = ctx.activeArgs;
+  const labels = sampleLabels(args ? chainDataset(args) : undefined);
   return parsed.data
     .map((e) => {
       const sampleId = String(e.key[0]);
@@ -142,8 +725,18 @@ function buildPerSampleLogs<A, U>(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
-// Key axes of the datasets this block accepts: bulk and single-cell clonotypes.
-const DATASET_KEY_AXES: ReadonlySet<string> = new Set(inputAnchorSpecs.map((s) => s.axes[1].name));
+/**
+ * One sheet per sample over the dataset's sampleId axis, from the sample
+ * partitions of its data; `undefined` while the data is not readable.
+ */
+function sampleSheets(ctx: Ctx, dataset: ColumnRecipe | undefined) {
+  if (dataset === undefined || !hasReachableData(dataset)) return undefined;
+  const data = dataset.getData();
+  if (!(data instanceof TreeNodeAccessor)) return undefined;
+  const samples = getUniquePartitionKeys(data)?.[0];
+  if (!samples) return undefined;
+  return [createPlDataTableSheet(ctx, dataset.getSpec().axesSpec[0], samples)];
+}
 
 // gen-prob's columns. A full-STAR INPUT, not a convergence result — enrichment
 // finds them on the clonotype axis, but in a convergence table they are noise.
@@ -230,24 +823,29 @@ function withoutAnchor(recipes: ColumnRecipe[], anchor: PColumnSpec): ColumnReci
 }
 
 /** `{above,total}` hit-count badge from one of the workflow's stats fields. */
-function hitStats<A, U>(ctx: RenderCtx<A, U>, field: string) {
+function hitStats(ctx: Ctx, field: string) {
   return ctx.outputs
     ?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true })
     ?.getDataAsJson<{ above: number; total: number }>();
 }
 
 /**
- * PColumns of BOTH chains' families for a paired (heavy, light) pair of
- * workflow fields, heavy first. An absent chain contributes nothing; undefined
- * when neither resolved, so callers can skip building an empty PFrame.
+ * Columns of BOTH chains' families for a paired (heavy, light) pair of
+ * workflow fields, heavy first. An absent chain, or one whose columns are
+ * still arriving, contributes nothing; undefined when neither has columns,
+ * so callers can skip building an empty PFrame.
  */
-function bothChainPColumns<A, U>(ctx: RenderCtx<A, U>, heavyField: string, lightField: string) {
+function bothChainColumns(
+  ctx: Ctx,
+  heavyField: string,
+  lightField: string,
+): ColumnRecipe[] | undefined {
   const of = (field: string) =>
-    ctx.outputs
-      ?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true })
-      ?.getPColumns() ?? [];
-  const pCols = [...of(heavyField), ...of(lightField)];
-  return pCols.length > 0 ? pCols : undefined;
+    getOutputColumns(
+      ctx.outputs?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true }),
+    )?.getColumns() ?? [];
+  const columns = [...of(heavyField), ...of(lightField)];
+  return columns.length > 0 ? columns : undefined;
 }
 
 // The fast-STAR family the block's own tables hide on a chain that also carries
@@ -271,7 +869,6 @@ const FAST_STAR_COLUMN_NAMES = [
 // Table visibility rules are declarative selectors (SDK 1.81): a rule matches
 // on name / domain / axes, not on a predicate over the spec. A bare string in a
 // selector is read as a REGEX, so every matcher below is spelled out.
-const exact = (value: string) => ({ type: "exact" as const, value });
 const regex = (value: string) => ({ type: "regex" as const, value });
 
 const EXACT_LABEL = exact("pl7.app/label");
@@ -366,666 +963,3 @@ function visibilityRules(
   rules.push({ match: { name: [MATCH_ANY] }, visibility: "optional" });
   return rules;
 }
-
-// Column id of the block's subset filter, the form Generation Probability stamps on its Pgen.
-const subsetIdOf = (data: BlockData): string | undefined =>
-  data.filterRef && columnIdFromPlRef(data.filterRef);
-
-export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind })
-  .args((data): BlockArgs => {
-    if (!data.datasetRef || !data.datasetFacts) {
-      throw new Error("Select a dataset");
-    }
-    const facts = data.datasetFacts;
-    const isSC = facts.clonotypeKeyAxisName === SC_AXIS;
-
-    // Input-completeness gate. This is the ONLY thing standing between a
-    // dataset that can't be processed and a Run: `datasetOptions` deliberately
-    // offers every BCR anchor (gating the dropdown on sibling discovery hid
-    // valid datasets for as long as any other block in the project was
-    // running). Validating here instead keeps the dropdown honest AND the Run
-    // button correct — and it reads the pick-time SNAPSHOT, which cannot
-    // flicker with pool churn the way a live query can.
-    //
-    // Dataset-level, not per-chain: these flags are aggregates over the
-    // anchor's siblings (facts.ts). Per-chain presence stays the workflow's
-    // assertion — this gate only stops the runs that cannot possibly work.
-    if (!facts.hasAaCDR3 || !facts.hasNtCDR3) {
-      throw new Error(
-        "This dataset has no amino-acid and nucleotide CDR3 columns — convergence needs both",
-      );
-    }
-    if (!facts.hasAbundance) {
-      throw new Error("This dataset has no abundance column");
-    }
-
-    // ---- Heavy slot (always from the dataset when it has heavy) ---
-    let chainH: PlRef | undefined;
-    let chainHName: string | undefined;
-    const datasetHeavy = facts.chains.find(isHeavy);
-    if (datasetHeavy) {
-      chainH = data.datasetRef;
-      chainHName = datasetHeavy;
-    }
-
-    // ---- Light slot (explicit) ------------------------------------
-    // Two sources, mutually exclusive — both on the SAME dataset anchor:
-    //  1. dataset is bulk-light        → chainL ← the dataset pick;
-    //  2. SC paired + processLightChain → chainL ← the same anchor (heavy
-    //     and light hang off it as column-domain siblings).
-    let chainL: PlRef | undefined;
-    let chainLName: string | undefined;
-    const datasetLight = facts.chains.find(isLight);
-    // Both sources take the light chain off the SAME dataset anchor, so the
-    // slot is filled identically either way — only the CONDITION differs:
-    // bulk-light needs no opt-in (it is the only chain there), SC paired does.
-    if (datasetLight && (!datasetHeavy || data.processLightChain)) {
-      chainL = data.datasetRef;
-      chainLName = datasetLight;
-    }
-    // At least one chain slot must be filled. Nothing upstream guarantees it:
-    // the dropdown offers BCR anchors without inspecting the snapshot, and a
-    // snapshot whose `chains` came back empty fills neither slot — the workflow
-    // then skips both chain branches and the block "succeeds" with no outputs
-    // at all. Fail here instead, where it reads as a bad input.
-    if (!chainH && !chainL) {
-      throw new Error("No BCR chain detected in this dataset — re-select it to refresh");
-    }
-
-    // ---- Method (full-STAR vs fast-STAR) + thresholds -------------
-    // Parallel modes: fast-STAR runs on every processed
-    // chain; full-STAR is ADDED on a chain when its Pgen is available. No
-    // shared-method constraint and no disable-light — heavy and light are
-    // independent. fast-STAR always runs, so its per-chain nb_freq threshold is
-    // always required for each processed chain (heavy has a default; light must
-    // be set explicitly).
-    if (chainH && data.thresholdH === undefined) {
-      throw new Error("Heavy-chain threshold is required");
-    }
-    if (chainL && data.thresholdL === undefined) {
-      throw new Error("Light-chain threshold is required");
-    }
-
-    // ---- nMin -----------------------------------------------------
-    if (data.nMin === undefined) {
-      throw new Error("Minimum unique CDR3 per sample is required");
-    }
-
-    // ---- Cluster filter -------------------------------------------
-    const applyClusterFilter = data.applyClusterFilter ?? false;
-    let clusterMin: number | undefined;
-    if (applyClusterFilter) {
-      if (data.clusterMin === undefined) {
-        throw new Error("Minimum cluster size is required");
-      }
-      clusterMin = data.clusterMin;
-    }
-
-    // SC mode → the workflow needs the scClonotypeChain LETTER ("A"/"B") to
-    // filter sibling columns to the right chain. Both chains ride the same
-    // anchor, so `isSC` (from the dataset's own axis name) governs both.
-
-    const args: BlockArgs = {
-      nMin: data.nMin,
-      alpha: data.alpha ?? DEFAULT_ALPHA,
-      applyClusterFilter,
-      customBlockLabel: data.customBlockLabel,
-      defaultBlockLabel: getDefaultBlockLabel(data),
-    };
-    if (chainH) {
-      args.chainH = chainH;
-      args.chainHName = chainHName;
-      args.hasPgenHeavy = pgenHeavyAvailable(facts);
-      // full-STAR is added when Pgen is present; the ref establishes the gen-prob
-      // dependency so the workflow can resolve Pgen data by ref.
-      if (pgenHeavyAvailable(facts)) args.pgenRefHeavy = facts.pgenRefHeavy;
-      // fast-STAR always runs → its threshold is always projected.
-      args.thresholdH = data.thresholdH;
-      if (isSC) args.chainHScLetter = SC_LETTER_FROM_CHAIN[chainHName!];
-    }
-    if (chainL) {
-      args.chainL = chainL;
-      args.chainLName = chainLName;
-      args.hasPgenLight = pgenLightAvailable(facts);
-      if (pgenLightAvailable(facts)) args.pgenRefLight = facts.pgenRefLight;
-      args.thresholdL = data.thresholdL;
-      if (isSC) args.chainLScLetter = SC_LETTER_FROM_CHAIN[chainLName!];
-    }
-    if (clusterMin !== undefined) {
-      args.clusterMin = clusterMin;
-    }
-    if (data.filterRef) {
-      args.inputFilter = columnIdFromPlRef(data.filterRef);
-    }
-
-    // ---- Clonotype-only aggregation ----------------------
-    // The metadata refs, projected here, establish the samples-block dependency
-    // so the workflow can resolve the columns; both optional (absent → the
-    // default path: every sample its own independent, eligible unit). There is
-    // no other aggregation knob — `alpha` drives both BH levels.
-    if (data.expectedFilterRef) {
-      args.expectedFilterRef = data.expectedFilterRef;
-      if (data.expectedValues && data.expectedValues.length > 0) {
-        args.expectedValues = data.expectedValues;
-      }
-    }
-    if (data.groupingRef) {
-      args.groupingRef = data.groupingRef;
-    }
-    return args;
-  })
-
-  // Inverse of the kind's init-params contract: the dataset pick, the
-  // light-chain opt-in and every analysis knob — the fields a user sets by
-  // hand. `datasetFacts` and `datasetLabel` are derived from the pick (and
-  // refreshed from this block's outputs by the UI), and the table / chart
-  // states are view state; neither is configuration a template carries.
-  .templateParams((data) => ({
-    datasetRef: data.datasetRef,
-    filterRef: data.filterRef,
-    processLightChain: data.processLightChain,
-    thresholdH: data.thresholdH,
-    thresholdL: data.thresholdL,
-    nMin: data.nMin,
-    alpha: data.alpha,
-    applyClusterFilter: data.applyClusterFilter,
-    clusterMin: data.clusterMin,
-    expectedFilterRef: data.expectedFilterRef,
-    expectedValues: data.expectedValues,
-    groupingRef: data.groupingRef,
-    customBlockLabel: data.customBlockLabel,
-  }))
-
-  // Dropdown offers any BCR-compatible anchor. Two shapes:
-  //   - Bulk anchors (clonotypeKey axis): chain identity lives on the
-  //     axis domain. Accept IGHeavy / IGLight / IGKappa / IGLambda;
-  //     reject TCR* and anything else.
-  //   - SC anchors (scClonotypeKey axis): chain lives on column
-  //     domain (scClonotypeChain), so the axis has `receptor` instead.
-  //     Accept receptor == "IG" (BCR — both chains hang off the same
-  //     anchor); reject receptor == "TCRAB" / "TCRGD".
-  // Mode (bulk vs SC) is detected post-selection by inspecting the
-  // axis name on the picked spec.
-  .output("datasetOptions", (ctx): DatasetOption[] => {
-    const selectedRef = ctx.data.datasetRef;
-    // Datasets, each with its subset columns (`pl7.app/isSubset`, e.g. repertoire-labeling
-    // labels or Lead Selection picks) as filters.
-    const broad =
-      buildDatasetOptions(ctx, {
-        primary: (spec) =>
-          isPColumnSpec(spec) &&
-          spec.annotations?.["pl7.app/isAnchor"] === "true" &&
-          spec.axesSpec.length === 2 &&
-          spec.axesSpec[0].name === "pl7.app/sampleId" &&
-          DATASET_KEY_AXES.has(spec.axesSpec[1].name),
-        // Only subsets keyed by the clonotype axis alone.
-        filter: (spec) =>
-          isPColumnSpec(spec) &&
-          spec.axesSpec.length === 1 &&
-          DATASET_KEY_AXES.has(spec.axesSpec[0].name),
-        requireEnrichments: false,
-      }) ?? [];
-
-    return broad.filter(({ primary: opt }) => {
-      // Keep the already-selected dataset present unconditionally. Otherwise,
-      // when post-run pool churn briefly fails its CDR3-readiness gate below,
-      // it drops out of the options and the `required` dropdown reconciles to
-      // another dataset — firing onPickDataset and clobbering the datasetRef snapshot
-      // (the transient IG-Heavy → IG-Light flip with a spurious "no BCR chain"
-      // alert, healing when the pool settles). The gate only needs to stop a
-      // *new* pick of a not-ready dataset, not destabilise an existing one.
-      if (
-        selectedRef &&
-        opt.ref.blockId === selectedRef.blockId &&
-        opt.ref.name === selectedRef.name
-      ) {
-        return true;
-      }
-      const spec = ctx.resultPool.getPColumnSpecByRef(opt.ref);
-      if (!spec) return false;
-      const axisName = spec.axesSpec[1]?.name;
-      let chainOk: boolean;
-      if (axisName === SC_AXIS) {
-        const receptor = spec.axesSpec[1]?.domain?.["pl7.app/vdj/receptor"];
-        chainOk = receptor === SC_BCR_RECEPTOR;
-      } else {
-        // Bulk path: chain in axis or column domain.
-        const chain =
-          spec.domain?.["pl7.app/vdj/chain"] ?? spec.axesSpec[1]?.domain?.["pl7.app/vdj/chain"];
-        chainOk = !!chain && !chain.startsWith("TCR") && (isHeavy(chain) || isLight(chain));
-      }
-      if (!chainOk) return false;
-      // Exclude scFv constructs (engineered single-chain VH-linker-VL): out of
-      // scope for repertoire convergence (in-vivo only), and they'd otherwise
-      // pass here as SC-paired IG. `pl7.app/vdj/scFv-sequence` is the platform's
-      // scFv marker (clonotype-clustering / -space / sequence-embeddings key off
-      // it too); the scClonotypeKey/structure domain is an unfinished
-      // placeholder shared with paired SC, so it can't discriminate.
-      const scFv = ctx.resultPool.getAnchoredPColumns(
-        { main: opt.ref },
-        [{ name: "pl7.app/vdj/scFv-sequence" }],
-        // Same reason as facts.ts: without this, one in-flight column on the
-        // anchor nulls the whole request and the marker reads as absent.
-        { dontWaitAllData: true },
-      );
-      if (scFv && scFv.length > 0) return false;
-      // NO CDR3-readiness gate here, deliberately — the equivalent check lives
-      // in the args lambda instead. It used to also require the anchor's aa/nt
-      // CDR3 + abundance siblings to be discoverable, but sibling discovery
-      // goes through the result pool, which returned PARTIAL specs while any
-      // block in the project was running — so the gate silently hid valid
-      // datasets for the duration of an unrelated block's run: two datasets in
-      // the project, one offered, both back once the upstream finished.
-      //
-      // Hiding is the wrong response to an unusable dataset anyway: it is
-      // indistinguishable from the block not seeing it at all. So the dropdown
-      // offers every BCR anchor, and args refuses to build (Run disabled, with
-      // a reason) when the snapshot says the columns aren't there. The snapshot
-      // is written at pick time and can't flicker; `dontWaitAllData` in
-      // facts.ts is what keeps an in-flight neighbour column from writing a
-      // false one.
-      return true;
-    });
-  })
-
-  // Source identifier for the main table's per-source state cache.
-  // Derived from `activeArgs` (= the args that produced the CURRENT
-  // outputs), so it only changes after a Run completes — picking a
-  // new dataset before pressing Run doesn't flip the sourceId and the
-  // table stays put. After Run, the new sourceId triggers a fresh
-  // hidden-columns / sort state (so stale column IDs from the old
-  // dataset don't haunt the new one).
-  //
-  // It keys on the dataset AND on which column FAMILIES the run emits, because
-  // the saved hidden-column list does not merge with the visibility rules — it
-  // replaces them (`computeHiddenColumns`: `hiddenSpecs` wins outright over the
-  // rule-derived optional set). So a state captured while full-STAR existed
-  // keeps hiding the fast-STAR family after Pgen is removed, and with full-STAR
-  // gone too the table renders empty but for the clone id. Anything that
-  // changes which columns exist has to reset that state.
-  .output("mainTableSourceId", (ctx) => {
-    // Undefined while the block runs. usePlDataTableSettingsV2 only shows the
-    // running/loading overlay when it takes the `sourceId: null` branch
-    // (pending: !model.stable); a table with a defined sourceId and no sheets
-    // (the aggregated Main table) would otherwise sit on the not-ready
-    // placeholder for the whole run. The per-sample table gets this for free
-    // because its `sheets` go undefined mid-run; the aggregated table has no
-    // sheets, so the sourceId is its only lever. Returning undefined here routes
-    // it into the pending branch → the running overlay shows.
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    if (!args) return undefined;
-    const ref = args.chainH ?? args.chainL;
-    if (!ref) return undefined;
-    return canonicalize({
-      ref,
-      heavy: args.chainH !== undefined,
-      light: args.chainL !== undefined,
-      fullStarHeavy: args.hasPgenHeavy === true,
-      fullStarLight: args.hasPgenLight === true,
-      clusterFilter: args.applyClusterFilter,
-    } as unknown as Record<string, unknown>);
-  })
-
-  // Canonical id of the args that produced the current render (activeArgs).
-  // Changes only when a Run actually commits new args — so the UI can
-  // auto-close the Settings panel deterministically, regardless of run
-  // duration or whether the transient `isRunning` edge was observed. The
-  // isRunning-only close raced on the running-state sync and missed fast /
-  // cached recomputes (threshold or export-sample changes).
-  .output("runArgsId", (ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    return args ? canonicalize(args as unknown as Record<string, unknown>) : undefined;
-  })
-
-  // Sample picker above the mainTable. Extracts unique sampleId
-  // partition keys from the picked anchor (which IS sample-partitioned
-  // by MiXCR) and wraps them as a PlDataTableSheet so the table shows
-  // one sample at a time. SDK pins to a single sample — there is no
-  // "all samples" entry. Cross-sample comparison is left to downstream
-  // blocks operating on the long-format PColumns.
-  //
-  // Gated on outputs readiness: when sheets is defined, the table
-  // settings skip their pending branch and the running-state overlay
-  // never appears. Returning undefined during a run keeps the table
-  // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
-  .output("mainTableSheets", (ctx) => {
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-    // From activeArgs, NOT ctx.data.datasetRef: the table this picker sits above
-    // is built from the args that produced the CURRENT rows. Reading the live
-    // pick instead let the two disagree — select another dataset, don't press
-    // Run, and the picker listed the new dataset's samples over the old
-    // dataset's data. Same source as mainTableSourceId, so sheet and table
-    // always describe the same run.
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    const ref = args?.chainH ?? args?.chainL;
-    if (!ref) return undefined;
-    const anchor = ctx.resultPool.getPColumnByRef(ref);
-    if (!anchor) return undefined;
-    const samples = getUniquePartitionKeys(anchor.data)?.[0];
-    if (!samples) return undefined;
-    return [createPlDataTableSheet(ctx, anchor.spec.axesSpec[0], samples)];
-  })
-
-  // LIVE Generation Probability availability for the picked dataset.
-  // Re-discovers gen-prob's Pgen from the CURRENT result pool every render (not
-  // the pick-time snapshot), so the method + Pgen ref track gen-prob being
-  // added / removed / re-created. The args callback can't reach the pool (it
-  // receives only `data`), so a UI watcher mirrors this into
-  // `data.datasetFacts` to keep args fresh — this output is the single live
-  // source both the UI and that sync read. Undefined when no dataset is picked
-  // or the dataset spec isn't resolvable yet (transient pool churn) — callers
-  // keep the last-synced snapshot in that window rather than flip.
-  .output("pgenStatus", (ctx) => {
-    if (!ctx.data.datasetRef) return undefined;
-    const facts = discoverUpstreamFacts(ctx, ctx.data.datasetRef, subsetIdOf(ctx.data));
-    if (!facts) return undefined;
-    return {
-      hasPgenHeavy: pgenHeavyAvailable(facts),
-      hasPgenLight: pgenLightAvailable(facts),
-      pgenRefHeavy: facts.pgenRefHeavy,
-      pgenRefLight: facts.pgenRefLight,
-    };
-  })
-
-  // Sample-metadata columns (sampleId-keyed, name `pl7.app/metadata`) offered
-  // for the aggregation's expected-sample filter and independence grouping
-  //. Same discovery idiom as differential-clonotype-abundance.
-  .output("metadataOptions", (ctx) =>
-    ctx.resultPool.getOptions((spec) => isPColumnSpec(spec) && spec.name === "pl7.app/metadata"),
-  )
-
-  // PFrame of the picked expected-filter column, so the UI can fetch its unique
-  // values (getUniqueValues) to populate the expected-values multiselect.
-  .output("expectedValueSource", (ctx) => {
-    if (!ctx.data.expectedFilterRef) return undefined;
-    const col = ctx.resultPool.getPColumnByRef(ctx.data.expectedFilterRef);
-    if (!col) return undefined;
-    return ctx.createPFrame([col]);
-  })
-
-  // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
-  // UI snapshot writer reads this to write ref + facts in one tick.
-  .output("factsByRef", (ctx) => {
-    const options = ctx.resultPool.getOptions(inputAnchorSpecs);
-    const result: Record<string, UpstreamFacts> = {};
-    for (const opt of options) {
-      const facts = discoverUpstreamFacts(ctx, opt.ref, subsetIdOf(ctx.data));
-      if (facts) {
-        const key = canonicalize(opt.ref as unknown as Record<string, unknown>);
-        if (key !== undefined) result[key] = facts;
-      }
-    }
-    return result;
-  })
-
-  // Per-sample run logs. The per-sample fan-out captures each
-  // sample's compute-neighbours stdout as String content, collected into a
-  // Resource keyed by sampleId. Read each partition's text and attach the real
-  // sample label (findLabels on the anchor's sampleId axis), sorted by label.
-  //
-  // `addEntriesWithNoData: true`: the ResourceMap is locked with all sampleId
-  // keys up front, but a sample's content only resolves once it finishes — so
-  // every sample appears immediately with `text: undefined` until then. The UI
-  // shows a "Starting…" placeholder for those and swaps in the full log once
-  // ready (one atomic step, no blink). `getDataAsString` returns undefined
-  // while computing (no throw) and registers readiness, so the lambda re-runs
-  // when each sample's content lands. Plain (NOT retentive) output so the swap
-  // re-renders. SC paired mode emits both chains — the UI stacks them.
-  .output("perSampleLogsHeavy", (ctx) =>
-    buildPerSampleLogs(ctx, "heavyPerSampleLogs", (a) => a.chainH),
-  )
-  .output("perSampleLogsLight", (ctx) =>
-    buildPerSampleLogs(ctx, "lightPerSampleLogs", (a) => a.chainL),
-  )
-
-  .output("isRunning", (ctx) => ctx.outputs?.getIsReadyOrError() === false)
-
-  // Page-header subtitle. Returns undefined when nothing
-  // meaningful to show; the page binds it as a placeholder.
-  .output("subtitleText", (ctx) => formatSubtitle(ctx.data))
-
-  // Per-sample distribution p-frame: the per-sample convergence
-  // columns for BOTH chains combined (heavy `convergencePf` + light
-  // `lightConvergencePf`), so the single selector-driven Per-sample chart page
-  // can offer every per-sample score across chain × mode. Each chain's pframe
-  // bundles its own sample/clone labels; absent chains resolve to [].
-  .outputWithStatus("perSampleDistributionPf", (ctx): PFrameHandle | undefined => {
-    const pCols = bothChainPColumns(ctx, "convergencePf", "lightConvergencePf");
-    return pCols ? ctx.createPFrame(pCols) : undefined;
-  })
-  .output("perSampleDistributionPfPcols", (ctx) =>
-    bothChainPColumns(ctx, "convergencePf", "lightConvergencePf")?.map((c) => ({
-      columnId: c.id,
-      spec: c.spec,
-    })),
-  )
-  .output("heavyFastStats", (ctx) => hitStats(ctx, "heavyFastStats"))
-  .output("heavyFullStats", (ctx) => hitStats(ctx, "heavyFullStats"))
-  .output("lightFastStats", (ctx) => hitStats(ctx, "lightFastStats"))
-  .output("lightFullStats", (ctx) => hitStats(ctx, "lightFullStats"))
-
-  // Skipped-samples warning per chain — see buildSkippedSamples. UI
-  // surfaces a PlAlert above the main table per case.
-  .output("heavySkippedSamples", (ctx) =>
-    buildSkippedSamples(ctx, "heavyPerSampleStatus", (a) => a.chainH),
-  )
-  .output("lightSkippedSamples", (ctx) =>
-    buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
-  )
-
-  // mainTable — the per-sample QC table. Anchored on the chain's fastStar
-  // column (emitted on every chain, so it is the one reliable anchor) —
-  // heavy when chainH is populated (any mode that processes heavy);
-  // light when only chainL is populated (bulk-light mode).
-  //
-  // KNOWN GAP: in dual-chain SC mode this table is heavy-only and there is no
-  // light counterpart, so the light per-sample family is reachable only through
-  // the Per-sample distribution chart. (Both chains' AGGREGATED families do
-  // reach the Main table — they share the clonotype axis, so enrichment picks
-  // up the light one.) Readiness gate avoids
-  // showing partial PFrames mid-run.
-  .outputWithStatus("mainTable", (ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    if (!args) return undefined;
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
-
-    // Pick which chain's p-frame anchors the main table. Heavy when
-    // populated; else light.
-    const isHeavyAnchored = args.chainH !== undefined;
-    const pframeField = isHeavyAnchored ? "convergencePf" : "lightConvergencePf";
-    const ref = isHeavyAnchored ? args.chainH! : args.chainL;
-    if (!ref) return undefined;
-    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
-
-    const pframe = ctx.outputs?.resolve({
-      field: pframeField,
-      assertFieldType: "Input",
-      allowPermanentAbsence: true,
-    });
-    if (!pframe) return undefined;
-    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
-    if (!anchorRecipe) return undefined;
-    const hitAnchorSpec = anchorRecipe.getSpec();
-
-    // Discover first, then filter in JS — see keepTableColumn.
-    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = ColumnsCollection()
-      .discover({
-        anchors: { main: hitAnchorSpec },
-        mode: "enrichment",
-        // Direct-only: no cross-domain linker hops. Without this, enrichment
-        // traverses linkers from the clonotype axis into other blocks' axis
-        // systems (e.g. clonotype-clustering's cluster-id axis,
-        // clonotype-space's), pulling their columns AND introducing extra
-        // axes into the table. maxHops:0 keeps enrichment to columns on the
-        // anchor's own axes ([sampleId, clonotypeKey]) — the convergence
-        // outputs plus same-axis MiXCR context (Clone ID, genes); those stay
-        // optional via the visibility rules below.
-        maxHops: 0,
-        exclude: [
-          // Drop per-sample-only columns (Sample label, donor, dataset,
-          // metadata) — the sample sheet pins one sampleId at a time,
-          // so these columns would just repeat the picked value
-          // on every row. `partialAxesMatch: false` excludes only
-          // columns whose axes are *exactly* [sampleId] (multi-axis
-          // columns that include sampleId stay).
-          {
-            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-            partialAxesMatch: false,
-          },
-          EXCLUDE_PGEN,
-        ],
-      })
-      .getColumns();
-
-    const keep = keepTableColumn(thisBlockId, { requireSampleIdAxis: true });
-    const kept = discovered.filter(keep);
-    const rest = withoutAnchor(kept, hitAnchorSpec);
-    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
-
-    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
-    // through `columns`, which is the set the visibility rules can reach.
-    return createPlDataTableV3(ctx, {
-      primaryColumns: [anchorRecipe],
-      columns: rest,
-      tableState: ctx.data.mainTableState,
-      displayOptions: {
-        visibility: visibilityRules(args, keptSpecs, { perSampleOnly: true }),
-      },
-    });
-  })
-
-  // Clonotype-only aggregated table — the DEFAULT (Main) view and the
-  // downstream-consumable shape: one row per clonotype (each emitted
-  // mode's score, hit and reproducibility; no sampleId axis → no sample
-  // sheet). Anchored on the populated
-  // chain (heavy if present, else light); in dual-chain SC only the heavy family
-  // is tabled here (the light family still exports to the pool).
-  .outputWithStatus("aggregatedTable", (ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    if (!args) return undefined;
-    const field = args.chainH !== undefined ? "heavyAggregatedPf" : "lightAggregatedPf";
-    const ref = args.chainH ?? args.chainL;
-    if (!ref) return undefined;
-    if (!ctx.resultPool.getPColumnSpecByRef(ref)) return undefined;
-
-    // Anchor on this block's aggregated (clonotype-only) fastStar column — the
-    // one column every chain emits, whether or not full-STAR was added.
-    // Resolve the pframe with a PLAIN field (no allowPermanentAbsence): during a
-    // run the field isn't ready yet, and a plain resolve marks the render
-    // context UNSTABLE, so outputWithStatus reports "loading" and the table
-    // shows the running overlay. `allowPermanentAbsence: true` would instead
-    // treat the missing field as a stable absence → the not-ready placeholder
-    // stays up during the whole run (this view has no `sheets` to drive the
-    // pending state, so the model status is the only signal). The field always
-    // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pframe = ctx.outputs?.resolve(field);
-    if (!pframe) return undefined;
-    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
-    if (!anchorRecipe) return undefined;
-    const hitAnchorSpec = anchorRecipe.getSpec();
-
-    // Same enrichment as the per-sample mainTable, but on the clonotype-only
-    // axis: pull every column sharing the clonotypeKey axis from the pool
-    // (Clone ID, genes, CDR3, abundance, other blocks' clonotype-keyed
-    // columns) so they're available in the column settings — hidden by
-    // default, convergence columns default-visible. maxHops:0 keeps
-    // enrichment to the anchor's own axis (no linker hops into cluster/space
-    // axis systems).
-    const thisBlockId = hitAnchorSpec.domain?.["pl7.app/block"];
-    const discovered = ColumnsCollection()
-      .discover({
-        anchors: { main: hitAnchorSpec },
-        mode: "enrichment",
-        maxHops: 0,
-        exclude: [
-          // One row per clonotype: drop any column carrying a sampleId axis (the
-          // per-sample convergence family — including the exported neighbours
-          // column — and per-sample metadata) so enrichment doesn't fan the
-          // table back out over samples. partialAxesMatch:true excludes columns
-          // that merely INCLUDE sampleId, not only exact [sampleId].
-          {
-            axes: [{ name: [{ type: "exact", value: "pl7.app/sampleId" }] }],
-            partialAxesMatch: true,
-          },
-          EXCLUDE_PGEN,
-        ],
-      })
-      .getColumns();
-
-    // No sampleId-axis clause here: this table IS the clonotype-only shape, so
-    // our own export family is exactly what it should show.
-    const keep = keepTableColumn(thisBlockId);
-    const kept = discovered.filter(keep);
-    const rest = withoutAnchor(kept, hitAnchorSpec);
-    const keptSpecs = [hitAnchorSpec, ...rest.map((r) => r.getSpec())];
-
-    // ONLY the anchor is primary — see pickHitAnchor. Everything else goes
-    // through `columns`, which is the set the visibility rules can reach.
-    return createPlDataTableV3(ctx, {
-      primaryColumns: [anchorRecipe],
-      columns: rest,
-      tableState: ctx.data.aggregatedTableState,
-      displayOptions: {
-        visibility: visibilityRules(args, keptSpecs),
-      },
-    });
-  })
-
-  // Aggregated distribution p-frame: the exported clonotype-only
-  // convergence columns for BOTH chains combined (heavy + light aggregated
-  // families), so the single selector-driven Aggregated chart page can offer
-  // every aggregated score across chain × mode. Absent chains resolve to [].
-  .outputWithStatus("aggregatedDistributionPf", (ctx): PFrameHandle | undefined => {
-    const pCols = bothChainPColumns(ctx, "heavyAggregatedPf", "lightAggregatedPf");
-    return pCols ? ctx.createPFrame(pCols) : undefined;
-  })
-  .output("aggregatedDistributionPfPcols", (ctx) =>
-    bothChainPColumns(ctx, "heavyAggregatedPf", "lightAggregatedPf")?.map((c) => ({
-      columnId: c.id,
-      spec: c.spec,
-    })),
-  )
-
-  // Sections: the aggregated clonotype-only table is the default
-  // (Main) view; the per-sample table is a separate QC section. The per-chain
-  // histogram routes are replaced by TWO selector-driven chart pages — an
-  // Aggregated distribution and a Per-sample distribution — each offering every
-  // score across chain × mode via a graph-maker data-column predicate.
-  .sections((ctx) => {
-    const args = ctx.activeArgs as BlockArgs | undefined;
-    const ready = ctx.data.datasetRef !== undefined && args !== undefined;
-    const hasAny = ready && (args?.chainH !== undefined || args?.chainL !== undefined);
-
-    const sections: {
-      type: "link";
-      href: "/" | "/per-sample" | "/distribution/aggregated" | "/distribution/per-sample";
-      label: string;
-    }[] = [{ type: "link" as const, href: "/" as const, label: "Main" }];
-
-    if (hasAny) {
-      sections.push(
-        {
-          type: "link" as const,
-          href: "/distribution/aggregated" as const,
-          label: "Score distribution",
-        },
-        { type: "link" as const, href: "/per-sample" as const, label: "Per-sample table" },
-        {
-          type: "link" as const,
-          href: "/distribution/per-sample" as const,
-          label: "Per-sample distribution",
-        },
-      );
-    }
-    return sections;
-  })
-
-  .title(() => "Clonotype Convergence")
-  .subtitle((ctx) => ctx.data.customBlockLabel || formatSubtitle(ctx.data) || "")
-
-  .done();
-
-export type Platforma = typeof platforma;
-export type BlockOutputs = InferOutputsType<typeof platforma>;

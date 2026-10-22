@@ -1,24 +1,25 @@
 <script setup lang="ts">
-import type { DatasetSelection, PlRef } from "@platforma-sdk/model";
-import { createDatasetSelection, createPrimaryRef, PFrameImpl } from "@platforma-sdk/model";
+import type { ColumnUniversalId, DatasetSelection } from "@platforma-sdk/model";
 import {
   PlAccordion,
   PlAccordionSection,
   PlAlert,
   PlCheckbox,
+  PlColumnValueDropdownMulti,
   PlDatasetSelector,
   PlDropdown,
-  PlDropdownMulti,
   PlNumberField,
   PlTooltip,
-  useWatchFetch,
+  usePlColumnValueSettings,
 } from "@platforma-sdk/ui-vue";
 import {
+  fromDatasetSelection,
   isHeavy,
   isLight,
   pgenHeavyAvailable,
   pgenLightAvailable,
   SC_AXIS,
+  toDatasetSelection,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
 import { computed, ref } from "vue";
 import { useApp } from "../app";
@@ -33,42 +34,30 @@ const convergenceContextOpen = ref(true);
 // ---- Clonotype-only aggregation controls ------------------------
 // Sample-metadata columns offered for the expected-sample filter and the
 // independence grouping (both sampleId-keyed `pl7.app/metadata`).
-const metadataColumnOptions = computed(
-  () => app.model.outputs.metadataOptions?.map((o) => ({ value: o.ref, label: o.label })) ?? [],
-);
-// Unique values of the picked expected-filter column, for the value multiselect
-// (fetched from the PFrame the model exposes — same idiom as DCA's numerators).
-const expectedValueOptions = useWatchFetch(
-  () => app.model.outputs.expectedValueSource,
-  async (pframeHandle) => {
-    if (!pframeHandle) return [];
-    const pframe = new PFrameImpl(pframeHandle);
-    const list = await pframe.listColumns();
-    const id = list?.[0]?.columnId;
-    if (!id) return [];
-    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000_000 });
-    return [...(response?.values.data ?? [])].map((v) => ({ value: String(v), label: String(v) }));
-  },
-);
-// Computed get/set wrapper so the v-model stays well-typed over the optional
-// BlockData field (undefined on legacy data → the default), mirroring the
-// customBlockLabel pattern. The aggregation exposes NO other knob:
-// the score is a named method with no weight and no percentile, and the FDR
-// target `alpha` in Advanced settings is the only statistical parameter.
-const expectedValuesModel = computed<string[]>({
-  get: () => app.model.data.expectedValues ?? [],
-  set: (v) => {
-    app.model.data.expectedValues = v;
-  },
+const metadataColumnOptions = computed(() => app.model.outputs.metadataOptions ?? []);
+
+/** What the expected-values picker offers: the values of the expected-filter column picked now. */
+const expectedValues = usePlColumnValueSettings({
+  source: () => app.model.outputs.expectedFilterValues,
+  valueColumn: () => app.model.data.expectedFilterRef,
 });
+
+// The expected values are values of the expected-filter column, so picking another column (or
+// none) invalidates them outright. Cleared in the user's gesture, so a remount or a sync from
+// another client never touches them.
+function onPickExpectedFilter(column: ColumnUniversalId | undefined) {
+  if (column === app.model.data.expectedFilterRef) return;
+  app.model.data.expectedFilterRef = column;
+  app.model.data.expectedValues = [];
+}
 
 // Snapshot pattern: when the user picks the input dataset, write
 // `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
-// user-gesture handler. Reads from the model's factsByRef map +
+// user-gesture handler. Reads from the model's factsByDataset map +
 // datasetOptions. Picking a new dataset also clears the LC opt-in
 // because it depends on the pick.
-function onPickDataset(ref: PlRef | undefined) {
-  if (ref === undefined) {
+function onPickDataset(dataset: ColumnUniversalId | undefined) {
+  if (dataset === undefined) {
     app.model.data.datasetRef = undefined;
     app.model.data.datasetFacts = undefined;
     app.model.data.datasetLabel = undefined;
@@ -79,38 +68,31 @@ function onPickDataset(ref: PlRef | undefined) {
   // it was first picked from a valid (gated) option, so there's nothing to
   // update — and doing nothing can't downgrade a good snapshot to the partial
   // facts that pool repopulation transiently exposes.
-  const currentRef = app.model.data.datasetRef;
-  const sameRef =
-    currentRef !== undefined && currentRef.blockId === ref.blockId && currentRef.name === ref.name;
-  if (sameRef) return;
+  if (dataset === app.model.data.datasetRef) return;
 
-  app.model.data.datasetRef = ref;
-  app.model.data.datasetFacts = factsFor(app.model, ref);
-  app.model.data.datasetLabel = labelFor(app.model, ref, app.model.data.filterRef);
+  app.model.data.datasetRef = dataset;
+  app.model.data.datasetFacts = factsFor(app.model, dataset);
+  app.model.data.datasetLabel = labelFor(app.model, dataset, app.model.data.filterRef);
   app.model.data.processLightChain = false;
 }
 
 // The selector picks a dataset, or a dataset narrowed by one of its subset columns.
-// Stored as two refs so blocks saved before filters existed keep their `datasetRef`.
+// Stored as two column ids so blocks saved before filters existed keep their `datasetRef`.
 // The filter is written first: `onPickDataset` returns early when only the filter
 // changed (same dataset), and the snapshot it guards doesn't depend on the filter.
 const datasetSelection = computed<DatasetSelection | undefined>({
   get: () => {
     const { datasetRef, filterRef } = app.model.data;
-    if (datasetRef === undefined) return undefined;
-    return createDatasetSelection(createPrimaryRef(datasetRef, filterRef));
+    return toDatasetSelection({ datasetRef, filterRef });
   },
   set: (selection) => {
-    app.model.data.filterRef = selection?.primary.filter;
-    onPickDataset(selection?.primary.column);
+    const { datasetRef, filterRef } = fromDatasetSelection(selection);
+    app.model.data.filterRef = filterRef;
+    onPickDataset(datasetRef);
     // A filter-only change leaves the dataset (and so onPickDataset) untouched, but it
     // does change the subtitle label.
-    if (selection !== undefined) {
-      app.model.data.datasetLabel = labelFor(
-        app.model,
-        selection.primary.column,
-        selection.primary.filter,
-      );
+    if (datasetRef !== undefined) {
+      app.model.data.datasetLabel = labelFor(app.model, datasetRef, filterRef);
     }
   },
 });
@@ -270,11 +252,12 @@ const fullStarHint = computed<string | undefined>(() => {
            Replicate keeps normal spacing. -->
       <div :class="$style.filterPair">
         <PlDropdown
-          v-model="app.model.data.expectedFilterRef"
+          :model-value="app.model.data.expectedFilterRef"
           :options="metadataColumnOptions"
           label="Convergence expected at"
           group-position="top"
           clearable
+          @update:model-value="onPickExpectedFilter"
         >
           <template #tooltip>
             Restrict the exported aggregate to samples where convergence is biologically expected.
@@ -286,9 +269,9 @@ const fullStarHint = computed<string | undefined>(() => {
         </PlDropdown>
         <!-- Always visible; inactive until a column is picked (no column → no
              values to choose). -->
-        <PlDropdownMulti
-          v-model="expectedValuesModel"
-          :options="expectedValueOptions.value ?? []"
+        <PlColumnValueDropdownMulti
+          v-model="app.model.data.expectedValues"
+          :settings="expectedValues"
           group-position="bottom"
           :disabled="!app.model.data.expectedFilterRef"
         />
