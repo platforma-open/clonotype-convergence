@@ -127,7 +127,8 @@ function syncPgenAvailability(model: AppModel) {
 //
 // Reads the same two outputs the picker does, so a seeded snapshot is
 // identical to a picked one. Fires at most once per ref: the guard is
-// "facts are missing", and writing them makes it false. No loop -- `factsByRef`
+// "facts are missing", and writing them makes it false. It also raises a
+// missing `hasIsotype` on an existing snapshot, once. No loop -- `factsByRef`
 // derives from `datasetRef` and the pool, never from the fields written here.
 // An absent entry (options not resolved yet) is left for a later tick rather
 // than written as a partial snapshot.
@@ -136,7 +137,19 @@ function backfillDatasetSnapshot(model: AppModel) {
     () => [model.data.datasetRef, model.outputs.factsByRef, model.outputs.datasetOptions] as const,
     () => {
       const ref = model.data.datasetRef;
-      if (!ref || model.data.datasetFacts) return;
+      if (!ref) return;
+      const current = model.data.datasetFacts;
+      // A snapshot taken before the isotype filter existed (or during pool
+      // churn) lacks `hasIsotype`. Raise it when the pool shows the isotype
+      // column; never lower it, for the same reason the Pgen sync won't while
+      // the pool is in flux. Blocks migrated from before the filter hold an
+      // empty selection, so raising it leaves their args unchanged.
+      if (current) {
+        if (current.hasIsotype !== true && factsFor(model, ref)?.hasIsotype === true) {
+          model.data.datasetFacts = { ...current, hasIsotype: true };
+        }
+        return;
+      }
       const facts = factsFor(model, ref);
       if (!facts) return;
       model.data.datasetFacts = facts;

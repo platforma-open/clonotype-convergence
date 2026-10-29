@@ -3,6 +3,7 @@ import canonicalize from "canonicalize";
 import {
   isHeavy,
   isLight,
+  ISOTYPE_NAME,
   PGEN_NAME,
   SC_AXIS,
   SC_CHAIN_FROM_LETTER,
@@ -88,6 +89,10 @@ export function discoverUpstreamFacts<A, U>(
   let hasAaCDR3 = false;
   let hasNtCDR3 = false;
   let hasAbundance = false;
+  // A clonotype-only isotype column on the heavy chain (single-cell: letter
+  // "A"). Combined with heavy-chain presence below: a bulk-light dataset
+  // carries the column too, but it says nothing there.
+  let hasHeavyIsotypeColumn = false;
 
   for (const col of [...perSampleClonotype, ...perClonotype]) {
     const spec = col.spec;
@@ -98,11 +103,12 @@ export function discoverUpstreamFacts<A, U>(
     //         (letter "A"/"B"; map to IGHeavy/IGLight). Skip secondary
     //         alleles — only the primary allele counts as a valid input.
     let chain: string | undefined;
+    let scLetter: string | undefined;
     if (isSC) {
       const idx = spec.domain?.["pl7.app/vdj/scClonotypeChain/index"];
       if (idx !== undefined && idx !== "primary") continue;
-      const letter = spec.domain?.["pl7.app/vdj/scClonotypeChain"];
-      if (letter) chain = SC_CHAIN_FROM_LETTER[letter];
+      scLetter = spec.domain?.["pl7.app/vdj/scClonotypeChain"];
+      if (scLetter) chain = SC_CHAIN_FROM_LETTER[scLetter];
     } else {
       chain =
         spec.domain?.["pl7.app/vdj/chain"] ??
@@ -117,6 +123,9 @@ export function discoverUpstreamFacts<A, U>(
       if (alphabet === "nucleotide") hasNtCDR3 = true;
     }
     if (spec.annotations?.["pl7.app/isAbundance"] === "true") hasAbundance = true;
+    if (spec.name === ISOTYPE_NAME && spec.axesSpec.length === 1 && (!isSC || scLetter === "A")) {
+      hasHeavyIsotypeColumn = true;
+    }
   }
 
   // Pgen refs — resolve gen-prob's per-clonotype Pgen column(s) for THIS
@@ -173,5 +182,6 @@ export function discoverUpstreamFacts<A, U>(
     hasPgenLight: pgenRefLight !== undefined,
     pgenRefHeavy,
     pgenRefLight,
+    hasIsotype: hasHeavyIsotypeColumn && Array.from(chains).some(isHeavy),
   };
 }

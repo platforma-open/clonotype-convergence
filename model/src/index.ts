@@ -27,6 +27,8 @@ import {
   inputAnchorSpecs,
   isHeavy,
   isLight,
+  ISOTYPE_NAME,
+  keptIsotypes,
   pgenHeavyAvailable,
   pgenLightAvailable,
   SC_AXIS,
@@ -41,7 +43,14 @@ import type { BlockArgs, BlockData, UpstreamFacts } from "./types";
 export type { BlockArgs, BlockData, UpstreamFacts };
 export { blockDataModel } from "./dataModel";
 // Shared chain constants/helpers, so the UI imports them instead of redefining.
-export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } from "./chains";
+export {
+  DEFAULT_ISOTYPES,
+  isHeavy,
+  isLight,
+  pgenHeavyAvailable,
+  pgenLightAvailable,
+  SC_AXIS,
+} from "./chains";
 
 // chainL is only populated when the user makes it explicit:
 //  - bulk-light dataset (its only chain → chainL ← the dataset), or
@@ -512,6 +521,19 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     if (data.groupingRef) {
       args.groupingRef = data.groupingRef;
     }
+
+    // ---- Isotype filter --------------------------------------------
+    // Resolved by the workflow off the heavy anchor (same producer as the
+    // dataset, so no ref is needed for the dependency). Projected only when the
+    // dataset has a heavy-chain isotype, so a bulk-light dataset or one without
+    // isotypes runs unfiltered whatever the selection says.
+    const isotypes = keptIsotypes(data);
+    if (isotypes && chainH) {
+      args.isotypeValues = isotypes;
+      // The kept isotypes are the per-isotype compartments, so per-isotype
+      // scores need them; with all isotypes kept there is nothing to name.
+      if (data.perIsotype) args.perIsotype = true;
+    }
     return args;
   })
 
@@ -533,6 +555,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     expectedFilterRef: data.expectedFilterRef,
     expectedValues: data.expectedValues,
     groupingRef: data.groupingRef,
+    isotypeValues: data.isotypeValues,
+    perIsotype: data.perIsotype,
     customBlockLabel: data.customBlockLabel,
   }))
 
@@ -664,6 +688,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       fullStarHeavy: args.hasPgenHeavy === true,
       fullStarLight: args.hasPgenLight === true,
       clusterFilter: args.applyClusterFilter,
+      // Per-isotype columns come and go with these.
+      perIsotype: args.perIsotype === true ? args.isotypeValues : undefined,
     } as unknown as Record<string, unknown>);
   })
 
@@ -744,6 +770,31 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     return ctx.createPFrame([col]);
   })
 
+  // PFrame of the picked dataset's heavy-chain isotype column, so the UI can
+  // fetch its unique values for the isotype multiselect. Same column the
+  // workflow filters on: clonotype axis only, chain "A" primary on single-cell.
+  .output("isotypeValueSource", (ctx) => {
+    const ref = ctx.data.datasetRef;
+    if (!ref || ctx.data.datasetFacts?.hasIsotype !== true) return undefined;
+    const isSC = ctx.data.datasetFacts.clonotypeKeyAxisName === SC_AXIS;
+    const col = ctx.resultPool
+      .getAnchoredPColumns({ main: ref }, [
+        {
+          axes: [{ anchor: "main", idx: 1 }],
+          name: ISOTYPE_NAME,
+          ...(isSC && {
+            domain: {
+              "pl7.app/vdj/scClonotypeChain": "A",
+              "pl7.app/vdj/scClonotypeChain/index": "primary",
+            },
+          }),
+        },
+      ])
+      ?.find((c) => c.data !== undefined);
+    if (!col) return undefined;
+    return ctx.createPFrame([col]);
+  })
+
   // Canonical(PlRef) → UpstreamFacts for every dropdown option. The
   // UI snapshot writer reads this to write ref + facts in one tick.
   .output("factsByRef", (ctx) => {
@@ -813,6 +864,33 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   .output("lightSkippedSamples", (ctx) =>
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
+
+  // Per-isotype compartments that fell under nMin: per chain and isotype, the
+  // samples where that isotype has too few CDR3s (or none) to be scored
+  // against. Samples skipped as a whole are left out — the main warning
+  // already lists them. Undefined until every status has landed.
+  .output("isotypeSkippedSamples", (ctx) => {
+    const args = ctx.activeArgs as BlockArgs | undefined;
+    if (args?.perIsotype !== true || !args.isotypeValues) return undefined;
+    const entries: { chain: "heavy" | "light"; isotype: string; samples: string[] }[] = [];
+    const chains = [
+      ["heavy", (a: BlockArgs) => a.chainH],
+      ["light", (a: BlockArgs) => a.chainL],
+    ] as const;
+    for (const [chain, chainRef] of chains) {
+      if (!chainRef(args)) continue;
+      const whole = buildSkippedSamples(ctx, `${chain}PerSampleStatus`, chainRef);
+      if (!whole) return undefined;
+      const skippedWhole = new Set([...whole.belowMin, ...whole.noCdr3]);
+      for (const [i, isotype] of args.isotypeValues.entries()) {
+        const s = buildSkippedSamples(ctx, `${chain}IsotypeStatus_${i}`, chainRef);
+        if (!s) return undefined;
+        const samples = [...s.belowMin, ...s.noCdr3].filter((x) => !skippedWhole.has(x)).sort();
+        if (samples.length > 0) entries.push({ chain, isotype, samples });
+      }
+    }
+    return { nMin: args.nMin, entries };
+  })
 
   // mainTable — the per-sample QC table. Anchored on the chain's fastStar
   // column (emitted on every chain, so it is the one reliable anchor) —

@@ -80,6 +80,19 @@ const skippedNoCdr3 = computed<string[]>(() => {
   return Array.from(new Set([...heavy, ...light]));
 });
 
+// Per-isotype compartments under nMin: isotype → the samples where it had too
+// few CDR3s to score against. Merged across chains: on single-cell data both
+// chains share the clonotypes, so their compartments are the same.
+const isotypeSkipped = computed<{ isotype: string; samples: string[] }[]>(() => {
+  const bySample = new Map<string, Set<string>>();
+  for (const e of app.model.outputs.isotypeSkippedSamples?.entries ?? []) {
+    const set = bySample.get(e.isotype) ?? new Set<string>();
+    for (const sample of e.samples) set.add(sample);
+    bySample.set(e.isotype, set);
+  }
+  return [...bySample].map(([isotype, samples]) => ({ isotype, samples: [...samples].sort() }));
+});
+
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
 // empty CDR3s). Chain-attributed so the user knows which chain is
@@ -174,6 +187,14 @@ const customBlockLabel = computed({
       {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
       no usable CDR3 sequences and
       {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
+    </PlAlert>
+
+    <PlAlert v-if="isotypeSkipped.length > 0" type="info" label="Per-isotype scores skipped">
+      Fewer than {{ app.model.outputs.isotypeSkippedSamples?.nMin }} unique nucleotide CDR3s of the
+      isotype in the sample:
+      <template v-for="e in isotypeSkipped" :key="e.isotype">
+        <br />{{ e.isotype }}: {{ e.samples.join(", ") }}
+      </template>
     </PlAlert>
 
     <PlAlert v-if="heavyAllEmpty" type="warn" label="No heavy-chain data">
