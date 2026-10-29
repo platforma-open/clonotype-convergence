@@ -1,0 +1,125 @@
+// TEST HARNESS — not part of the block's pipeline.
+//
+// :pack-input takes its columns as PColumn DATA, which a test cannot create
+// directly (the render helper only creates JSON values). This template imports
+// the input tables passed as TSV text into the columns :main hands over, renders
+// :pack-input on them, and exports the packed column back to a TSV blob the
+// test can read.
+//
+// Inputs (TSV text):
+//   cdr3Tsv      — clonotypeKey, aaSeqCDR3, nSeqCDR3
+//   abundanceTsv — sampleId, clonotypeKey, abundance
+//   isotypeTsv   — clonotypeKey, isotype (optional; absent → no filter)
+// plus isotypeValues, the kept isotypes.
+self := import("@platforma-sdk/workflow-tengo:tpl")
+assets := import("@platforma-sdk/workflow-tengo:assets")
+exec := import("@platforma-sdk/workflow-tengo:exec")
+file := import("@platforma-sdk/workflow-tengo:file")
+pframes := import("@platforma-sdk/workflow-tengo:pframes")
+xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
+render := import("@platforma-sdk/workflow-tengo:render")
+
+packInputTpl := assets.importTemplate(":pack-input")
+
+self.defineOutputs("packedTsv")
+
+// `domain` must be present on both axes: the spec parser rejects a null one.
+sampleAxisSpec := {
+	name: "pl7.app/sampleId",
+	type: "String",
+	domain: {},
+	annotations: { "pl7.app/label": "sampleId" }
+}
+clonoAxisSpec := {
+	name: "pl7.app/vdj/clonotypeKey",
+	type: "String",
+	domain: {},
+	annotations: { "pl7.app/label": "clonotypeKey" }
+}
+
+// Text → file, through a no-op exec: writeFile is the only way to make one.
+textFile := func(name, content) {
+	return exec.builder().
+		cpu(1).
+		mem("512MiB").
+		cmd("env").
+		writeFile(name, content).
+		saveFile(name).
+		run().
+		getFile(name)
+}
+
+stringColumn := func(column, name, domain) {
+	return {
+		column: column,
+		spec: {
+			name: name,
+			valueType: "String",
+			domain: domain,
+			annotations: { "pl7.app/label": column }
+		}
+	}
+}
+
+self.body(func(inputs) {
+	cdr3 := xsv.importFile(textFile("cdr3.tsv", inputs.cdr3Tsv), "tsv", {
+		axes: [{ column: "clonotypeKey", spec: clonoAxisSpec }],
+		columns: [
+			stringColumn("aaSeqCDR3", "pl7.app/vdj/sequence", { "pl7.app/alphabet": "aminoacid" }),
+			stringColumn("nSeqCDR3", "pl7.app/vdj/sequence", { "pl7.app/alphabet": "nucleotide" })
+		]
+	}, { splitDataAndSpec: true })
+
+	abundance := xsv.importFile(textFile("abundance.tsv", inputs.abundanceTsv), "tsv", {
+		axes: [
+			{ column: "sampleId", spec: sampleAxisSpec },
+			{ column: "clonotypeKey", spec: clonoAxisSpec }
+		],
+		columns: [{
+			column: "abundance",
+			spec: {
+				name: "pl7.app/vdj/readCount",
+				valueType: "Long",
+				annotations: { "pl7.app/label": "abundance", "pl7.app/isAbundance": "true" }
+			}
+		}]
+	}, { splitDataAndSpec: true })
+
+	packInputs := {
+		aaData: cdr3["aaSeqCDR3"].data,
+		aaSpec: cdr3["aaSeqCDR3"].spec,
+		ntData: cdr3["nSeqCDR3"].data,
+		ntSpec: cdr3["nSeqCDR3"].spec,
+		abundanceData: abundance["abundance"].data,
+		abundanceSpec: abundance["abundance"].spec,
+		sampleAxisSpec: sampleAxisSpec,
+		clonoAxisSpec: clonoAxisSpec,
+		hasPgen: false
+	}
+
+	if !is_undefined(inputs.isotypeTsv) {
+		isotype := xsv.importFile(textFile("isotype.tsv", inputs.isotypeTsv), "tsv", {
+			axes: [{ column: "clonotypeKey", spec: clonoAxisSpec }],
+			columns: [stringColumn("isotype", "pl7.app/vdj/isotype", {})]
+		}, { splitDataAndSpec: true })
+		packInputs.isotypeData = isotype["isotype"].data
+		packInputs.isotypeSpec = isotype["isotype"].spec
+		packInputs.isotypeValues = inputs.isotypeValues
+	}
+
+	packed := render.create(packInputTpl, packInputs).output("packed")
+
+	// Header-stable export: the axis and column labels become the TSV headers.
+	pfBuilder := pframes.pFrameBuilder()
+	pfBuilder.add("packed", {
+		kind: "PColumn",
+		name: "pl7.app/vdj/convergence/perSampleInput",
+		valueType: "String",
+		annotations: { "pl7.app/label": "packed" },
+		axesSpec: [sampleAxisSpec, clonoAxisSpec]
+	}, packed)
+
+	return {
+		packedTsv: file.exportFile(xsv.exportFrame(pfBuilder.build(), "tsv", {}))
+	}
+})

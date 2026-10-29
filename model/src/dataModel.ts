@@ -8,7 +8,7 @@ import {
   isGlobalPObjectId,
   isPlRef,
 } from "@platforma-sdk/model";
-import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
+import { DEFAULT_ALPHA, DEFAULT_ISOTYPES, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import { toColumnId } from "./columns";
 import type {
   BlockDataV1,
@@ -16,6 +16,7 @@ import type {
   BlockDataV3,
   BlockDataV4,
   BlockDataV5,
+  BlockDataV6,
   UpstreamFactsV2,
 } from "./stored_data";
 import type { BlockData, UpstreamFacts } from "./types";
@@ -95,10 +96,19 @@ export const blockDataModel = new DataModelBuilder({ kind })
   // v6 — columns become result-pool ids, the expected values column value ids.
   // `mainTableSourceId` now carries the dataset's result-pool id, so both table
   // states are reset for the same reason as in v5.
-  .migrate<BlockData>("v6", (prev) => ({
+  .migrate<BlockDataV6>("v6", (prev) => ({
     ...toColumnIds(prev),
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
+  }))
+  // v7 — isotype filter and per-isotype scores. Blocks created before them keep
+  // every clonotype (empty selection) and no per-isotype scores, so a re-run
+  // reproduces their results; only new blocks start from DEFAULT_ISOTYPES (see
+  // init).
+  .migrate<BlockData>("v7", (prev) => ({
+    ...prev,
+    isotypeValues: [],
+    perIsotype: false,
   }))
   .init(({ params }) => ({
     mainTableState: createPlDataTableStateV2(),
@@ -126,6 +136,10 @@ export const blockDataModel = new DataModelBuilder({ kind })
     // expected-values multiselect is initialised so its v-model binding is
     // well-typed. `alpha` above is the only statistical knob.
     expectedValues: params?.expectedValues ?? [],
+    // Isotype filter — keep IgM and IgG. The picker narrows this to the
+    // isotypes the picked dataset actually has (see SettingsPanel).
+    isotypeValues: params?.isotypeValues ?? [...DEFAULT_ISOTYPES],
+    perIsotype: params?.perIsotype ?? false,
     // Two selector-driven distribution chart states — see
     // distGraphState. Both plot long-tailed scores, so both default to log Y.
     graphStateAggregated: distGraphState("Score distribution"),
@@ -150,7 +164,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
  * plain expected value becomes the column value id of that value, as text, in the converted
  * expected-filter column; without that column it is dropped.
  */
-function toColumnIds(data: BlockDataV5): BlockData {
+function toColumnIds(data: BlockDataV5): BlockDataV6 {
   const datasetRef = toStoredColumnId(data.datasetRef);
   const expectedFilterRef = toStoredColumnId(data.expectedFilterRef);
   return {

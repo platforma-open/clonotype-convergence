@@ -23,6 +23,10 @@ Convergence in one sample can be noise. If your study has independent units — 
 
 ### Additional controls
 
+An isotype filter restricts the analysis to the heavy-chain isotypes you select — IgM and IgG by default. Other clonotypes, including those of unknown isotype, are removed before neighbours are counted, so they are neither tested nor counted as anyone's neighbour; an empty selection keeps every clonotype. On single-cell data the heavy chain's isotype applies to both chains. The filter is offered only when the dataset carries an isotype column.
+
+With isotypes selected, the block can also score each clone against each kept isotype: its convergence measured among that isotype's CDR3s only — for example, how convergent an IgM clone is within the IgG repertoire. These per-isotype scores and hits are added beside the main ones, never replacing them. A clone's own nucleotide CDR3 is never counted, so a class-switched copy of it is not a neighbour; an isotype with too few CDR3s in a sample is skipped there.
+
 A minimum unique-CDR3 count per sample excludes samples too shallow to support the statistic; the block reports which samples were skipped and why. An optional cluster filter adds a stricter call, flagging a clonotype only when several one-edit-distance CDR3s form a cluster of at least a minimum size — matching the source paper's headline binder definition. It is off by default.
 
 Results are explored as a main table, a score distribution, a per-sample table, and a per-sample distribution.
@@ -42,6 +46,8 @@ Results are explored as a main table, a score distribution, a per-sample table, 
 | Data types | Bulk heavy, bulk light, single-cell IG — BCR only, TCR filtered out |
 | Reproducibility | Optional grouping column (e.g. donor) defining independent units; per-clonotype reproducibility ratio across them |
 | Expected-sample filter | Optional metadata column and values marking where convergence is biologically expected |
+| Isotype filter | Heavy-chain isotypes to analyze (default IgM, IgG); others, unknown included, removed before neighbour counting |
+| Per-isotype scores | Optional score + hit per kept isotype, each clone scored against that isotype's CDR3s only; for both fast-STAR and full-STAR |
 | Sample floor | Minimum unique CDR3 count per sample; skipped samples reported |
 | Cluster filter | Optional stricter binder call requiring a cluster of at least a minimum size; off by default |
 | Views | Main table, score distribution, per-sample table, per-sample distribution |

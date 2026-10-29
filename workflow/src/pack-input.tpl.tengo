@@ -14,8 +14,10 @@
 // concatStr would null the whole packed value and the clone's CDR3s would be
 // lost from neighbour counting. An empty Pgen field unpacks to a non-numeric
 // value downstream, which full-STAR treats as untestable ("Not hit"), while the
-// clone still participates in neighbour counting. The per-sample body picks the
-// 2- vs 3-field unpack from the `hasPgen` flag threaded through processColumn.
+// clone still participates in neighbour counting. With per-isotype scores
+// (`packIsotype`) the heavy-chain isotype is appended as the last field. The
+// per-sample body picks the field count from the same `hasPgen` / `perIsotype`
+// flags threaded through processColumn.
 //
 // It lives in its own PURE template so its output (the packed column data) can
 // be PINNED by the caller via `.output("packed", ttl)`. Without that, the
@@ -95,6 +97,12 @@ self.body(func(inputs) {
 	if pgenPresent {
 		rawTsvBuilder.add({ spec: inputs.pgenSpec, data: inputs.pgenData }, { header: "Pgen" })
 	}
+	// Optional isotype filter: the heavy chain's per-clonotype isotype, joined
+	// here only to drop rows below; it is not packed.
+	hasIsotypeFilter := !is_undefined(inputs.isotypeData)
+	if hasIsotypeFilter {
+		rawTsvBuilder.add({ spec: inputs.isotypeSpec, data: inputs.isotypeData }, { header: "isotype" })
+	}
 	rawInputTsv := rawTsvBuilder.build()
 
 	// Pack aaSeqCDR3|nSeqCDR3(|Pgen) into one String per row (abundance is
@@ -105,10 +113,27 @@ self.body(func(inputs) {
 	// field rather than the quoted "" the xsv export writes.
 	encWf := pt.workflow()
 	encDf := encWf.frame(rawInputTsv, { xsvType: "tsv", inferSchema: false })
+	// Keep a row only when its isotype is one of the kept values. A clonotype of
+	// unknown isotype — blank (null), or MiXCR's "cant_distinguish" — is dropped:
+	// neither is ever a kept value (the UI doesn't offer them).
+	if hasIsotypeFilter {
+		isotype := pt.col("isotype")
+		keep := undefined
+		for v in inputs.isotypeValues {
+			match := isotype.eq(pt.lit(v))
+			keep = is_undefined(keep) ? match : keep.or(match)
+		}
+		encDf = encDf.filter(keep)
+	}
 	packFields := [pt.col("aaSeqCDR3").fillNull(pt.lit("")), pt.col("nSeqCDR3").fillNull(pt.lit(""))]
 	if hasPgen {
 		pgenField := pgenPresent ? pt.col("Pgen").cast("String").fillNull(pt.lit("")) : pt.lit("")
 		packFields = append(packFields, pgenField)
+	}
+	// Per-isotype scores: the isotype rides last ("" when unknown), for the
+	// per-sample body to split the sample into compartments.
+	if inputs.packIsotype == true {
+		packFields = append(packFields, pt.col("isotype").fillNull(pt.lit("")))
 	}
 	encDf = encDf.withColumns(
 		pt.concatStr(packFields, { delimiter: "|" }).alias("packed")

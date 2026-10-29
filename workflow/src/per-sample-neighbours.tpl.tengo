@@ -16,6 +16,8 @@ assets := import("@platforma-sdk/workflow-tengo:assets")
 exec := import("@platforma-sdk/workflow-tengo:exec")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pt := import("@platforma-sdk/workflow-tengo:pt")
+smart := import("@platforma-sdk/workflow-tengo:smart")
+text := import("text")
 pConstants := import("@platforma-sdk/workflow-tengo:pframes.constants")
 
 f := exec.formula
@@ -28,7 +30,9 @@ f := exec.formula
 // status    — { nUniqueNt, nMin } for this sample (a Json Resource keyed by
 //             sampleId). Exists even when the sample is skipped (empty TSV),
 //             so the model can build the skipped-samples warning.
-self.defineOutputs("outputTsv", "log", "status")
+// isotypeStatus — with per-isotype scores, { "<i>": status } for each kept
+//             isotype's compartment, same shape as `status`; else empty.
+self.defineOutputs("outputTsv", "log", "status", "isotypeStatus")
 
 computeNeighboursSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:compute-neighbours")
 clusterFilterSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:cluster-filter")
@@ -67,21 +71,34 @@ self.body(func(inputs) {
 	// compute-neighbours' pinned cache is unaffected). CDR3 sequences never
 	// contain "|", so it's an unambiguous delimiter; `hasPgen` picks the 2- vs
 	// 3-field pattern (matches the packing in :pack-input).
+	// With per-isotype scores the heavy-chain isotype rides as a last field;
+	// `perIsotype` picks that pattern, as `hasPgen` does for Pgen.
 	hasPgen := inputs.hasPgen
-	packedPattern := hasPgen ? "([^|]*)\\|([^|]*)\\|([^|]*)" : "([^|]*)\\|([^|]*)"
+	perIsotype := inputs.perIsotype == true
+	fields := ["aaSeqCDR3", "nSeqCDR3"]
+	if hasPgen {
+		fields = append(fields, "Pgen")
+	}
+	if perIsotype {
+		fields = append(fields, "isotype")
+	}
+	fieldPatterns := []
+	for _ in fields {
+		fieldPatterns = append(fieldPatterns, "([^|]*)")
+	}
+	packedPattern := text.join(fieldPatterns, "\\|")
 	ptwf := pt.workflow()
 	df := ptwf.frame(packedTsv, { xsvType: "tsv", inferSchema: false })
-	unpackCols := [
-		pt.col("packed").strExtract(packedPattern, { groupIndex: 1 }).alias("aaSeqCDR3"),
-		pt.col("packed").strExtract(packedPattern, { groupIndex: 2 }).alias("nSeqCDR3")
-	]
+	unpackCols := []
+	for i, name in fields {
+		unpackCols = append(unpackCols, pt.col("packed").strExtract(packedPattern, { groupIndex: i + 1 }).alias(name))
+	}
 	selectCols := [pt.col("clonotypeKey"), pt.col("aaSeqCDR3"), pt.col("nSeqCDR3")]
 	if hasPgen {
-		unpackCols = append(unpackCols, pt.col("packed").strExtract(packedPattern, { groupIndex: 3 }).alias("Pgen"))
 		selectCols = append(selectCols, pt.col("Pgen"))
 	}
-	df = df.withColumns(unpackCols...).select(selectCols...)
-	df.save("input.tsv")
+	df = df.withColumns(unpackCols...)
+	df.select(selectCols...).save("input.tsv")
 
 	// Collapse to one row per unique aa CDR3 with its nt multiplicity — the
 	// only thing the neighbour statistic reads. Doing it here rather than in
@@ -99,6 +116,41 @@ self.body(func(inputs) {
 	usable.groupBy(pt.col("aaSeqCDR3")).
 		agg(pt.col("nSeqCDR3").nUnique().alias("multiplicity")).
 		save("per_aa.tsv")
+
+	// Per-isotype inputs. Each kept isotype X is a compartment: the clonotypes of
+	// that isotype. A clone is scored against X by the same statistic as against
+	// the whole sample, with the neighbours drawn from X's CDR3s only.
+	// pack-input already kept only clones of a kept isotype; the unknown-isotype
+	// filter below just keeps this body from scoring any it is handed directly.
+	//
+	//   query.tsv        the scored clones.
+	//   comp_<i>_aa.tsv  X's per-aa table: each aa CDR3 with its count of
+	//                    distinct X nt CDR3s, plus every scored clone's aa at
+	//                    multiplicity 0. compute-neighbours then reports, for
+	//                    each aa, (X nt CDR3s within one substitution) - 1 and N_X
+	//                    = the multiplicity sum — the zeros add nothing to either.
+	//   comp_<i>_nt.tsv  X's distinct nt CDR3s. A clone whose own nt CDR3 is
+	//                    among them is not its own neighbour — the -1 above —
+	//                    and that holds for a clone of another isotype too: an
+	//                    IgM clone and an IgG clone with one nt CDR3 are one
+	//                    class-switched lineage, not convergence.
+	compartments := perIsotype ? inputs.compartments : []
+	if perIsotype {
+		isotype := pt.col("isotype").fillNull(pt.lit(""))
+		query := usable.filter(isotype.neq(pt.lit("")), isotype.neq(pt.lit("cant_distinguish")))
+		query.select(selectCols...).save("query.tsv")
+		queryAa := query.groupBy(pt.col("aaSeqCDR3")).agg(pt.col("nSeqCDR3").count().alias("clones"))
+		for i, iso in compartments {
+			inX := usable.filter(isotype.eq(pt.lit(iso)))
+			multX := inX.groupBy(pt.col("aaSeqCDR3")).agg(pt.col("nSeqCDR3").nUnique().alias("multiplicity"))
+			queryAa.join(multX, { how: "full", on: "aaSeqCDR3", coalesce: true }).
+				select(pt.col("aaSeqCDR3"), pt.col("multiplicity").fillNull(pt.lit(0)).alias("multiplicity")).
+				save("comp_" + string(i) + "_aa.tsv")
+			inX.groupBy(pt.col("nSeqCDR3")).agg(pt.col("aaSeqCDR3").count().alias("clones")).
+				select(pt.col("nSeqCDR3"), pt.lit(1).alias("inCompartment")).
+				save("comp_" + string(i) + "_nt.tsv")
+		}
+	}
 
 	ptRes := ptwf.run()
 	perSampleInputTsv := ptRes.getFile("input.tsv")
@@ -261,9 +313,120 @@ self.body(func(inputs) {
 		}
 	}
 
+	// Stage 5 — per-isotype scores, one compartment at a time (see the inputs
+	// above). Per compartment X, for each scored clone:
+	//   neighbours_X = compute-neighbours' count + 1 - (own nt CDR3 in X)
+	//   nbFreq_X     = neighbours_X / N_X;   fast-STAR hit: nbFreq_X > threshold
+	//   full-STAR    full_star.py with N = N_X (its --status-json), so the Pgen
+	//                null scales to the compartment; BH within (sample, X).
+	// nMin applies per compartment: below it compute-neighbours emits nothing and
+	// the clone has no X values in this sample. Its status sidecar feeds the
+	// skipped-compartments warning. Columns carry the compartment index
+	// ("nbFreq_iso0"), not the isotype, so any isotype value makes a valid
+	// header; :main maps the index back to the isotype.
+	isotypeStatus := {}
+	if perIsotype {
+		queryTsv := ptRes.getFile("query.tsv")
+		mergeWf := pt.workflow()
+		merged := mergeWf.frame(finalTsv, { xsvType: "tsv", inferSchema: false })
+		for i, iso in compartments {
+			suffix := "_iso" + string(i)
+			compAaTsv := ptRes.getFile("comp_" + string(i) + "_aa.tsv")
+			// Same step and budget as Stage 1: the table holds the sample's
+			// scored aa CDR3s plus X's, so it is at most the sample's size.
+			compCmd := exec.builder().
+				software(computeNeighboursSw).
+				resources({ onCPU: {
+					cpu: 2,
+					ram: f.lineCount("perAa").times(4096).plus(f.gib(1)).
+						between(f.gib(1), f.gib(32)).
+						staticFallback("8GiB")
+				} }).
+				arg("--input").arg("per_aa.tsv").
+				arg("--output").arg("per_aa_stats.tsv").
+				arg("--nMin").arg(string(inputs.nMin)).
+				arg("--chain").arg(inputs.chain + " " + iso).
+				arg("--status-json").arg("status.json").
+				addFile("per_aa.tsv", compAaTsv, { tag: "perAa" }).
+				saveFile("per_aa_stats.tsv").
+				saveFile("status.json").
+				saveFileContent("status.json").
+				cacheHours(24).
+				run()
+			isotypeStatus[string(i)] = compCmd.getFileContent("status.json")
+
+			isoWf := pt.workflow()
+			stats := isoWf.frame(compCmd.getFile("per_aa_stats.tsv"), { xsvType: "tsv", inferSchema: false })
+			total := stats.select(pt.col("multiplicity").cast("Int64").sum().alias("N"))
+			isoCols := [pt.col("clonotypeKey"), pt.col("aaSeqCDR3"), pt.col("neighboursX"), pt.col("nbFreq" + suffix), pt.col("fastStar" + suffix)]
+			if hasPgen {
+				isoCols = append(isoCols, pt.col("Pgen"))
+			}
+			isoWf.frame(queryTsv, { xsvType: "tsv", inferSchema: false }).
+				join(stats, { how: "inner", on: "aaSeqCDR3", rightColumns: ["neighbours"] }).
+				join(isoWf.frame(ptRes.getFile("comp_" + string(i) + "_nt.tsv"), { xsvType: "tsv", inferSchema: false }),
+					{ how: "left", on: "nSeqCDR3", rightColumns: ["inCompartment"] }).
+				join(total, { how: "cross" }).
+				withColumns(
+					pt.col("neighbours").cast("Int64").plus(pt.lit(1)).
+						minus(pt.col("inCompartment").cast("Int64").fillNull(pt.lit(0))).
+						alias("neighboursX")
+				).
+				withColumns(
+					pt.col("neighboursX").cast("Float64").truediv(pt.col("N").cast("Float64")).alias("nbFreq" + suffix)
+				).
+				withColumns(
+					pt.when(pt.col("nbFreq" + suffix).gt(pt.lit(inputs.threshold))).
+						then(pt.lit("Hit")).
+						otherwise(pt.lit("Not hit")).
+						alias("fastStar" + suffix)
+				).
+				select(isoCols...).
+				save("iso.tsv")
+			isoTsv := isoWf.run().getFile("iso.tsv")
+
+			rightCols := ["nbFreq" + suffix, "fastStar" + suffix]
+			if hasPgen {
+				fullCmd := exec.builder().
+					software(fullStarSw).
+					resources({ onCPU: {
+						cpu: 1,
+						ram: f.size("input").times(8).plus(f.gib(2)).
+							between(f.gib(2), f.gib(32)).
+							staticFallback("4GiB")
+					} }).
+					arg("--input").arg("iso.tsv").
+					arg("--output").arg("fullstar.tsv").
+					arg("--alpha").arg(string(inputs.alpha)).
+					arg("--chain").arg(inputs.chain + " " + iso).
+					arg("--neighbours-column").arg("neighboursX").
+					arg("--pgen-column").arg("Pgen").
+					arg("--status-json").arg("status.json").
+					addFile("iso.tsv", isoTsv, { tag: "input" }).
+					addFile("status.json", compCmd.getFile("status.json")).
+					saveFile("fullstar.tsv").
+					run()
+				renameWf := pt.workflow()
+				renameWf.frame(fullCmd.getFile("fullstar.tsv"), { xsvType: "tsv", inferSchema: false }).
+					withColumns(
+						pt.col("fullStarScore").alias("fullStarScore" + suffix),
+						pt.col("starHit").alias("fullStar" + suffix)
+					).
+					save("iso.tsv")
+				isoTsv = renameWf.run().getFile("iso.tsv")
+				rightCols = append(rightCols, "fullStarScore" + suffix, "fullStar" + suffix)
+			}
+			merged = merged.join(mergeWf.frame(isoTsv, { xsvType: "tsv", inferSchema: false }),
+				{ how: "left", on: "clonotypeKey", rightColumns: rightCols })
+		}
+		merged.save("merged.tsv")
+		finalTsv = mergeWf.run().getFile("merged.tsv")
+	}
+
 	return {
 		outputTsv: finalTsv,
 		log: neighboursCmd.getStdoutContent(),
-		status: neighboursCmd.getFileContent("status.json")
+		status: neighboursCmd.getFileContent("status.json"),
+		isotypeStatus: smart.createMapResource(isotypeStatus)
 	}
 })
