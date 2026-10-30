@@ -25,6 +25,10 @@ import { computed, ref, watch } from "vue";
 import { useApp } from "../app";
 import { factsFor, labelFor } from "../datasetSnapshot";
 
+// The dataset's isotypes for "Keep isotypes", fetched by MainPage (this panel is
+// re-created on every open); undefined while loading.
+const props = defineProps<{ isotypeOptions?: { value: string; label: string }[] }>();
+
 const app = useApp();
 
 // "Convergence context" section open by default so its controls stay visible
@@ -67,25 +71,6 @@ const expectedValuesModel = computed<string[]>({
 // Offered only when the dataset carries a heavy-chain isotype; the args lambda
 // applies the same gate, so a hidden control never filters anything.
 const showIsotypeFilter = computed(() => app.model.data.datasetFacts?.hasIsotype === true);
-// The isotypes this dataset actually has, from its isotype column.
-const isotypeOptions = useWatchFetch(
-  () => app.model.outputs.isotypeValueSource,
-  async (pframeHandle) => {
-    if (!pframeHandle) return undefined;
-    const pframe = new PFrameImpl(pframeHandle);
-    const list = await pframe.listColumns();
-    const id = list?.[0]?.columnId;
-    if (!id) return undefined;
-    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000 });
-    // Unknown isotypes aren't offered: the filter always keeps them (blank, or
-    // MiXCR's "cant_distinguish" — see pack-input).
-    return [...(response?.values.data ?? [])]
-      .filter((v) => v !== null && v !== "" && v !== "cant_distinguish")
-      .map((v) => String(v))
-      .sort()
-      .map((v) => ({ value: v, label: v }));
-  },
-);
 const isotypeValuesModel = computed<string[]>({
   get: () => app.model.data.isotypeValues ?? [],
   set: (v) => {
@@ -107,7 +92,7 @@ const perIsotypeModel = computed<boolean>({
 // the IgM/IgG default — unknown isotypes are dropped by a non-empty selection.
 // An unresolved list (undefined: still loading) is not acted on.
 watch(
-  () => isotypeOptions.value,
+  () => props.isotypeOptions,
   (options) => {
     if (!options) return;
     const available = new Set(options.map((o) => o.value));
@@ -327,7 +312,7 @@ const fullStarHint = computed<string | undefined>(() => {
       <PlDropdownMulti
         v-if="showIsotypeFilter"
         v-model="isotypeValuesModel"
-        :options="isotypeOptions.value ?? []"
+        :options="props.isotypeOptions"
         label="Keep isotypes"
         placeholder="All isotypes"
       >

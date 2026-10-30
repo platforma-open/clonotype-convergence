@@ -8,7 +8,9 @@ import {
   PlMaskIcon24,
   PlSlideModal,
   usePlDataTableSettingsV2,
+  useWatchFetch,
 } from "@platforma-sdk/ui-vue";
+import { PFrameImpl } from "@platforma-sdk/model";
 import { computed, reactive, watch } from "vue";
 import { useApp } from "../app";
 import LogsPanel from "./LogsPanel.vue";
@@ -46,6 +48,28 @@ function panelModel(name: Exclude<Panel, null>) {
   });
 }
 const settingsOpen = panelModel("settings");
+
+// The isotypes this dataset actually has, for the Settings panel's "Keep
+// isotypes". Fetched here rather than in the panel, which is re-created on every
+// open: this way they load once per dataset.
+const isotypeOptions = useWatchFetch(
+  () => app.model.outputs.isotypeValueSource,
+  async (pframeHandle) => {
+    if (!pframeHandle) return undefined;
+    const pframe = new PFrameImpl(pframeHandle);
+    const list = await pframe.listColumns();
+    const id = list?.[0]?.columnId;
+    if (!id) return undefined;
+    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000 });
+    // Unknown isotypes aren't offered: a non-empty selection drops them (blank,
+    // or MiXCR's "cant_distinguish" — see pack-input).
+    return [...(response?.values.data ?? [])]
+      .filter((v) => v !== null && v !== "" && v !== "cant_distinguish")
+      .map((v) => String(v))
+      .sort()
+      .map((v) => ({ value: v, label: v }));
+  },
+);
 const logsOpen = panelModel("logs");
 const statsOpen = panelModel("stats");
 
@@ -80,18 +104,17 @@ const skippedNoCdr3 = computed<string[]>(() => {
   return Array.from(new Set([...heavy, ...light]));
 });
 
-// Per-isotype compartments under nMin: isotype → the samples where it had too
-// few CDR3s to score against. Merged across chains: on single-cell data both
-// chains share the clonotypes, so their compartments are the same.
-const isotypeSkipped = computed<{ isotype: string; samples: string[] }[]>(() => {
-  const bySample = new Map<string, Set<string>>();
-  for (const e of app.model.outputs.isotypeSkippedSamples?.entries ?? []) {
-    const set = bySample.get(e.isotype) ?? new Set<string>();
-    for (const sample of e.samples) set.add(sample);
-    bySample.set(e.isotype, set);
-  }
-  return [...bySample].map(([isotype, samples]) => ({ isotype, samples: [...samples].sort() }));
-});
+// Per-isotype compartments under nMin, one line per chain and isotype. Not
+// merged across chains: each chain counts its own unique nucleotide CDR3s, so
+// on single-cell data one chain's compartment can be skipped while the other's
+// is scored.
+const isotypeSkipped = computed(() =>
+  (app.model.outputs.isotypeSkippedSamples?.entries ?? []).map((e) => ({
+    key: `${e.chain}:${e.isotype}`,
+    label: `${e.chain === "heavy" ? "Heavy" : "Light"} ${e.isotype}`,
+    samples: e.samples,
+  })),
+);
 
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
@@ -192,8 +215,8 @@ const customBlockLabel = computed({
     <PlAlert v-if="isotypeSkipped.length > 0" type="info" label="Per-isotype scores skipped">
       Fewer than {{ app.model.outputs.isotypeSkippedSamples?.nMin }} unique nucleotide CDR3s of the
       isotype in the sample:
-      <template v-for="e in isotypeSkipped" :key="e.isotype">
-        <br />{{ e.isotype }}: {{ e.samples.join(", ") }}
+      <template v-for="e in isotypeSkipped" :key="e.key">
+        <br />{{ e.label }}: {{ e.samples.join(", ") }}
       </template>
     </PlAlert>
 
@@ -217,7 +240,7 @@ const customBlockLabel = computed({
 
   <PlSlideModal v-model="settingsOpen" :shadow="true">
     <template #title>Settings</template>
-    <SettingsPanel />
+    <SettingsPanel :isotype-options="isotypeOptions.value" />
   </PlSlideModal>
 
   <PlSlideModal v-model="logsOpen" :shadow="true" width="60%">

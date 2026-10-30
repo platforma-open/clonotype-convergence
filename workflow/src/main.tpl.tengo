@@ -463,19 +463,34 @@ wf.body(func(args) {
 		isoSpecs := func(i, iso, mode, perSample) {
 			suffix := "_iso" + string(i)
 			among := " among " + iso
-			scope := perSample ? " Per sample." : ""
 			visibility := perSample ? "optional" : "default"
 			isFast := mode == "fast-STAR"
 			scoreName := isFast ? "nbFreq" : "fullStarScore"
 			hitName := isFast ? "fastStar" : "fullStar"
+			// The aggregated values are a different statistic from the per-sample
+			// ones (upper median / Fisher-combined p across replicates), so each
+			// table gets its own wording.
+			scoreDesc := undefined
+			hitDesc := undefined
+			if perSample && isFast {
+				scoreDesc = "Like the neighbour frequency, but counting only " + iso + " CDR3s: the " + iso + " CDR3s that differ from this clone's by exactly one amino acid (the clone's own nucleotide CDR3 excluded), divided by the number of distinct " + iso + " CDR3s. Per sample."
+				hitDesc = "Hit when this sample's neighbour frequency among " + iso + " CDR3s is above the fast-STAR threshold you set. Per sample."
+			} else if perSample {
+				scoreDesc = "-log10 of the full-STAR p-value with the neighbour count and the expected count both taken over " + iso + " CDR3s only. Per sample."
+				hitDesc = "Hit when the full-STAR p-value among " + iso + " CDR3s survives Benjamini-Hochberg control at the FDR target alpha, across this sample's clonotypes. Per sample."
+			} else if isFast {
+				scoreDesc = "Middle (upper-median) neighbour frequency among " + iso + " CDR3s of the replicates this clone appears in."
+				hitDesc = "Hit when the aggregated neighbour frequency among " + iso + " CDR3s is above the fast-STAR threshold you set."
+			} else {
+				scoreDesc = "-log10 of this clone's per-replicate full-STAR p-values among " + iso + " CDR3s, combined into one (Fisher's method) over the replicates it appears in."
+				hitDesc = "Hit when the combined p-value among " + iso + " CDR3s survives Benjamini-Hochberg control at the FDR target alpha, across all clonotypes."
+			}
 			scoreAnn := {
 				"pl7.app/label": withChain((isFast ? "Convergent neighbour frequency" : "Convergent hit score (full-STAR)") + among),
 				"pl7.app/table/visibility": visibility,
 				"pl7.app/isScore": "true",
 				"pl7.app/score/rankingOrder": "decreasing",
-				"pl7.app/description": isFast ?
-					"Like the neighbour frequency, but counting only " + iso + " CDR3s: the " + iso + " CDR3s that differ from this clone's by exactly one amino acid (the clone's own nucleotide CDR3 excluded), divided by the number of distinct " + iso + " CDR3s." + scope :
-					"-log10 of the full-STAR p-value with the neighbour count and the expected count both taken over " + iso + " CDR3s only." + scope
+				"pl7.app/description": scoreDesc
 			}
 			if isFast {
 				scoreAnn["pl7.app/format"] = ".3~%"
@@ -494,9 +509,7 @@ wf.body(func(args) {
 					domain: isoDomain(iso),
 					annotations: {
 						"pl7.app/label": withChain("Convergent hit (" + mode + ")" + among),
-						"pl7.app/description": (isFast ?
-							"Hit when the neighbour frequency among " + iso + " CDR3s is above the fast-STAR threshold you set." :
-							"Hit when the full-STAR p-value among " + iso + " CDR3s survives Benjamini-Hochberg control at the FDR target alpha.") + scope,
+						"pl7.app/description": hitDesc,
 						"pl7.app/table/visibility": visibility,
 						"pl7.app/isDiscreteFilter": "true",
 						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
@@ -963,6 +976,11 @@ wf.body(func(args) {
 		neighboursSpec := perSampleResult.outputSpec("neighbours", "neighbours")
 		neighboursData := perSampleResult.outputData("neighbours", "neighbours")
 		poolExportPfBuilder.add("neighbours", trace.inject(neighboursSpec), neighboursData)
+		// Clone labels for the aggregated chart, as in `pf` above. Model-facing
+		// frame only: the pool already has them from upstream.
+		for i, c in columns.getColumns(cloneLabelKey) {
+			exportPfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
+		}
 
 		return {
 			pf: pfBuilder.build(),
