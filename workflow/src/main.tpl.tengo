@@ -157,6 +157,26 @@ wf.prepare(func(args) {
 		bb.addSingle(args.groupingRef, "grouping")
 	}
 
+	// Optional isotype filter. The heavy chain's isotype is the clonotype's, so
+	// it filters both chains: on single-cell they share the clonotype axis, and
+	// a bulk-light dataset never gets here (the model projects isotypeValues
+	// only with a heavy chain). Same producer as the anchor, so an anchored
+	// query reaches it.
+	if !is_undefined(args.isotypeValues) {
+		isotypeDomain := {}
+		if !is_undefined(args.chainHScLetter) {
+			isotypeDomain = {
+				"pl7.app/vdj/scClonotypeChain": args.chainHScLetter,
+				"pl7.app/vdj/scClonotypeChain/index": "primary"
+			}
+		}
+		bb.addSingle({
+			axes: [{ anchor: "heavy", idx: 1 }],
+			name: "pl7.app/vdj/isotype",
+			domain: isotypeDomain
+		}, "isotype")
+	}
+
 	// Optional subset column picked alongside the dataset (PlDatasetSelector).
 	// Shared by both chains: they hang off the same anchor.
 	if !is_undefined(args.inputFilter) {
@@ -210,6 +230,12 @@ wf.body(func(args) {
 		anchorSpec := columns.getSpec(anchorRef)
 		labelCols := columns.getColumns(labelKey)
 
+		// Per-isotype scores: one compartment per kept isotype, in args order
+		// (sorted). Column field names carry the compartment INDEX ("_iso0");
+		// the isotype itself goes into the spec's domain and label.
+		perIsotype := args.perIsotype == true
+		compartments := perIsotype ? args.isotypeValues : []
+
 		// fast-STAR runs on every chain; full-STAR is ADDED when this chain has
 		// Pgen (`hasPgen`, threaded from args via the caller).
 		// Both modes emit side by side.
@@ -261,6 +287,16 @@ wf.body(func(args) {
 			filterCol := columns.getColumn("subsetFilter")
 			packInputs.filterData = filterCol.data
 			packInputs.filterSpec = filterCol.spec
+		}
+		// Optional isotype filter: only clonotypes of a kept isotype are packed —
+		// others, unknown ones included, are neither tested nor counted as
+		// neighbours or toward N.
+		if !is_undefined(args.isotypeValues) {
+			isotypeCol := columns.getColumn("isotype")
+			packInputs.isotypeData = isotypeCol.data
+			packInputs.isotypeSpec = isotypeCol.spec
+			packInputs.isotypeValues = args.isotypeValues
+			packInputs.packIsotype = perIsotype
 		}
 		packRender := render.create(packInputTpl, packInputs)
 		packedData := packRender.output("packed", 24 * times.hour)
@@ -410,6 +446,106 @@ wf.body(func(args) {
 			}
 		}
 
+		// Per-isotype columns: a clone's convergence scored against ONE kept
+		// isotype's CDR3s. Their own names (pl7.app/vdj/convergence/isotype/...),
+		// so a consumer resolving the main columns by name never picks one up,
+		// and the isotype in the domain. Blank for a clone of unknown isotype and
+		// where the compartment fell under nMin in that sample.
+		isoDomain := func(iso) {
+			d := { "pl7.app/vdj/isotype": iso }
+			for k, v in convDomain {
+				d[k] = v
+			}
+			return d
+		}
+		// isoSpecs — the score + hit pair of one mode for one compartment, for the
+		// per-sample table (`perSample`) or the aggregated export.
+		isoSpecs := func(i, iso, mode, perSample) {
+			suffix := "_iso" + string(i)
+			among := " among " + iso
+			visibility := perSample ? "optional" : "default"
+			isFast := mode == "fast-STAR"
+			scoreName := isFast ? "nbFreq" : "fullStarScore"
+			hitName := isFast ? "fastStar" : "fullStar"
+			// The aggregated values are a different statistic from the per-sample
+			// ones (upper median / Fisher-combined p across replicates), so each
+			// table gets its own wording.
+			scoreDesc := undefined
+			hitDesc := undefined
+			if perSample && isFast {
+				scoreDesc = "Like the neighbour frequency, but counting only " + iso + " CDR3s: the " + iso + " CDR3s that differ from this clone's by exactly one amino acid (the clone's own nucleotide CDR3 excluded), divided by the number of distinct " + iso + " CDR3s. Per sample."
+				hitDesc = "Hit when this sample's neighbour frequency among " + iso + " CDR3s is above the fast-STAR threshold you set. Per sample."
+			} else if perSample {
+				scoreDesc = "-log10 of the full-STAR p-value with the neighbour count and the expected count both taken over " + iso + " CDR3s only. Per sample."
+				hitDesc = "Hit when the full-STAR p-value among " + iso + " CDR3s survives Benjamini-Hochberg control at the FDR target alpha, across this sample's clonotypes. Per sample."
+			} else if isFast {
+				scoreDesc = "Middle (upper-median) neighbour frequency among " + iso + " CDR3s of the replicates this clone appears in."
+				hitDesc = "Hit when the aggregated neighbour frequency among " + iso + " CDR3s is above the fast-STAR threshold you set."
+			} else {
+				scoreDesc = "-log10 of this clone's per-replicate full-STAR p-values among " + iso + " CDR3s, combined into one (Fisher's method) over the replicates it appears in."
+				hitDesc = "Hit when the combined p-value among " + iso + " CDR3s survives Benjamini-Hochberg control at the FDR target alpha, across all clonotypes."
+			}
+			scoreAnn := {
+				"pl7.app/label": withChain((isFast ? "Convergent neighbour frequency" : "Convergent hit score (full-STAR)") + among),
+				"pl7.app/table/visibility": visibility,
+				"pl7.app/isScore": "true",
+				"pl7.app/score/rankingOrder": "decreasing",
+				"pl7.app/description": scoreDesc
+			}
+			if isFast {
+				scoreAnn["pl7.app/format"] = ".3~%"
+				scoreAnn["pl7.app/graph/thresholds"] = string(json.encode([{ value: threshold, label: "Threshold" }]))
+			}
+			return [
+				{ column: scoreName + suffix, allowNA: true, spec: {
+					name: "pl7.app/vdj/convergence/isotype/" + scoreName,
+					valueType: "Double",
+					domain: isoDomain(iso),
+					annotations: scoreAnn
+				}},
+				{ column: hitName + suffix, allowNA: true, spec: {
+					name: "pl7.app/vdj/convergence/isotype/" + hitName,
+					valueType: "String",
+					domain: isoDomain(iso),
+					annotations: {
+						"pl7.app/label": withChain("Convergent hit (" + mode + ")" + among),
+						"pl7.app/description": hitDesc,
+						"pl7.app/table/visibility": visibility,
+						"pl7.app/isDiscreteFilter": "true",
+						"pl7.app/discreteValues": string(json.encode(["Hit", "Not hit"])),
+						"pl7.app/isScore": "true",
+						"pl7.app/score/defaultCutoff": string(json.encode(["Hit"]))
+					}
+				}}
+			]
+		}
+		for i, iso in compartments {
+			for s in isoSpecs(i, iso, "fast-STAR", true) {
+				columnSpecs = append(columnSpecs, s)
+			}
+			if hasPgen {
+				for s in isoSpecs(i, iso, "full-STAR", true) {
+					columnSpecs = append(columnSpecs, s)
+				}
+			}
+		}
+		// One status sidecar per compartment, keyed by sampleId like `status`:
+		// the model lists the samples where a compartment fell under nMin.
+		isotypeStatusOutputs := []
+		for i, iso in compartments {
+			isotypeStatusOutputs = append(isotypeStatusOutputs, {
+				type: "Resource",
+				name: "isotypeStatus_" + string(i),
+				path: ["isotypeStatus", string(i)],
+				spec: {
+					kind: "PColumn",
+					name: "pl7.app/vdj/convergence/perSampleStatus",
+					valueType: "Json",
+					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName, "pl7.app/vdj/isotype": iso }
+				}
+			})
+		}
+
 		perSampleResult := pframes.processColumn(
 			packedColumn,
 			perSampleNeighboursTpl,
@@ -450,7 +586,7 @@ wf.body(func(args) {
 					valueType: "Json",
 					domain: { "pl7.app/block": blockId, "pl7.app/vdj/chain": chainName }
 				}
-			}],
+			}] + isotypeStatusOutputs,
 			{
 				aggregate: [{ name: anchorSpec.axesSpec[1].name }],
 				// No cpu/mem: these reach a pt workflow that imports each
@@ -472,7 +608,9 @@ wf.body(func(args) {
 					hasPgen: hasPgen,
 					applyClusterFilter: args.applyClusterFilter,
 					clusterMin: args.clusterMin,
-					chain: chainName
+					chain: chainName,
+					perIsotype: perIsotype,
+					compartments: compartments
 				}
 			}
 		)
@@ -814,12 +952,35 @@ wf.body(func(args) {
 			}
 		}
 
+		// Per-isotype: each compartment aggregates like its main mode — same
+		// statistic, same threshold / alpha, its own columns. Score and hit only;
+		// the reproducibility aggregate.py also computes is not exported.
+		for i, iso in compartments {
+			suffix := "_iso" + string(i)
+			addMode(aggregateMode("nbFreq" + suffix, "fastStar" + suffix, "fastStarReproducibility" + suffix, "fast-STAR"),
+				isoSpecs(i, iso, "fast-STAR", false))
+			if hasPgen {
+				addMode(aggregateMode("fullStarScore" + suffix, "fullStar" + suffix, "fullStarReproducibility" + suffix, "full-STAR"),
+					isoSpecs(i, iso, "full-STAR", false))
+			}
+		}
+
+		isotypeStatus := {}
+		for i, _ in compartments {
+			isotypeStatus[string(i)] = perSampleResult.outputData("isotypeStatus_" + string(i))
+		}
+
 		// Pool export also carries the full per-sample neighbours column (both axes)
 		// — downstream requested the raw per-sample count (a deliberate deviation
 		// from keeping it inner-only, per operator).
 		neighboursSpec := perSampleResult.outputSpec("neighbours", "neighbours")
 		neighboursData := perSampleResult.outputData("neighbours", "neighbours")
 		poolExportPfBuilder.add("neighbours", trace.inject(neighboursSpec), neighboursData)
+		// Clone labels for the aggregated chart, as in `pf` above. Model-facing
+		// frame only: the pool already has them from upstream.
+		for i, c in columns.getColumns(cloneLabelKey) {
+			exportPfBuilder.add("cloneLabel_" + string(i), c.spec, c.data)
+		}
 
 		return {
 			pf: pfBuilder.build(),
@@ -828,7 +989,8 @@ wf.body(func(args) {
 			statsFast: statsFast,
 			statsFull: statsFull,
 			perSampleLogs: perSampleResult.outputData("log"),
-			perSampleStatus: perSampleResult.outputData("status")
+			perSampleStatus: perSampleResult.outputData("status"),
+			isotypeStatus: isotypeStatus
 		}
 	}
 
@@ -860,6 +1022,9 @@ wf.body(func(args) {
 		}
 		outputs.heavyPerSampleLogs = heavy.perSampleLogs
 		outputs.heavyPerSampleStatus = heavy.perSampleStatus
+		for i, status in heavy.isotypeStatus {
+			outputs["heavyIsotypeStatus_" + i] = status
+		}
 		// Clonotype-only aggregated family → the result pool:
 		// the downstream-consumable convergence signal. exports take the raw
 		// built pframe (not exportFrame — that's for model-facing outputs).
@@ -891,6 +1056,9 @@ wf.body(func(args) {
 		}
 		outputs.lightPerSampleLogs = light.perSampleLogs
 		outputs.lightPerSampleStatus = light.perSampleStatus
+		for i, status in light.isotypeStatus {
+			outputs["lightIsotypeStatus_" + i] = status
+		}
 		exports.lightConvergence = light.poolExportPf
 		outputs.lightAggregatedPf = pframes.exportFrame(light.exportPf)
 	}

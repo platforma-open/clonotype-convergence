@@ -14,15 +14,20 @@ import {
   useWatchFetch,
 } from "@platforma-sdk/ui-vue";
 import {
+  DEFAULT_ISOTYPES,
   isHeavy,
   isLight,
   pgenHeavyAvailable,
   pgenLightAvailable,
   SC_AXIS,
 } from "@platforma-open/milaboratories.clonotype-convergence.model";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useApp } from "../app";
 import { factsFor, labelFor } from "../datasetSnapshot";
+
+// The dataset's isotypes for "Keep isotypes", fetched by MainPage (this panel is
+// re-created on every open); undefined while loading.
+const props = defineProps<{ isotypeOptions?: { value: string; label: string }[] }>();
 
 const app = useApp();
 
@@ -62,11 +67,47 @@ const expectedValuesModel = computed<string[]>({
   },
 });
 
+// ---- Isotype filter ---------------------------------------------
+// Offered only when the dataset carries a heavy-chain isotype; the args lambda
+// applies the same gate, so a hidden control never filters anything.
+const showIsotypeFilter = computed(() => app.model.data.datasetFacts?.hasIsotype === true);
+const isotypeValuesModel = computed<string[]>({
+  get: () => app.model.data.isotypeValues ?? [],
+  set: (v) => {
+    app.model.data.isotypeValues = v;
+  },
+});
+// Strict boolean for the checkbox's v-model over the optional field.
+const perIsotypeModel = computed<boolean>({
+  get: () => app.model.data.perIsotype === true,
+  set: (v) => {
+    app.model.data.perIsotype = v;
+  },
+});
+// Narrow the selection to the isotypes the dataset has. A value it lacks
+// matches nothing, so dropping it changes no result — except when nothing is
+// left: the selection then empties, which keeps every clonotype. Without that,
+// a dataset whose isotypes are spelled differently (e.g. "IGHG1" from an
+// import), or one with no known isotype at all, would lose every clonotype to
+// the IgM/IgG default — unknown isotypes are dropped by a non-empty selection.
+// An unresolved list (undefined: still loading) is not acted on.
+watch(
+  () => props.isotypeOptions,
+  (options) => {
+    if (!options) return;
+    const available = new Set(options.map((o) => o.value));
+    const current = app.model.data.isotypeValues ?? [];
+    const kept = current.filter((v) => available.has(v));
+    if (kept.length !== current.length) app.model.data.isotypeValues = kept;
+  },
+  { immediate: true },
+);
+
 // Snapshot pattern: when the user picks the input dataset, write
 // `datasetRef`, `datasetFacts`, AND `datasetLabel` in the same
 // user-gesture handler. Reads from the model's factsByRef map +
-// datasetOptions. Picking a new dataset also clears the LC opt-in
-// because it depends on the pick.
+// datasetOptions. Picking a new dataset also clears the LC opt-in and
+// resets the isotype selection, because both depend on the pick.
 function onPickDataset(ref: PlRef | undefined) {
   if (ref === undefined) {
     app.model.data.datasetRef = undefined;
@@ -88,6 +129,9 @@ function onPickDataset(ref: PlRef | undefined) {
   app.model.data.datasetFacts = factsFor(app.model, ref);
   app.model.data.datasetLabel = labelFor(app.model, ref, app.model.data.filterRef);
   app.model.data.processLightChain = false;
+  // A new dataset starts from the default isotypes; the watcher above narrows
+  // them to what it has.
+  app.model.data.isotypeValues = [...DEFAULT_ISOTYPES];
 }
 
 // The selector picks a dataset, or a dataset narrowed by one of its subset columns.
@@ -250,9 +294,10 @@ const fullStarHint = computed<string | undefined>(() => {
     </template>
   </PlNumberField>
 
-  <!-- Convergence context: the biological metadata that shapes the
-       clonotype-only aggregated export — an expected-convergence sample filter
-       and an independence (replicate) grouping. Grouped in a section, default
+  <!-- Convergence context: the biological metadata that shapes the analysis —
+       which isotypes are kept, and for the clonotype-only aggregated export an
+       expected-convergence sample filter and an independence (replicate)
+       grouping. Grouped in a section, default
        open. Defaults (all empty) = every sample an independent, eligible
        unit. -->
   <!-- Convergence context: collapsible section, OPEN by default. Standalone
@@ -261,6 +306,37 @@ const fullStarHint = computed<string | undefined>(() => {
        controls its open state. -->
   <PlAccordion :multiple="true">
     <PlAccordionSection v-model="convergenceContextOpen" label="Convergence context">
+      <!-- Isotype filter: which heavy-chain isotypes stay in the analysis.
+           Shown only when the dataset has an isotype column on the heavy
+           chain. -->
+      <PlDropdownMulti
+        v-if="showIsotypeFilter"
+        v-model="isotypeValuesModel"
+        :options="props.isotypeOptions"
+        label="Keep isotypes"
+        placeholder="All isotypes"
+      >
+        <template #tooltip>
+          Heavy-chain isotypes to analyze. Other clonotypes, including those of unknown isotype, are
+          excluded before neighbour counting. Single-cell: applies to both chains. Empty = all
+          clonotypes.
+        </template>
+      </PlDropdownMulti>
+      <!-- Per-isotype scores: the kept isotypes are the compartments, so it
+           needs a selection. -->
+      <PlCheckbox
+        v-if="showIsotypeFilter"
+        v-model="perIsotypeModel"
+        :disabled="isotypeValuesModel.length === 0"
+      >
+        Also score against each kept isotype
+        <PlTooltip class="info" position="top">
+          <template #tooltip>
+            Adds a score and a hit per kept isotype, with neighbours counted among that isotype's
+            CDR3s only. The clone's own nucleotide CDR3 is not counted.
+          </template>
+        </PlTooltip>
+      </PlCheckbox>
       <!-- Expected-convergence filter: pick the metadata column whose values
            pinpoint where convergence is expected, then which of its values to
            keep. Restricts the EXPORTED aggregate; the per-sample table keeps
