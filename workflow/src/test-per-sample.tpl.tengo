@@ -36,7 +36,8 @@ clonoAxisSpec := {
 
 self.body(func(inputs) {
 	// inputs.packedTsv — TSV text, columns clonotypeKey + packed, where packed
-	// is "aaSeqCDR3|nSeqCDR3" ("...|Pgen" when hasPgen). Materialised through a
+	// is "aaSeqCDR3|nSeqCDR3" ("...|Pgen" when hasPgen, then "...|isotype" when
+	// perIsotype). Materialised through a
 	// no-op exec because writeFile is the only way to turn text into a file.
 	packedFile := exec.builder().
 		cpu(1).
@@ -67,7 +68,9 @@ self.body(func(inputs) {
 		threshold: inputs.threshold,
 		alpha: inputs.alpha,
 		applyClusterFilter: inputs.applyClusterFilter == true,
-		clusterMin: inputs.clusterMin
+		clusterMin: inputs.clusterMin,
+		perIsotype: inputs.perIsotype == true,
+		compartments: inputs.compartments
 	}
 	bodyInputs[pConstants.VALUE_FIELD_NAME] = packedFrame["packed"].data
 

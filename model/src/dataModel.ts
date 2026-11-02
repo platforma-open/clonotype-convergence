@@ -1,7 +1,7 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
 import { createPlDataTableStateV2, DataModelBuilder } from "@platforma-sdk/model";
-import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
+import { DEFAULT_ALPHA, DEFAULT_ISOTYPES, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
 import type { BlockData, BlockDataV1 } from "./types";
 
 // Default distribution chart state. One state per selector-driven
@@ -82,6 +82,15 @@ export const blockDataModel = new DataModelBuilder({ kind })
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
   }))
+  // v6 — isotype filter and per-isotype scores. Blocks created before them keep
+  // every clonotype (empty selection) and no per-isotype scores, so a re-run
+  // reproduces their results; only new blocks start from DEFAULT_ISOTYPES (see
+  // init).
+  .migrate<BlockData>("v6", (prev) => ({
+    ...prev,
+    isotypeValues: (prev as Partial<BlockData>).isotypeValues ?? [],
+    perIsotype: (prev as Partial<BlockData>).perIsotype ?? false,
+  }))
   .init(({ params }) => ({
     mainTableState: createPlDataTableStateV2(),
     aggregatedTableState: createPlDataTableStateV2(),
@@ -108,6 +117,10 @@ export const blockDataModel = new DataModelBuilder({ kind })
     // expected-values multiselect is initialised so its v-model binding is
     // well-typed. `alpha` above is the only statistical knob.
     expectedValues: params?.expectedValues ?? [],
+    // Isotype filter — keep IgM and IgG. The picker narrows this to the
+    // isotypes the picked dataset actually has (see SettingsPanel).
+    isotypeValues: params?.isotypeValues ?? [...DEFAULT_ISOTYPES],
+    perIsotype: params?.perIsotype ?? false,
     // Two selector-driven distribution chart states — see
     // distGraphState. Both plot long-tailed scores, so both default to log Y.
     graphStateAggregated: distGraphState("Score distribution"),

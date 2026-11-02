@@ -35,6 +35,8 @@ export type BlockParams = {
   expectedFilterRef?: PlRef;
   expectedValues?: string[];
   groupingRef?: PlRef;
+  isotypeValues?: string[];
+  perIsotype?: boolean;
   customBlockLabel?: string;
 };
 
@@ -55,6 +57,8 @@ function parseInitializationParams(value: unknown): BlockParams {
     expectedFilterRef,
     expectedValues,
     groupingRef,
+    isotypeValues,
+    perIsotype,
     customBlockLabel,
   } = value;
 
@@ -65,6 +69,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   assertOptionalBoolean(processLightChain, "processLightChain");
   assertOptionalBoolean(applyClusterFilter, "applyClusterFilter");
+  assertOptionalBoolean(perIsotype, "perIsotype");
 
   assertOptionalNumber(thresholdH, "thresholdH");
   assertOptionalNumber(thresholdL, "thresholdL");
@@ -72,12 +77,8 @@ function parseInitializationParams(value: unknown): BlockParams {
   assertOptionalNumber(alpha, "alpha");
   assertOptionalNumber(clusterMin, "clusterMin");
 
-  if (
-    expectedValues !== undefined &&
-    (!Array.isArray(expectedValues) || expectedValues.some((v) => typeof v !== "string"))
-  ) {
-    throw new Error("'expectedValues' must be an array of strings.");
-  }
+  assertOptionalStringArray(expectedValues, "expectedValues");
+  assertOptionalStringArray(isotypeValues, "isotypeValues");
   if (customBlockLabel !== undefined && typeof customBlockLabel !== "string") {
     throw new Error("'customBlockLabel' must be a string.");
   }
@@ -93,8 +94,10 @@ function parseInitializationParams(value: unknown): BlockParams {
     applyClusterFilter,
     clusterMin,
     expectedFilterRef,
-    expectedValues: expectedValues as string[] | undefined,
+    expectedValues,
     groupingRef,
+    isotypeValues,
+    perIsotype,
     customBlockLabel,
   };
 }
@@ -119,6 +122,15 @@ function assertOptionalBoolean(
 function assertOptionalNumber(value: unknown, field: string): asserts value is number | undefined {
   if (value !== undefined && typeof value !== "number") {
     throw new Error(`'${field}' must be a number.`);
+  }
+}
+
+function assertOptionalStringArray(
+  value: unknown,
+  field: string,
+): asserts value is string[] | undefined {
+  if (value !== undefined && (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) {
+    throw new Error(`'${field}' must be an array of strings.`);
   }
 }
 
