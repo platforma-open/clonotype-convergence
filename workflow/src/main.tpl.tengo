@@ -44,7 +44,6 @@ pframes := import("@platforma-sdk/workflow-tengo:pframes")
 xsv := import("@platforma-sdk/workflow-tengo:pframes.xsv")
 pSpec := import("@platforma-sdk/workflow-tengo:pframes.spec")
 pt := import("@platforma-sdk/workflow-tengo:pt")
-ll := import("@platforma-sdk/workflow-tengo:ll")
 columnValue := import("@platforma-sdk/workflow-tengo:workflow.column-value")
 json := import("json")
 times := import("times")
@@ -54,16 +53,6 @@ f := exec.formula
 packInputTpl := assets.importTemplate(":pack-input")
 perSampleNeighboursTpl := assets.importTemplate(":per-sample-neighbours")
 aggregateSw := assets.importSoftware("@platforma-open/milaboratories.clonotype-convergence.software:aggregate")
-
-// The upstream output a result-pool column id names, as the ref an anchor is resolved from.
-// A result-pool id is the canonical JSON of that ref.
-columnIdToRef := func(id) {
-	ref := json.decode(id)
-	if !is_map(ref) || ref.__isRef != true {
-		ll.panic("expected a result-pool column id, got %v", id)
-	}
-	return ref
-}
 
 // Every column the user picked arrives as a result-pool column id; the expected values as
 // column value ids of the expected-filter column.
@@ -95,7 +84,7 @@ wf.prepare(func(args) {
 	// chainH and chainL hold the SAME id but the scClonotypeChain
 	// letter on the domain filter keeps each chain's siblings distinct.
 	if !is_undefined(args.chainH) {
-		bb.addAnchor("heavy", columnIdToRef(args.chainH))
+		bb.addAnchor("heavy", json.decode(args.chainH))
 		bb.addSingle({
 			axes: [{ anchor: "heavy", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
@@ -134,7 +123,7 @@ wf.prepare(func(args) {
 		// In SC mode chainL === chainH (same anchor); re-binding under a
 		// distinct alias is a no-op for the underlying column but lets us
 		// label-tag the heavy / light siblings separately.
-		bb.addAnchor("light", columnIdToRef(args.chainL))
+		bb.addAnchor("light", json.decode(args.chainL))
 		bb.addSingle({
 			axes: [{ anchor: "light", idx: 1 }],
 			name: "pl7.app/vdj/sequence",
@@ -862,7 +851,7 @@ wf.body(func(args) {
 	// Heavy pipeline — runs when chainH is populated.
 	if !is_undefined(args.chainH) {
 		heavy := runChainPipeline(
-			columnIdToRef(args.chainH),
+			json.decode(args.chainH),
 			"heavyAaCDR3",
 			"heavyNtCDR3",
 			"heavySampleLabel",
@@ -896,7 +885,7 @@ wf.body(func(args) {
 	// Light pipeline — runs when chainL is populated.
 	if !is_undefined(args.chainL) {
 		light := runChainPipeline(
-			columnIdToRef(args.chainL),
+			json.decode(args.chainL),
 			"lightAaCDR3",
 			"lightNtCDR3",
 			"lightSampleLabel",
