@@ -1,6 +1,6 @@
 import { assertParamsObject, defineBlockKind } from "@platforma-sdk/block-kind";
 import type { ColumnUniversalId, ColumnValueId } from "@platforma-sdk/model";
-import { isColumnUniversalId, isColumnValueId } from "@platforma-sdk/model";
+import { isColumnValueId, isGlobalPObjectId } from "@platforma-sdk/model";
 import { name, version } from "../package.json" with { type: "json" };
 
 /**
@@ -42,6 +42,15 @@ export type BlockParams = {
   groupingRef?: ColumnUniversalId;
   customBlockLabel?: string;
 };
+
+// Identity (`name`/`version`) comes from this package's own `package.json`, so
+// the on-wire `{name}@{version}` reference can never drift from what npm
+// publishes; the bundler inlines the JSON import.
+export const kind = defineBlockKind<BlockParams>({ name, version, parseInitializationParams });
+
+// Internals
+
+const OUTPUT_ID = "the result-pool id of another block's output";
 
 /** The same contract at runtime, for params arriving from a template file rather than typed code. */
 function parseInitializationParams(value: unknown): BlockParams {
@@ -110,15 +119,13 @@ function parseInitializationParams(value: unknown): BlockParams {
   };
 }
 
-// `isColumnUniversalId` is the SDK's own guard, so a column is recognized the
-// same way here as everywhere else. Ids are placeholders during the pre-flight
-// check that runs before any block exists, so shape is all that can be checked.
+// Only result-pool ids of other blocks' outputs are accepted: they are what the pickers offer.
 function assertOptionalColumn(
   value: unknown,
   field: string,
 ): asserts value is ColumnUniversalId | undefined {
-  if (value !== undefined && !isColumnUniversalId(value)) {
-    throw new Error(`'${field}' must be an upstream column, written as a column id.`);
+  if (value !== undefined && !isGlobalPObjectId(value)) {
+    throw new Error(`'${field}' must be an upstream column, written as ${OUTPUT_ID}.`);
   }
 }
 
@@ -136,8 +143,3 @@ function assertOptionalNumber(value: unknown, field: string): asserts value is n
     throw new Error(`'${field}' must be a number.`);
   }
 }
-
-// Identity (`name`/`version`) comes from this package's own `package.json`, so
-// the on-wire `{name}@{version}` reference can never drift from what npm
-// publishes; the bundler inlines the JSON import.
-export const kind = defineBlockKind<BlockParams>({ name, version, parseInitializationParams });
