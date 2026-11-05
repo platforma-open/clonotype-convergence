@@ -239,12 +239,18 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // placeholder for the whole run. The per-sample table gets this for free
     // because its `sheets` go undefined mid-run; the aggregated table has no
     // sheets, so the sourceId is its only lever. Returning undefined here routes
-    // it into the pending branch → the running overlay shows.
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    // it into the pending branch → the running overlay shows. Both tables of the
+    // anchor chain count: the id serves the per-sample and the aggregated one.
     const args = ctx.activeArgs;
     if (!args) return undefined;
     const dataset = args.chainH ?? args.chainL;
     if (!dataset) return undefined;
+    const heavyAnchored = args.chainH !== undefined;
+    const perSample = heavyAnchored ? "convergencePf" : "lightConvergencePf";
+    const aggregated = heavyAnchored ? "heavyAggregatedPf" : "lightAggregatedPf";
+    if (ownColumns(ctx, perSample) === undefined || ownColumns(ctx, aggregated) === undefined) {
+      return undefined;
+    }
     return canonicalize({
       dataset,
       heavy: args.chainH !== undefined,
@@ -273,12 +279,13 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // "all samples" entry. Cross-sample comparison is left to downstream
   // blocks operating on the long-format PColumns.
   //
-  // Gated on outputs readiness: when sheets is defined, the table
-  // settings skip their pending branch and the running-state overlay
-  // never appears. Returning undefined during a run keeps the table
+  // Gated on the per-sample table's columns being final: when sheets is
+  // defined, the table settings skip their pending branch and the running-state
+  // overlay never appears. Returning undefined during a run keeps the table
   // in "pending" so PlAgDataTableV2 surfaces the loading overlay.
   .output("mainTableSheets", (ctx) => {
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
+    const field = ctx.activeArgs?.chainH !== undefined ? "convergencePf" : "lightConvergencePf";
+    if (ownColumns(ctx, field) === undefined) return undefined;
     // From activeArgs, NOT ctx.data.datasetRef: the table this picker sits above
     // is built from the args that produced the CURRENT rows. Reading the live
     // pick instead let the two disagree — select another dataset, don't press
@@ -395,12 +402,11 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   // light counterpart, so the light per-sample family is reachable only through
   // the Per-sample distribution chart. (Both chains' AGGREGATED families do
   // reach the Main table — they share the clonotype axis, so enrichment picks
-  // up the light one.) Readiness gate avoids
-  // showing partial PFrames mid-run.
+  // up the light one.) Only final columns are shown, never a partial PFrame
+  // mid-run.
   .outputWithStatus("mainTable", (ctx) => {
     const args = ctx.activeArgs;
     if (!args) return undefined;
-    if (ctx.outputs?.getIsReadyOrError() !== true) return undefined;
 
     // Pick which chain's p-frame anchors the main table. Heavy when
     // populated; else light.
@@ -409,13 +415,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     if (!dataset) return undefined;
     if (findColumn(dataset) === undefined) return undefined;
 
-    const pframe = ctx.outputs?.resolve({
-      field: pframeField,
-      assertFieldType: "Input",
-      allowPermanentAbsence: true,
-    });
-    if (!pframe) return undefined;
-    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    const own = ownColumns(ctx, pframeField);
+    if (own === undefined) return undefined;
+    const anchorRecipe = pickHitAnchor(own);
     if (!anchorRecipe) return undefined;
     const hitAnchorSpec = anchorRecipe.getSpec();
 
@@ -491,9 +493,9 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     // stays up during the whole run (this view has no `sheets` to drive the
     // pending state, so the model status is the only signal). The field always
     // exists for the chosen chain (args.chainH/L gates which one we request).
-    const pframe = ctx.outputs?.resolve(field);
-    if (!pframe) return undefined;
-    const anchorRecipe = pickHitAnchor(ColumnsCollection([pframe]));
+    const own = getOutputColumns(ctx.outputs?.resolve(field));
+    if (own === undefined) return undefined;
+    const anchorRecipe = pickHitAnchor(own);
     if (!anchorRecipe) return undefined;
     const hitAnchorSpec = anchorRecipe.getSpec();
 
@@ -840,12 +842,19 @@ function bothChainColumns(
   heavyField: string,
   lightField: string,
 ): ColumnRecipe[] | undefined {
-  const of = (field: string) =>
-    getOutputColumns(
-      ctx.outputs?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true }),
-    )?.getColumns() ?? [];
+  const of = (field: string) => ownColumns(ctx, field)?.getColumns() ?? [];
   const columns = [...of(heavyField), ...of(lightField)];
   return columns.length > 0 ? columns : undefined;
+}
+
+/**
+ * Columns of one of this block's frame outputs, once every column of it has arrived. `undefined`
+ * while the block runs and when the run does not emit that frame.
+ */
+function ownColumns(ctx: Ctx, field: string): ColumnsCollection | undefined {
+  return getOutputColumns(
+    ctx.outputs?.resolve({ field, assertFieldType: "Input", allowPermanentAbsence: true }),
+  );
 }
 
 // The fast-STAR family the block's own tables hide on a chain that also carries
