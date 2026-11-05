@@ -11,13 +11,12 @@ import {
   buildDatasetOptions,
   createDatasetSelection,
   createPrimaryRef,
-  deriveColumnOptions,
   isPColumnSpec,
   isPlRef,
   parseColumnIdSafely,
 } from "@platforma-sdk/model";
 import { SC_AXIS, SC_BCR_RECEPTOR, isHeavy, isLight } from "./chains";
-import { exact, resultPool, toColumnId } from "./columns";
+import { exact, findColumn, resultPool, toColumnId } from "./columns";
 
 /** The dataset and the subset it is restricted to, as the block stores them. */
 export type DatasetPick = {
@@ -61,9 +60,7 @@ export function getDatasetOptions(
   ctx: RenderCtxBase,
   selected: ColumnUniversalId | undefined,
 ): DatasetOption[] {
-  // Only the filters are taken from here: the datasets below are matched to
-  // them by column id.
-  const withFilters =
+  const broad =
     buildDatasetOptions(ctx, {
       primary: (spec) =>
         isPColumnSpec(spec) &&
@@ -95,18 +92,11 @@ export function getDatasetOptions(
   // dataset: it is indistinguishable from the block not seeing it at all. So
   // the picker offers every BCR anchor, and the args issues report an error (Run
   // disabled, with a reason) when the snapshot says the columns aren't there.
-  const anchors = getAnchorColumns();
-  const specs = new Map(anchors.getColumns().map((column) => [column.id, column.getSpec()]));
-  const options: DatasetOption[] = [];
-  for (const { id, label } of deriveColumnOptions(anchors)) {
-    const ref = toPlRef(id);
-    if (ref === undefined) continue;
-    if (id !== selected && (poolHasScFv || !isBcrAnchor(specs.get(id)))) continue;
-    const primary = { ref, label };
-    const filters = withFilters.find((o) => toColumnId(o.primary.ref) === id)?.filters;
-    options.push(filters === undefined ? { primary } : { primary, filters });
-  }
-  return options;
+  return broad.filter(({ primary }) => {
+    const id = toColumnId(primary.ref);
+    if (id === selected) return true;
+    return !poolHasScFv && isBcrAnchor(findColumn(id)?.getSpec());
+  });
 }
 
 /** The dataset picker's selection of the stored dataset and subset. */
