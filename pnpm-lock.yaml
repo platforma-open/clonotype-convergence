@@ -212,9 +212,6 @@ importers:
       '@types/node':
         specifier: '*'
         version: 25.9.1
-      canonicalize:
-        specifier: 'catalog:'
-        version: 2.1.0
       typescript:
         specifier: '*'
         version: 6.0.3
@@ -7457,7 +7454,7 @@ snapshots:
       oxlint: 1.63.0
       oxlint-plugin-eslint: 1.63.0
       rolldown: 1.1.4
-      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@5.9.3))
+      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@7.0.2))
       rollup-plugin-copy: 3.5.0
       rollup-plugin-sourcemaps2: 0.5.7(@types/node@25.9.1)(rollup@4.60.4)
       typescript: 7.0.2
@@ -7506,7 +7503,7 @@ snapshots:
       oxlint: 1.63.0
       oxlint-plugin-eslint: 1.63.0
       rolldown: 1.1.4
-      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@5.9.3))
+      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@7.0.2))
       rollup-plugin-copy: 3.5.0
       rollup-plugin-sourcemaps2: 0.5.7(@types/node@25.9.1)(rollup@4.60.4)
       typescript: 7.0.2
@@ -7555,7 +7552,7 @@ snapshots:
       oxlint: 1.63.0
       oxlint-plugin-eslint: 1.63.0
       rolldown: 1.1.4
-      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@5.9.3))
+      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@7.0.2))
       rollup-plugin-copy: 3.5.0
       rollup-plugin-sourcemaps2: 0.5.7(@types/node@25.9.1)(rollup@4.60.4)
       typescript: 7.0.2
@@ -7604,7 +7601,7 @@ snapshots:
       oxlint: 1.63.0
       oxlint-plugin-eslint: 1.63.0
       rolldown: 1.1.4
-      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@5.9.3))
+      rolldown-plugin-dts: 0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@7.0.2))
       rollup-plugin-copy: 3.5.0
       rollup-plugin-sourcemaps2: 0.5.7(@types/node@25.9.1)(rollup@4.60.4)
       typescript: 7.0.2
@@ -12816,7 +12813,7 @@ snapshots:
 
   reusify@1.1.0: {}
 
-  rolldown-plugin-dts@0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@5.9.3)):
+  rolldown-plugin-dts@0.28.4(@volar/typescript@2.4.28)(rolldown@1.1.4)(typescript@7.0.2)(vue-tsc@3.3.10(typescript@7.0.2)):
     dependencies:
       dts-resolver: 3.0.0
       get-tsconfig: 5.0.0-beta.6
