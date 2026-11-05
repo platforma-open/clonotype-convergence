@@ -1,11 +1,11 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import { kind } from "@platforma-open/milaboratories.clonotype-convergence.kind";
-import type { ColumnUniversalId, ColumnValueId, PlRef } from "@platforma-sdk/model";
+import type { ColumnUniversalId, ColumnValueId } from "@platforma-sdk/model";
 import {
   createColumnValueId,
   createPlDataTableStateV2,
   DataModelBuilder,
-  isColumnValueId,
+  isGlobalPObjectId,
   isPlRef,
 } from "@platforma-sdk/model";
 import { DEFAULT_ALPHA, DEFAULT_NMIN, DEFAULT_THRESHOLD_H } from "./chains";
@@ -145,55 +145,63 @@ export const blockDataModel = new DataModelBuilder({ kind })
 /**
  * Moves stored data to column ids. A ref to an upstream output becomes the result-pool id of that
  * output, which names the same block and column: the dataset, its subset, the Generation
- * Probability columns of the dataset snapshot, and the expected-filter and grouping columns. The
- * expected values become column value ids of the converted expected-filter column.
+ * Probability columns of the dataset snapshot, and the expected-filter and grouping columns. A
+ * stored column that is neither is dropped, and the dataset's snapshot and label go with it. A
+ * plain expected value becomes the column value id of that value, as text, in the converted
+ * expected-filter column; without that column it is dropped.
  */
 function toColumnIds(data: BlockDataV5): BlockData {
-  const { datasetRef, filterRef, datasetFacts, expectedFilterRef, groupingRef } = data;
+  const datasetRef = toStoredColumnId(data.datasetRef);
+  const expectedFilterRef = toStoredColumnId(data.expectedFilterRef);
   return {
     ...data,
-    datasetRef: optionalColumnId(datasetRef),
-    filterRef: optionalColumnId(filterRef),
-    datasetFacts: datasetFacts === undefined ? undefined : factsWithColumnIds(datasetFacts),
-    expectedFilterRef: optionalColumnId(expectedFilterRef),
-    expectedValues: toColumnValueIds(
-      isPlRef(expectedFilterRef) ? toColumnId(expectedFilterRef) : undefined,
-      data.expectedValues,
-    ),
-    groupingRef: optionalColumnId(groupingRef),
+    datasetRef,
+    filterRef: toStoredColumnId(data.filterRef),
+    datasetFacts:
+      datasetRef === undefined || data.datasetFacts === undefined
+        ? undefined
+        : factsWithColumnIds(data.datasetFacts),
+    datasetLabel: datasetRef === undefined ? undefined : data.datasetLabel,
+    expectedFilterRef,
+    expectedValues: expectedValueIds(data.expectedValues, expectedFilterRef),
+    groupingRef: toStoredColumnId(data.groupingRef),
+  };
+}
+
+/** The snapshot with its Generation Probability columns as ids; availability follows the ids. */
+function factsWithColumnIds(facts: UpstreamFactsV2): UpstreamFacts {
+  const pgenRefHeavy = toStoredColumnId(facts.pgenRefHeavy);
+  const pgenRefLight = toStoredColumnId(facts.pgenRefLight);
+  return {
+    ...facts,
+    hasPgenHeavy: pgenRefHeavy !== undefined,
+    hasPgenLight: pgenRefLight !== undefined,
+    pgenRefHeavy,
+    pgenRefLight,
   };
 }
 
 /**
- * Picks of one column as column value ids, in their stored order, duplicates included. A pick
- * stored as a plain value of the column becomes the id of that value of `column` as text, the form
- * every column value id carries: text stays as stored, a number becomes its decimal text. A plain
- * pick is dropped when there is no column to name, or when it is neither text nor a finite number;
- * a pick that already is a column value id is kept as is.
+ * Plain values of the expected-filter column as column value ids of `column`, in their stored
+ * order: text stays as stored, a number becomes its decimal text.
  */
-function toColumnValueIds(
+function expectedValueIds(
+  values: readonly unknown[],
   column: ColumnUniversalId | undefined,
-  picks: readonly unknown[],
 ): ColumnValueId[] {
-  return picks.flatMap((pick) => {
-    if (isColumnValueId(pick)) return [pick];
-    if (column === undefined || !isColumnValue(pick)) return [];
-    return [createColumnValueId({ column, value: String(pick) })];
-  });
+  if (column === undefined) return [];
+  return values.flatMap((value) =>
+    typeof value === "string" || typeof value === "number"
+      ? [createColumnValueId({ column, value: String(value) })]
+      : [],
+  );
 }
 
-function isColumnValue(value: unknown): value is string | number {
-  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
-}
-
-function factsWithColumnIds(facts: UpstreamFactsV2): UpstreamFacts {
-  return {
-    ...facts,
-    pgenRefHeavy: optionalColumnId(facts.pgenRefHeavy),
-    pgenRefLight: optionalColumnId(facts.pgenRefLight),
-  };
-}
-
-function optionalColumnId(ref: PlRef | undefined): ColumnUniversalId | undefined {
-  return ref === undefined ? undefined : toColumnId(ref);
+/**
+ * A stored column as a result-pool id: a ref to an upstream output becomes the id of that output,
+ * an id of another block's output is kept, anything else is dropped.
+ */
+function toStoredColumnId(stored: unknown): ColumnUniversalId | undefined {
+  if (isPlRef(stored)) return toColumnId(stored);
+  return isGlobalPObjectId(stored) ? stored : undefined;
 }

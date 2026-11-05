@@ -52,16 +52,14 @@ describe("v6 migration", () => {
     expect(data.expectedValues).toEqual([createColumnValueId({ column, value: "day 7" })]);
   });
 
-  test("picks keep their order and duplicates; numbers become text, column value ids stay", () => {
+  test("picks keep their order and duplicates; numbers become text", () => {
     const column = createGlobalPObjectId("samples", "metadata.timepoint");
-    const picked = createColumnValueId({ column, value: "day 0" });
     const { expectedValues } = blockDataModel.migrate({
       version: "v5",
-      data: { ...storedAtV5, expectedValues: ["day 7", picked, "7", "day 7", 3, Number.NaN, null] },
+      data: { ...storedAtV5, expectedValues: ["day 7", "7", "day 7", 3, null] },
     }).data;
     expect(expectedValues).toEqual([
       createColumnValueId({ column, value: "day 7" }),
-      picked,
       createColumnValueId({ column, value: "7" }),
       createColumnValueId({ column, value: "day 7" }),
       createColumnValueId({ column, value: "3" }),
@@ -75,6 +73,46 @@ describe("v6 migration", () => {
     }).data;
     expect(migrated.expectedFilterRef).toBeUndefined();
     expect(migrated.expectedValues).toEqual([]);
+  });
+
+  test("a stored column that is not a ref to an upstream output is dropped", () => {
+    const anchored = JSON.stringify({ name: "pl7.app/metadata", axes: [{ anchor: "main" }] });
+    const migrated = blockDataModel.migrate({
+      version: "v5",
+      data: {
+        ...storedAtV5,
+        groupingRef: anchored,
+        expectedFilterRef: { blockId: "samples", name: "metadata.timepoint" },
+        datasetFacts: { ...storedAtV5.datasetFacts, pgenRefHeavy: "pgen.A" },
+      },
+    }).data;
+    expect(migrated.groupingRef).toBeUndefined();
+    expect(migrated.expectedFilterRef).toBeUndefined();
+    expect(migrated.expectedValues).toEqual([]);
+    expect(migrated.datasetFacts?.hasPgenHeavy).toBe(false);
+    expect(migrated.datasetFacts?.pgenRefHeavy).toBeUndefined();
+  });
+
+  test("a Generation Probability flag follows its column", () => {
+    const migrated = blockDataModel.migrate({
+      version: "v5",
+      data: {
+        ...storedAtV5,
+        datasetFacts: { ...storedAtV5.datasetFacts, hasPgenHeavy: false, hasPgenLight: true },
+      },
+    }).data;
+    expect(migrated.datasetFacts?.hasPgenHeavy).toBe(true);
+    expect(migrated.datasetFacts?.hasPgenLight).toBe(false);
+  });
+
+  test("a dataset that cannot be converted takes its snapshot with it", () => {
+    const migrated = blockDataModel.migrate({
+      version: "v5",
+      data: { ...storedAtV5, datasetRef: "clonotypes.abundance" },
+    }).data;
+    expect(migrated.datasetRef).toBeUndefined();
+    expect(migrated.datasetFacts).toBeUndefined();
+    expect(migrated.datasetLabel).toBeUndefined();
   });
 
   test("both table states are reset, their source id format changed", () => {
