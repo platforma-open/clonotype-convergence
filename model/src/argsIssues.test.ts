@@ -1,6 +1,7 @@
 import {
   BlockStorageFacadeCallbacks,
   createBlockStorage,
+  createColumnValueId,
   createGlobalPObjectId,
   stringifyJson,
 } from "@platforma-sdk/model";
@@ -15,6 +16,13 @@ beforeAll(async () => {
 
 const dataset = createGlobalPObjectId("mixcr", "abundance");
 
+const subset = createGlobalPObjectId("labeling", "labels.F");
+const pgenHeavy = createGlobalPObjectId("genprob", "pgen.A");
+const pgenLight = createGlobalPObjectId("genprob", "pgen.B");
+const timepoint = createGlobalPObjectId("samples", "metadata.timepoint");
+const donor = createGlobalPObjectId("samples", "metadata.donor");
+const day7 = createColumnValueId({ column: timepoint, value: "day 7" });
+
 const heavyFacts = {
   chains: ["IGHeavy"],
   hasAaCDR3: true,
@@ -23,6 +31,12 @@ const heavyFacts = {
   clonotypeKeyAxisName: "pl7.app/vdj/clonotypeKey",
   hasPgenHeavy: false,
   hasPgenLight: false,
+};
+
+const scPairedFacts = {
+  ...heavyFacts,
+  chains: ["IGHeavy", "IGLight"],
+  clonotypeKeyAxisName: "pl7.app/vdj/scClonotypeKey",
 };
 
 const configured = {
@@ -55,6 +69,17 @@ describe("args issues", () => {
   });
 
   test.for([
+    {
+      why: "a dataset picked without its details",
+      data: { ...configured, datasetFacts: undefined },
+      message: "Select a dataset",
+    },
+    {
+      why: "missing amino-acid CDR3 columns",
+      data: { ...configured, datasetFacts: { ...heavyFacts, hasAaCDR3: false } },
+      message:
+        "This dataset has no amino-acid and nucleotide CDR3 columns — convergence needs both",
+    },
     {
       why: "missing CDR3 columns",
       data: { ...configured, datasetFacts: { ...heavyFacts, hasNtCDR3: false } },
@@ -122,6 +147,60 @@ describe("args issues", () => {
       value: { expectedFilterRef },
       issues: [],
     });
+  });
+});
+
+describe("args", () => {
+  test("a subset is passed as its column id, the value the outputs are stamped with", () => {
+    expect(deriveArgs({ ...configured, filterRef: subset })).toMatchObject({
+      value: { inputFilter: subset },
+    });
+  });
+
+  test("a chain with Generation Probability carries its Pgen column id", () => {
+    const datasetFacts = { ...heavyFacts, hasPgenHeavy: true, pgenRefHeavy: pgenHeavy };
+    expect(deriveArgs({ ...configured, datasetFacts })).toMatchObject({
+      value: { hasPgenHeavy: true, pgenRefHeavy: pgenHeavy },
+    });
+  });
+
+  test("SC paired with the light chain opted in processes both chains off the same anchor", () => {
+    const datasetFacts = { ...scPairedFacts, hasPgenLight: true, pgenRefLight: pgenLight };
+    const data = { ...configured, datasetFacts, processLightChain: true, thresholdL: 0.03 };
+    expect(deriveArgs(data)).toMatchObject({
+      value: {
+        chainH: dataset,
+        chainHScLetter: "A",
+        chainL: dataset,
+        chainLName: "IGLight",
+        chainLScLetter: "B",
+        thresholdL: 0.03,
+        hasPgenLight: true,
+        pgenRefLight: pgenLight,
+      },
+      issues: [],
+    });
+  });
+
+  test("SC paired without the opt-in processes the heavy chain only", () => {
+    const derived = deriveArgs({ ...configured, datasetFacts: scPairedFacts });
+    expect(derived).toMatchObject({ value: { chainH: dataset }, issues: [] });
+    expect(derived).not.toHaveProperty("value.chainL");
+  });
+
+  test("the expected values go with their column, the grouping on its own", () => {
+    const withMetadata = {
+      ...configured,
+      expectedFilterRef: timepoint,
+      expectedValues: [day7],
+      groupingRef: donor,
+    };
+    expect(deriveArgs(withMetadata)).toMatchObject({
+      value: { expectedFilterRef: timepoint, expectedValues: [day7], groupingRef: donor },
+    });
+    expect(deriveArgs({ ...withMetadata, expectedFilterRef: undefined })).not.toHaveProperty(
+      "value.expectedValues",
+    );
   });
 });
 
