@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { columnIdFromPlRef } from "./chains";
+import { toColumnId } from "./columns";
 import { pgenUsableFor } from "./facts";
 
-const F = columnIdFromPlRef({ blockId: "labeling", name: "labels.F" });
-const G = columnIdFromPlRef({ blockId: "labeling", name: "labels.G" });
+const F = toColumnId({ __isRef: true, blockId: "labeling", name: "labels.F" });
+const G = toColumnId({ __isRef: true, blockId: "labeling", name: "labels.G" });
 
 describe("pgenUsableFor", () => {
   test.for([
@@ -17,9 +17,9 @@ describe("pgenUsableFor", () => {
   });
 });
 
-describe("columnIdFromPlRef", () => {
+describe("toColumnId", () => {
   test("is the pool's canonical id, the value Generation Probability stamps", () => {
-    expect(columnIdFromPlRef({ blockId: "b", name: "n" })).toBe(
+    expect(toColumnId({ __isRef: true, blockId: "b", name: "n" })).toBe(
       '{"__isRef":true,"blockId":"b","name":"n"}',
     );
   });
