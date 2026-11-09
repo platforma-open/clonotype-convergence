@@ -154,13 +154,13 @@ export function getDefaultBlockLabel(data: BlockData): string {
   if (data.applyClusterFilter && data.clusterMin !== undefined) {
     parts.push(`cluster ≥ ${data.clusterMin}`);
   }
-  // The kept isotypes, only when they differ from the default. An empty
-  // selection keeps every clonotype and adds nothing, so blocks created before
-  // the filter existed keep their label (and with it their args).
+  // The kept isotypes whenever the filter applies, the default included: a
+  // filtered block analyzes other clonotypes than an unfiltered one on the same
+  // dataset, so their columns must be told apart. An empty selection keeps
+  // every clonotype and adds nothing, so blocks created before the filter
+  // existed (migrated to an empty selection) keep their label and args.
   const isotypes = keptIsotypes(data);
-  if (isotypes && isotypes.join() !== [...DEFAULT_ISOTYPES].sort().join()) {
-    parts.push(isotypes.join("+"));
-  }
+  if (isotypes) parts.push(isotypes.join("+"));
 
   return parts.join(", ");
 }

@@ -42,7 +42,7 @@ describe("keptIsotypes", () => {
 
 describe("getDefaultBlockLabel — isotypes", () => {
   test.for([
-    { values: ["IgG", "IgM"], label: "", why: "the default, in any order, adds nothing" },
+    { values: ["IgM", "IgG"], label: "IgG+IgM", why: "the default is named too" },
     {
       values: [],
       label: "",
