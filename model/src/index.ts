@@ -726,10 +726,16 @@ function sampleLabels(dataset: ColumnUniversalId | undefined) {
 // splits samples into:
 //   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
 //   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
+//   noKeptIsotype — with "Keep isotypes" on: dataset samples with no status
+//              at all, as no clonotype of theirs had a kept isotype, so the
+//              per-sample step never ran for them. A subset dataset can also
+//              empty a sample; to the user that sample simply isn't in the
+//              dataset, and the statement still holds, so no separate case.
 //   allEmpty — no per-sample status at all (no rows → no explanation). The
 //              every-sample-empty case is intentionally excluded: those samples
 //              are already listed in noCdr3, so folding them in here would
-//              double-alert ("no chain data" + "N with no usable CDR3").
+//              double-alert ("no chain data" + "N with no usable CDR3"). So is
+//              the case where the isotype filter emptied every sample.
 // nMin comes from the run's status (falls back to activeArgs). Gated on parse
 // completeness so the warning doesn't flicker on partial mid-run status.
 function buildSkippedSamples(
@@ -759,10 +765,26 @@ function buildSkippedSamples(
     if (e.value.nUniqueNt === 0) noCdr3.push(label);
     else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
   }
+  const isotypeFiltered = (args?.isotypeValues?.length ?? 0) > 0;
+  const noKeptIsotype: string[] = [];
+  if (isotypeFiltered) {
+    const datasetId = args ? chainDataset(args) : undefined;
+    const dataset = datasetId === undefined ? undefined : findColumn(datasetId);
+    const data = dataset && hasReachableData(dataset) ? dataset.getData() : undefined;
+    const withStatus = new Set(parsed.data.map((e) => String(e.key[0])));
+    // The dataset's samples are its partition keys (as for the sheet).
+    const samples =
+      data instanceof TreeNodeAccessor ? getUniquePartitionKeys(data)?.[0] : undefined;
+    for (const key of samples ?? []) {
+      const id = String(key);
+      if (!withStatus.has(id)) noKeptIsotype.push(labels?.[id] ?? id);
+    }
+  }
   belowMin.sort((a, b) => a.localeCompare(b));
   noCdr3.sort((a, b) => a.localeCompare(b));
-  const allEmpty = parsed.data.length === 0;
-  return { belowMin, noCdr3, allEmpty, nMin };
+  noKeptIsotype.sort((a, b) => a.localeCompare(b));
+  const allEmpty = parsed.data.length === 0 && noKeptIsotype.length === 0;
+  return { belowMin, noCdr3, noKeptIsotype, isotypeFiltered, allEmpty, nMin };
 }
 
 /**

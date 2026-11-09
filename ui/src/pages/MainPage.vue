@@ -104,6 +104,20 @@ const skippedNoCdr3 = computed<string[]>(() => {
   return Array.from(new Set([...heavy, ...light]));
 });
 
+// Samples with no clonotype of the kept isotypes: no per-sample run, so they'd
+// otherwise appear in no warning. Union across chains.
+const skippedNoKeptIsotype = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.noKeptIsotype ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.noKeptIsotype ?? [];
+  return Array.from(new Set([...heavy, ...light])).sort((a, b) => a.localeCompare(b));
+});
+// Whether "Keep isotypes" applied to the run, for the below-minimum advice.
+const isotypeFiltered = computed(
+  () =>
+    app.model.outputs.heavySkippedSamples?.isotypeFiltered === true ||
+    app.model.outputs.lightSkippedSamples?.isotypeFiltered === true,
+);
+
 // Per-isotype compartments under nMin, one line per chain and isotype. Not
 // merged across chains: each chain counts its own unique nucleotide CDR3s, so
 // on single-cell data one chain's compartment can be skipped while the other's
@@ -198,8 +212,21 @@ const customBlockLabel = computed({
       {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
       fewer than {{ skippedNMin }} unique nucleotide CDR3 sequences and
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
-      Adjust "Minimum unique CDR3 per sample" in Advanced settings to include
-      {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+      Adjust "Minimum unique CDR3 per sample" in Advanced settings{{
+        isotypeFiltered ? ' or "Keep isotypes"' : ""
+      }}
+      to include {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+    </PlAlert>
+
+    <PlAlert
+      v-if="skippedNoKeptIsotype.length > 0"
+      type="warn"
+      :label="`${skippedNoKeptIsotype.length} sample${skippedNoKeptIsotype.length === 1 ? '' : 's'} with no kept isotype`"
+    >
+      {{ skippedNoKeptIsotype.length === 1 ? "This sample has" : "These samples have" }}
+      no clonotypes of the kept isotypes and
+      {{ skippedNoKeptIsotype.length === 1 ? "was" : "were" }} skipped:
+      {{ skippedNoKeptIsotype.join(", ") }}.
     </PlAlert>
 
     <PlAlert
