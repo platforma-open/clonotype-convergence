@@ -63,11 +63,16 @@ function onPickExpectedFilter(column: ColumnUniversalId | undefined) {
 // Offered only when the dataset carries a heavy-chain isotype; the args lambda
 // applies the same gate, so a hidden control never filters anything.
 const showIsotypeFilter = computed(() => app.model.data.datasetFacts?.hasIsotype === true);
+// An empty selection also clears per-isotype scoring: with no kept isotypes
+// there is nothing to score against, and the box mustn't stay ticked to turn
+// scoring back on silently when an isotype is picked again.
+function setIsotypeValues(v: string[]) {
+  app.model.data.isotypeValues = v;
+  if (v.length === 0) app.model.data.perIsotype = false;
+}
 const isotypeValuesModel = computed<string[]>({
   get: () => app.model.data.isotypeValues ?? [],
-  set: (v) => {
-    app.model.data.isotypeValues = v;
-  },
+  set: setIsotypeValues,
 });
 // Strict boolean for the checkbox's v-model over the optional field.
 const perIsotypeModel = computed<boolean>({
@@ -90,7 +95,7 @@ watch(
     const available = new Set(options.map((o) => o.value));
     const current = app.model.data.isotypeValues ?? [];
     const kept = current.filter((v) => available.has(v));
-    if (kept.length !== current.length) app.model.data.isotypeValues = kept;
+    if (kept.length !== current.length) setIsotypeValues(kept);
   },
   { immediate: true },
 );
