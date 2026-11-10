@@ -46,13 +46,20 @@ class Get_df:
     def __init__(self, data):
         self.data = data
 
-    def make(self):
+    def make(self, compartments=None):
+        """`compartments` maps an output column to a multiplicity column of
+        `data` (a compartment's own nt counts per aa, 0 outside it). Each output
+        column is the raw sum of that multiplicity over the row's Hamming-1
+        neighbours, the row itself included — found by the same trie walk as
+        the whole-sample count, so no second search is needed."""
+        compartments = compartments or {}
         seqs = self.data["aaSeqCDR3"].astype(str).tolist()
         mult = self.data["multiplicity"].astype(int).tolist()
 
         if not seqs:
             return pd.DataFrame(
-                {"aaSeqCDR3": [], "Multiplicity": [], "Neighbours": [], "Nb_freq": []}
+                {"aaSeqCDR3": [], "Multiplicity": [], "Neighbours": [], "Nb_freq": [],
+                 **{out: [] for out in compartments}}
             )
 
         # N — total unique nt CDR3s in the sample. The per-aa multiplicities
@@ -60,7 +67,8 @@ class Get_df:
         n_un = sum(mult)
         if n_un == 0:
             return pd.DataFrame(
-                {"aaSeqCDR3": seqs, "Multiplicity": mult, "Neighbours": [0] * len(seqs), "Nb_freq": [0.0] * len(seqs)}
+                {"aaSeqCDR3": seqs, "Multiplicity": mult, "Neighbours": [0] * len(seqs), "Nb_freq": [0.0] * len(seqs),
+                 **{out: [0] * len(seqs) for out in compartments}}
             )
 
         dic = dict(zip(seqs, mult))
@@ -68,6 +76,10 @@ class Get_df:
         tr = atriegc.TrieAA()
         for seq in seqs:
             tr.insert(seq)
+
+        comp_mult = [self.data[col].astype(int).tolist() for col in compartments.values()]
+        comp_sums = [[0] * len(seqs) for _ in comp_mult]
+        index = dict(zip(seqs, range(len(seqs)))) if comp_mult else None
 
         neighbours = [0] * len(seqs)
         nb_freq = [0.0] * len(seqs)
@@ -78,6 +90,10 @@ class Get_df:
             c = 0
             for d in tr.neighbours(seq, 1):
                 c += int(dic[d])
+                if index is not None:
+                    j = index[d]
+                    for k, m in enumerate(comp_mult):
+                        comp_sums[k][i] += m[j]
             neighbours[i] = c - 1
             nb_freq[i] = (c - 1) / n_un
 
@@ -87,5 +103,6 @@ class Get_df:
                 "Multiplicity": mult,
                 "Neighbours": neighbours,
                 "Nb_freq": nb_freq,
+                **dict(zip(compartments, comp_sums)),
             }
         )
