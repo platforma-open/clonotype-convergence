@@ -152,6 +152,35 @@ self.body(func(inputs) {
 		}
 	}
 
+	// full-STAR over one table: Poisson tail vs the Pgen null + Benjamini-Hochberg
+	// at alpha. Shared by Stage 2 (the whole sample) and Stage 5 (one compartment,
+	// whose N comes from statusJson). Keep the builder calls in this order: the
+	// exec's cache id depends on them.
+	runFullStar := func(inputName, inputTsv, chainLabel, neighboursCol, statusJson) {
+		cmd := exec.builder().
+			software(fullStarSw).
+			resources({ onCPU: {
+				cpu: 1,
+				ram: f.size("input").times(8).plus(f.gib(2)).
+					between(f.gib(2), f.gib(32)).
+					staticFallback("4GiB")
+			} }).
+			arg("--input").arg(inputName).
+			arg("--output").arg("fullstar.tsv").
+			arg("--alpha").arg(string(inputs.alpha)).
+			arg("--chain").arg(chainLabel).
+			arg("--neighbours-column").arg(neighboursCol).
+			arg("--pgen-column").arg("Pgen")
+		if !is_undefined(statusJson) {
+			cmd = cmd.arg("--status-json").arg("status.json")
+		}
+		cmd = cmd.addFile(inputName, inputTsv, { tag: "input" })
+		if !is_undefined(statusJson) {
+			cmd = cmd.addFile("status.json", statusJson)
+		}
+		return cmd.saveFile("fullstar.tsv").run().getFile("fullstar.tsv")
+	}
+
 	ptRes := ptwf.run()
 	perSampleInputTsv := ptRes.getFile("input.tsv")
 	perAaTsv := ptRes.getFile("per_aa.tsv")
@@ -222,24 +251,7 @@ self.body(func(inputs) {
 		// (kept for M1/QC) + fullStarScore (= -log10 Pvalue, floored per-sample so
 		// the strongest / Pgen==0 clones stay finite and on-scale) + its BH hit
 		// ("starHit"); the pt step below passes fullStarScore + fullStar through.
-		fullStarCmd := exec.builder().
-			software(fullStarSw).
-			resources({ onCPU: {
-				cpu: 1,
-				ram: f.size("input").times(8).plus(f.gib(2)).
-					between(f.gib(2), f.gib(32)).
-					staticFallback("4GiB")
-			} }).
-			arg("--input").arg("neighbours.tsv").
-			arg("--output").arg("fullstar.tsv").
-			arg("--alpha").arg(string(inputs.alpha)).
-			arg("--chain").arg(inputs.chain).
-			arg("--neighbours-column").arg("neighbours").
-			arg("--pgen-column").arg("Pgen").
-			addFile("neighbours.tsv", baseTsv, { tag: "input" }).
-			saveFile("fullstar.tsv").
-			run()
-		baseTsv = fullStarCmd.getFile("fullstar.tsv")
+		baseTsv = runFullStar("neighbours.tsv", baseTsv, inputs.chain, "neighbours", undefined)
 	}
 
 	// Derive the per-mode columns. inferSchema false → cast Nb_freq / Pvalue to
@@ -387,34 +399,11 @@ self.body(func(inputs) {
 
 			rightCols := ["nbFreq" + suffix, "fastStar" + suffix]
 			if hasPgen {
-				fullCmd := exec.builder().
-					software(fullStarSw).
-					resources({ onCPU: {
-						cpu: 1,
-						ram: f.size("input").times(8).plus(f.gib(2)).
-							between(f.gib(2), f.gib(32)).
-							staticFallback("4GiB")
-					} }).
-					arg("--input").arg("iso.tsv").
-					arg("--output").arg("fullstar.tsv").
-					arg("--alpha").arg(string(inputs.alpha)).
-					arg("--chain").arg(inputs.chain + " " + iso).
-					arg("--neighbours-column").arg("neighboursX").
-					arg("--pgen-column").arg("Pgen").
-					arg("--status-json").arg("status.json").
-					addFile("iso.tsv", isoTsv, { tag: "input" }).
-					addFile("status.json", compCmd.getFile("status.json")).
-					saveFile("fullstar.tsv").
-					run()
-				renameWf := pt.workflow()
-				renameWf.frame(fullCmd.getFile("fullstar.tsv"), { xsvType: "tsv", inferSchema: false }).
-					withColumns(
-						pt.col("fullStarScore").alias("fullStarScore" + suffix),
-						pt.col("starHit").alias("fullStar" + suffix)
-					).
-					save("iso.tsv")
-				isoTsv = renameWf.run().getFile("iso.tsv")
-				rightCols = append(rightCols, "fullStarScore" + suffix, "fullStar" + suffix)
+				isoTsv = runFullStar("iso.tsv", isoTsv, inputs.chain + " " + iso, "neighboursX", compCmd.getFile("status.json"))
+				// The merge join renames full-STAR's columns to this compartment's.
+				rightCols = append(rightCols,
+					{ column: "fullStarScore", rename: "fullStarScore" + suffix },
+					{ column: "starHit", rename: "fullStar" + suffix })
 			}
 			merged = merged.join(mergeWf.frame(isoTsv, { xsvType: "tsv", inferSchema: false }),
 				{ how: "left", on: "clonotypeKey", rightColumns: rightCols })
