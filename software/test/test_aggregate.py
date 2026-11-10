@@ -521,3 +521,63 @@ def test_empty_input_emits_empty_output(tmp_path):
     assert list(df.columns) == [
         "clonotypeKey", "fullStarScore", "fullStar", "fullStarReproducibility",
     ]
+
+
+# --- several sets in one call -----------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["full-STAR", "fast-STAR"])
+def test_batched_sets_match_separate_calls(tmp_path, method):
+    # Per-isotype columns are aggregated in one call per method. Each set's
+    # output must be byte-identical to a call of its own: same rows, same BH
+    # (per set, never pooled), and a set with no scored rows still empty.
+    import random
+    rng = random.Random(7058)
+    rows = []
+    for c in range(60):
+        for s in ("S1", "S2", "S3"):
+            if rng.random() < 0.7:
+                row = {"clonotypeKey": f"C{c}", "sampleId": s}
+                for i in range(2):
+                    score = rng.random() * 6 if method == "full-STAR" else rng.random() * 0.003
+                    row[f"score_{i}"] = score if rng.random() < 0.8 else None
+                    row[f"hit_{i}"] = ("Hit" if score > (3 if method == "full-STAR" else 0.001) else "Not hit") \
+                        if row[f"score_{i}"] is not None else None
+                row["score_2"], row["hit_2"] = None, None
+                rows.append(row)
+    inp = tmp_path / "in.tsv"
+    pd.DataFrame(rows).to_csv(inp, sep="\t", index=False)
+    meta = tmp_path / "meta.tsv"
+    pd.DataFrame({"sampleId": ["S1", "S2", "S3", "S4"]}).to_csv(meta, sep="\t", index=False)
+    base = [sys.executable, str(SRC / "aggregate.py"), "--input", str(inp),
+            "--chain", "IGHeavy", "--method", method, "--alpha", "0.05",
+            "--threshold", "0.001", "--metadata", str(meta)]
+
+    def run(args):
+        proc = subprocess.run(base + args, capture_output=True, text=True, cwd=str(SRC))
+        assert proc.returncode == 0, f"aggregate.py failed:\n{proc.stdout}\n{proc.stderr}"
+
+    sets = [(f"score_{i}", f"hit_{i}", f"repro_{i}") for i in range(3)]
+    batched = []
+    for i, (score, hit, repro) in enumerate(sets):
+        run(["--output", str(tmp_path / f"single_{i}.tsv"), "--score-column", score,
+             "--hit-column", hit, "--reproducibility-column", repro])
+        batched += ["--set", f"{score},{hit},{repro},{tmp_path / f'batched_{i}.tsv'}"]
+    run(batched)
+    for i in range(3):
+        single = (tmp_path / f"single_{i}.tsv").read_bytes()
+        assert (tmp_path / f"batched_{i}.tsv").read_bytes() == single, i
+    assert len(pd.read_csv(tmp_path / "single_0.tsv", sep="\t")) > 0
+    assert len(pd.read_csv(tmp_path / "single_2.tsv", sep="\t")) == 0
+
+
+def test_set_and_single_flags_are_exclusive(tmp_path):
+    inp = tmp_path / "in.tsv"
+    pd.DataFrame({"clonotypeKey": ["A"], "sampleId": ["S1"], "s": [1.0], "h": ["Hit"]}).to_csv(inp, sep="\t", index=False)
+    proc = subprocess.run(
+        [sys.executable, str(SRC / "aggregate.py"), "--input", str(inp), "--chain", "IGHeavy",
+         "--method", "full-STAR", "--output", str(tmp_path / "o.tsv"),
+         "--set", f"s,h,r,{tmp_path / 'b.tsv'}"],
+        capture_output=True, text=True, cwd=str(SRC),
+    )
+    assert proc.returncode == 2 and "--set replaces" in proc.stdout

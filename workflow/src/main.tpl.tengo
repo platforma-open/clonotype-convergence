@@ -731,23 +731,41 @@ wf.body(func(args) {
 			metaTsv = metaBuilder.build()
 		}
 
+		// per_sample.tsv spans EVERY sample, so aggregation is a whole-dataset
+		// step and its budget has to track the dataset. aggregate.py reads four
+		// columns and holds one Python string per row for the clonotype key, so
+		// the cost is per row, not per byte: measured 305 B/row at 6M rows and
+		// 198 B/row at 18M (it falls as the fixed overhead amortises). 512 B/row
+		// is ~2.5x the extrapolated cost at the sizes we have seen. Each further
+		// column set read in the same call adds a score (8 B) and a hit (1 B) per
+		// row; 16 B covers it.
+		aggregateResources := func(nSets) {
+			return { onCPU: {
+				cpu: 1,
+				ram: f.lineCount("perSample").times(512 + 16 * (nSets - 1)).plus(f.gib(1)).
+					between(f.gib(1), f.gib(32)).
+					staticFallback("8GiB")
+			} }
+		}
+
+		// withCohort — the sample universe and the expected-at filter, common to
+		// every aggregation.
+		withCohort := func(cmd) {
+			if !is_undefined(metaTsv) {
+				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
+				if !is_undefined(args.expectedFilterRef) && !is_undefined(expectedValues) {
+					cmd = cmd.arg("--expected-values").arg(string(json.encode(expectedValues)))
+				}
+			}
+			return cmd
+		}
+
 		// aggregateMode — run aggregate.py for one mode; returns aggregated.tsv
 		// (columns clonotypeKey + scoreCol + hitCol + reproCol, named after the mode).
-		// per_sample.tsv spans EVERY sample, so this is a whole-dataset step and
-		// its budget has to track the dataset. aggregate.py reads four columns
-		// and holds one Python string per row for the clonotype key, so the cost
-		// is per row, not per byte: measured 305 B/row at 6M rows and 198 B/row
-		// at 18M (it falls as the fixed overhead amortises). 512 B/row is ~2.5x
-		// the extrapolated cost at the sizes we have seen.
 		aggregateMode := func(scoreCol, hitCol, reproCol, methodName) {
 			cmd := exec.builder().
 				software(aggregateSw).
-				resources({ onCPU: {
-					cpu: 1,
-					ram: f.lineCount("perSample").times(512).plus(f.gib(1)).
-						between(f.gib(1), f.gib(32)).
-						staticFallback("8GiB")
-				} }).
+				resources(aggregateResources(1)).
 				arg("--input").arg("per_sample.tsv").
 				arg("--output").arg("aggregated.tsv").
 				arg("--chain").arg(chainName).
@@ -761,12 +779,7 @@ wf.body(func(args) {
 			if methodName == "fast-STAR" {
 				cmd = cmd.arg("--threshold").arg(string(threshold))
 			}
-			if !is_undefined(metaTsv) {
-				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
-				if !is_undefined(args.expectedFilterRef) && !is_undefined(expectedValues) {
-					cmd = cmd.arg("--expected-values").arg(string(json.encode(expectedValues)))
-				}
-			}
+			cmd = withCohort(cmd)
 			return cmd.run().getFile("aggregated.tsv")
 		}
 
@@ -779,12 +792,7 @@ wf.body(func(args) {
 		aggregateClusterMode := func(filteredCol, reproCol, gateTsv, gateHitCol) {
 			cmd := exec.builder().
 				software(aggregateSw).
-				resources({ onCPU: {
-					cpu: 1,
-					ram: f.lineCount("perSample").times(512).plus(f.gib(1)).
-						between(f.gib(1), f.gib(32)).
-						staticFallback("8GiB")
-				} }).
+				resources(aggregateResources(1)).
 				arg("--input").arg("per_sample.tsv").
 				arg("--output").arg("aggregated.tsv").
 				arg("--chain").arg(chainName).
@@ -797,13 +805,42 @@ wf.body(func(args) {
 				addFile("per_sample.tsv", perSampleTsv, { tag: "perSample" }).
 				addFile("gate.tsv", gateTsv).
 				saveFile("aggregated.tsv")
-			if !is_undefined(metaTsv) {
-				cmd = cmd.arg("--metadata").arg("meta.tsv").addFile("meta.tsv", metaTsv)
-				if !is_undefined(args.expectedFilterRef) && !is_undefined(expectedValues) {
-					cmd = cmd.arg("--expected-values").arg(string(json.encode(expectedValues)))
-				}
-			}
+			cmd = withCohort(cmd)
 			return cmd.run().getFile("aggregated.tsv")
+		}
+
+		// aggregateIsotypes — every compartment's columns of one method in a single
+		// aggregate.py call, so per_sample.tsv is read once rather than once per
+		// compartment. Each compartment is still aggregated on its own (BH per
+		// compartment) and gets its own aggregated_iso<i>.tsv; returns them by
+		// index. Score and hit only are exported; the reproducibility aggregate.py
+		// also computes is not.
+		aggregateIsotypes := func(scorePrefix, hitPrefix, methodName) {
+			cmd := exec.builder().
+				software(aggregateSw).
+				resources(aggregateResources(len(compartments))).
+				arg("--input").arg("per_sample.tsv").
+				arg("--chain").arg(chainName).
+				arg("--method").arg(methodName)
+			for i, _ in compartments {
+				suffix := "_iso" + string(i)
+				cmd = cmd.arg("--set").arg(scorePrefix + suffix + "," + hitPrefix + suffix + "," +
+					hitPrefix + "Reproducibility" + suffix + ",aggregated" + suffix + ".tsv")
+			}
+			cmd = cmd.arg("--alpha").arg(string(alpha)).
+				addFile("per_sample.tsv", perSampleTsv, { tag: "perSample" })
+			for i, _ in compartments {
+				cmd = cmd.saveFile("aggregated_iso" + string(i) + ".tsv")
+			}
+			if methodName == "fast-STAR" {
+				cmd = cmd.arg("--threshold").arg(string(threshold))
+			}
+			res := withCohort(cmd).run()
+			out := {}
+			for i, _ in compartments {
+				out[string(i)] = res.getFile("aggregated_iso" + string(i) + ".tsv")
+			}
+			return out
 		}
 
 		// statsFor — hit-count badge {above,total} over one mode's aggregated TSV.
@@ -966,15 +1003,16 @@ wf.body(func(args) {
 		}
 
 		// Per-isotype: each compartment aggregates like its main mode — same
-		// statistic, same threshold / alpha, its own columns. Score and hit only;
-		// the reproducibility aggregate.py also computes is not exported.
-		for i, iso in compartments {
-			suffix := "_iso" + string(i)
-			addMode(aggregateMode("nbFreq" + suffix, "fastStar" + suffix, "fastStarReproducibility" + suffix, "fast-STAR"),
-				isoSpecs(i, iso, "fast-STAR", false))
-			if hasPgen {
-				addMode(aggregateMode("fullStarScore" + suffix, "fullStar" + suffix, "fullStarReproducibility" + suffix, "full-STAR"),
-					isoSpecs(i, iso, "full-STAR", false))
+		// statistic, same threshold / alpha, its own columns. One call per method
+		// covers every compartment (aggregateIsotypes).
+		if len(compartments) > 0 {
+			fastIso := aggregateIsotypes("nbFreq", "fastStar", "fast-STAR")
+			fullIso := hasPgen ? aggregateIsotypes("fullStarScore", "fullStar", "full-STAR") : {}
+			for i, iso in compartments {
+				addMode(fastIso[string(i)], isoSpecs(i, iso, "fast-STAR", false))
+				if hasPgen {
+					addMode(fullIso[string(i)], isoSpecs(i, iso, "full-STAR", false))
+				}
 			}
 		}
 

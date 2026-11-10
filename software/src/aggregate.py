@@ -103,7 +103,7 @@ LN10 = float(np.log(10.0))
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--chain", required=True)
     parser.add_argument(
         "--method", required=True, choices=["full-STAR", "fast-STAR", "cluster-filter"]
@@ -131,10 +131,33 @@ def parse_args() -> argparse.Namespace:
     # the wrong mode (or a column that no longer exists) instead of failing.
     # --score-column is required for every method EXCEPT cluster-filter, which
     # is hit-only; that is checked in main() where the method is known.
+    # --output + the three columns name one set. Or, instead, --set
+    # <score>,<hit>,<repro>,<output> once per set: several sets of the same
+    # method aggregated from one read of --input, each into its own output,
+    # each exactly as a call of its own would (BH runs per set).
     parser.add_argument("--score-column", dest="score_column", default=None)
-    parser.add_argument("--hit-column", dest="hit_column", required=True)
-    parser.add_argument("--reproducibility-column", dest="repro_column", required=True)
+    parser.add_argument("--hit-column", dest="hit_column", default=None)
+    parser.add_argument("--reproducibility-column", dest="repro_column", default=None)
+    parser.add_argument("--set", action="append", default=[], dest="sets")
     return parser.parse_args()
+
+
+def parse_sets(args: argparse.Namespace):
+    """[(score, hit, repro, output)] from --set, or from the single-set flags."""
+    single = (args.output, args.score_column, args.hit_column, args.repro_column)
+    if args.sets:
+        if any(v is not None for v in single):
+            raise ValueError("--set replaces --output and the column flags; give one form, not both")
+        sets = []
+        for spec in args.sets:
+            parts = spec.split(",")
+            if len(parts) != 4 or not all(parts):
+                raise ValueError(f"--set expects <score>,<hit>,<repro>,<output>, got {spec!r}")
+            sets.append((parts[0], parts[1], parts[2], Path(parts[3])))
+        return sets
+    if args.output is None or args.hit_column is None or args.repro_column is None:
+        raise ValueError("--output, --hit-column and --reproducibility-column are required without --set")
+    return [(args.score_column, args.hit_column, args.repro_column, args.output)]
 
 
 def log(prefix: str, msg: str) -> None:
@@ -287,17 +310,25 @@ def main() -> int:
     prefix = f"[chain {args.chain}]"
 
     clone_c, sample_c = args.clonotype_column, args.sample_column
-    score_c, hit_c, repro_c = args.score_column, args.hit_column, args.repro_column
+    try:
+        sets = parse_sets(args)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 2
 
     is_full = args.method == "full-STAR"
     is_cluster = args.method == "cluster-filter"
 
-    if not is_cluster and score_c is None:
+    if is_cluster and len(sets) > 1:
+        print("error: cluster-filter aggregates one set per call (each has its own --gate)")
+        return 2
+    if not is_cluster and any(score_c is None for score_c, _, _, _ in sets):
         print(f"error: --score-column is required for --method {args.method}")
         return 2
 
     # A cluster-filtered column has no score of its own — it refines a hit set.
-    required = {clone_c, sample_c, hit_c} | (set() if is_cluster else {score_c})
+    hit_cols = [hit_c for _, hit_c, _, _ in sets]
+    required = {clone_c, sample_c, *hit_cols} | (set() if is_cluster else {score_c for score_c, _, _, _ in sets})
     header = pd.read_csv(args.input, sep="\t", nrows=0)
     missing = required - set(header.columns)
     if missing:
@@ -320,7 +351,7 @@ def main() -> int:
         args.input,
         sep="\t",
         usecols=sorted(required),
-        dtype={sample_c: "category", clone_c: str, hit_c: "category"},
+        dtype={sample_c: "category", clone_c: str, **{hit_c: "category" for hit_c in hit_cols}},
     )
 
     if is_cluster and (args.gate is None or args.gate_hit_column is None):
@@ -331,18 +362,26 @@ def main() -> int:
         print("error: fast-STAR aggregation requires --threshold")
         return 2
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    for _, _, _, output in sets:
+        output.parent.mkdir(parents=True, exist_ok=True)
+
     # Output columns are named after the MODE being aggregated: the
     # workflow calls this once per emitted mode with --score-column/--hit-column/
     # --reproducibility-column = nbFreq/fastStar/fastStarReproducibility
     # (fast-STAR) or fullStarScore/fullStar/fullStarReproducibility (full-STAR),
     # and the aggregated result carries those same names. cluster-filter emits
     # the hit + reproducibility pair only — it has no score.
-    out_cols = [clone_c, hit_c, repro_c] if is_cluster else [clone_c, score_c, hit_c, repro_c]
+    def out_cols(score_c, hit_c, repro_c):
+        return [clone_c, hit_c, repro_c] if is_cluster else [clone_c, score_c, hit_c, repro_c]
+
+    def emit_empty_set(score_c, hit_c, repro_c, output, reason: str) -> int:
+        pd.DataFrame(columns=out_cols(score_c, hit_c, repro_c)).to_csv(output, sep="\t", index=False)
+        log(prefix, reason)
+        return 0
 
     def emit_empty(reason: str) -> int:
-        pd.DataFrame(columns=out_cols).to_csv(args.output, sep="\t", index=False)
-        log(prefix, reason)
+        for score_c, hit_c, repro_c, output in sets:
+            emit_empty_set(score_c, hit_c, repro_c, output, reason)
         return 0
 
     log(prefix, f"input rows (sample x clonotype): {len(df)}")
@@ -430,108 +469,120 @@ def main() -> int:
         return emit_empty("no convergence rows in the eligible samples; emitting empty output")
     df["_unit"] = pd.Categorical.from_codes(unit_codes[unit_codes >= 0], categories=unit_values)
 
-    # A per-sample row contributes only if it carries a numeric score (a clone
-    # untestable in a sample has a blank score and is not evidence). Absence is
-    # never zero-filled: aggregation runs over the units the clone is present in.
-    # cluster-filter has no score column: every row of its hit column counts.
-    df["_score"] = 0.0 if is_cluster else pd.to_numeric(df[score_c], errors="coerce")
-    # Compare through the codes rather than materialising the hit text.
-    hit_cats = df[hit_c].cat.categories
-    hit_code = hit_cats.get_loc("Hit") if "Hit" in hit_cats else -1
-    df["_hit"] = df[hit_c].cat.codes.to_numpy() == hit_code
-    units_with_data = df["_unit"].nunique()
-    scored = df[df["_score"].notna()]
-    log(prefix, f"units with data: {units_with_data}; scored rows: {len(scored)}")
-    del df
-    if len(scored) == 0:
-        return emit_empty("no scored rows; emitting empty output")
+    def aggregate_set(score_c, hit_c, repro_c, output) -> int:
+        # A per-sample row contributes only if it carries a numeric score (a clone
+        # untestable in a sample has a blank score and is not evidence). Absence is
+        # never zero-filled: aggregation runs over the units the clone is present in.
+        # cluster-filter has no score column: every row of its hit column counts.
+        # Each set works on its own frame of the shared rows, so the next set
+        # starts from the same rows.
+        work = pd.DataFrame({clone_c: df[clone_c], "_unit": df["_unit"]})
+        work["_score"] = 0.0 if is_cluster else pd.to_numeric(df[score_c], errors="coerce")
+        # Compare through the codes rather than materialising the hit text.
+        hit_cats = df[hit_c].cat.categories
+        hit_code = hit_cats.get_loc("Hit") if "Hit" in hit_cats else -1
+        work["_hit"] = df[hit_c].cat.codes.to_numpy() == hit_code
+        units_with_data = work["_unit"].nunique()
+        scored = work[work["_score"].notna()]
+        log(prefix, f"units with data: {units_with_data}; scored rows: {len(scored)}")
+        del work
+        if len(scored) == 0:
+            return emit_empty_set(score_c, hit_c, repro_c, output, "no scored rows; emitting empty output")
 
-    # --- Level 1: collapse each (clonotype, unit) to one per-unit value -----
-    # Both modes reduce to (max, count) per group, so one built-in aggregation
-    # serves both; the full-STAR Bonferroni is then a vector op over the result.
-    # observed=True is REQUIRED, not a tidy-up: `_unit` is a Categorical, and
-    # the pandas default (observed=False) emits a row for every category — i.e.
-    # every unit in the dataset — including the ones this clonotype is absent
-    # from. That is exactly the zero-filling the two-level shape forbids; it
-    # inflates k in the Fisher combination and drags the score down.
-    per_unit = (
-        scored.groupby([clone_c, "_unit"], observed=True)
-        .agg(_best=("_score", "max"), _m=("_score", "size"), unit_hit=("_hit", "any"))
-        .reset_index()
-    )
-    per_unit["unit_score"] = (
-        bonferroni_unit_scores(
-            per_unit["_best"].to_numpy(dtype=float), per_unit["_m"].to_numpy(dtype=float)
+        # --- Level 1: collapse each (clonotype, unit) to one per-unit value -----
+        # Both modes reduce to (max, count) per group, so one built-in aggregation
+        # serves both; the full-STAR Bonferroni is then a vector op over the result.
+        # observed=True is REQUIRED, not a tidy-up: `_unit` is a Categorical, and
+        # the pandas default (observed=False) emits a row for every category — i.e.
+        # every unit in the dataset — including the ones this clonotype is absent
+        # from. That is exactly the zero-filling the two-level shape forbids; it
+        # inflates k in the Fisher combination and drags the score down.
+        per_unit = (
+            scored.groupby([clone_c, "_unit"], observed=True)
+            .agg(_best=("_score", "max"), _m=("_score", "size"), unit_hit=("_hit", "any"))
+            .reset_index()
         )
-        if is_full
-        else per_unit["_best"]
-    )
-
-    # --- Level 2: one value per clonotype -----------------------------------
-    # groupby(sort=True), the default: groups come out ordered by clonotype key,
-    # so the pre-sort row order — and therefore the tie order in the output — is
-    # a function of the data alone, not of input row order.
-    per_clone = (
-        per_unit.groupby(clone_c)
-        .agg(_sum=("unit_score", "sum"), _k=("unit_score", "size"), _hits=("unit_hit", "sum"))
-        .reset_index()
-    )
-    if is_full:
-        # One quantity, two faces: the combined p is the hit's p-value and the
-        # score is that same p as -log10.
-        scores, combined_p = fisher_combined(
-            per_clone["_sum"].to_numpy(dtype=float), per_clone["_k"].to_numpy(dtype=int)
+        per_unit["unit_score"] = (
+            bonferroni_unit_scores(
+                per_unit["_best"].to_numpy(dtype=float), per_unit["_m"].to_numpy(dtype=float)
+            )
+            if is_full
+            else per_unit["_best"]
         )
-        per_clone["_score"] = scores
-    elif not is_cluster:
-        per_clone["_score"] = per_clone[clone_c].map(upper_median_per_clone(per_unit, clone_c))
 
-    per_clone[repro_c] = per_clone["_hits"].to_numpy(dtype=float) / cohort_d
-
-    if is_full:
-        pvals = np.asarray(combined_p, dtype=float)
-        hits = bh_hit_mask(pvals, args.alpha)
-        per_clone["_hit"] = np.where(hits, "Hit", "Not hit")
-        log(
-            prefix,
-            f"BH across {len(pvals)} clonotypes at alpha={args.alpha}: {int(hits.sum())} hits",
+        # --- Level 2: one value per clonotype -----------------------------------
+        # groupby(sort=True), the default: groups come out ordered by clonotype key,
+        # so the pre-sort row order — and therefore the tie order in the output — is
+        # a function of the data alone, not of input row order.
+        per_clone = (
+            per_unit.groupby(clone_c)
+            .agg(_sum=("unit_score", "sum"), _k=("unit_score", "size"), _hits=("unit_hit", "sum"))
+            .reset_index()
         )
-    elif is_cluster:
-        # Gate on the mode's own aggregated hit, so this stays a strict subset
-        # of it. A clonotype absent from the gate (it aggregated to nothing) is
-        # not a hit here either.
-        gate = pd.read_csv(args.gate, sep="\t", dtype={clone_c: str})
-        if args.gate_hit_column not in gate.columns:
-            print(f"error: gate TSV has no '{args.gate_hit_column}' column")
-            return 2
-        gate_hit = gate.set_index(clone_c)[args.gate_hit_column].astype(str) == "Hit"
-        passes_gate = per_clone[clone_c].map(gate_hit).fillna(False).to_numpy(dtype=bool)
-        cluster_hit = per_clone["_hits"].to_numpy(dtype=float) > 0
-        per_clone["_hit"] = np.where(passes_gate & cluster_hit, "Hit", "Not hit")
-        log(
-            prefix,
-            f"cluster-filtered hits gated on {args.gate_hit_column}: "
-            f"{int((passes_gate & cluster_hit).sum())} of {int(cluster_hit.sum())} "
-            "clonotypes with a cluster hit",
-        )
-    else:
-        per_clone["_hit"] = np.where(per_clone["_score"] > args.threshold, "Hit", "Not hit")
-        log(prefix, f"fast-STAR threshold {args.threshold} on the aggregated score")
+        if is_full:
+            # One quantity, two faces: the combined p is the hit's p-value and the
+            # score is that same p as -log10.
+            scores, combined_p = fisher_combined(
+                per_clone["_sum"].to_numpy(dtype=float), per_clone["_k"].to_numpy(dtype=int)
+            )
+            per_clone["_score"] = scores
+        elif not is_cluster:
+            per_clone["_score"] = per_clone[clone_c].map(upper_median_per_clone(per_unit, clone_c))
 
-    # Stable sort: the output bytes are the input of a pure import step, so ties
-    # must not reorder run to run (that would break dedup downstream). The
-    # cluster pair has no score, so it orders by reproducibility instead.
-    sort_key = repro_c if is_cluster else "_score"
-    keep_cols = (
-        [clone_c, "_hit", repro_c] if is_cluster else [clone_c, "_score", "_hit", repro_c]
-    )
-    result = (
-        per_clone[keep_cols]
-        .sort_values(sort_key, ascending=False, kind="stable")
-        .rename(columns={"_score": score_c, "_hit": hit_c})
-    )
-    result.to_csv(args.output, sep="\t", index=False)
-    log(prefix, f"aggregated to {len(result)} clonotypes; {int((result[hit_c] == 'Hit').sum())} hits")
+        per_clone[repro_c] = per_clone["_hits"].to_numpy(dtype=float) / cohort_d
+
+        if is_full:
+            pvals = np.asarray(combined_p, dtype=float)
+            hits = bh_hit_mask(pvals, args.alpha)
+            per_clone["_hit"] = np.where(hits, "Hit", "Not hit")
+            log(
+                prefix,
+                f"BH across {len(pvals)} clonotypes at alpha={args.alpha}: {int(hits.sum())} hits",
+            )
+        elif is_cluster:
+            # Gate on the mode's own aggregated hit, so this stays a strict subset
+            # of it. A clonotype absent from the gate (it aggregated to nothing) is
+            # not a hit here either.
+            gate = pd.read_csv(args.gate, sep="\t", dtype={clone_c: str})
+            if args.gate_hit_column not in gate.columns:
+                print(f"error: gate TSV has no '{args.gate_hit_column}' column")
+                return 2
+            gate_hit = gate.set_index(clone_c)[args.gate_hit_column].astype(str) == "Hit"
+            passes_gate = per_clone[clone_c].map(gate_hit).fillna(False).to_numpy(dtype=bool)
+            cluster_hit = per_clone["_hits"].to_numpy(dtype=float) > 0
+            per_clone["_hit"] = np.where(passes_gate & cluster_hit, "Hit", "Not hit")
+            log(
+                prefix,
+                f"cluster-filtered hits gated on {args.gate_hit_column}: "
+                f"{int((passes_gate & cluster_hit).sum())} of {int(cluster_hit.sum())} "
+                "clonotypes with a cluster hit",
+            )
+        else:
+            per_clone["_hit"] = np.where(per_clone["_score"] > args.threshold, "Hit", "Not hit")
+            log(prefix, f"fast-STAR threshold {args.threshold} on the aggregated score")
+
+        # Stable sort: the output bytes are the input of a pure import step, so ties
+        # must not reorder run to run (that would break dedup downstream). The
+        # cluster pair has no score, so it orders by reproducibility instead.
+        sort_key = repro_c if is_cluster else "_score"
+        keep_cols = (
+            [clone_c, "_hit", repro_c] if is_cluster else [clone_c, "_score", "_hit", repro_c]
+        )
+        result = (
+            per_clone[keep_cols]
+            .sort_values(sort_key, ascending=False, kind="stable")
+            .rename(columns={"_score": score_c, "_hit": hit_c})
+        )
+        result.to_csv(output, sep="\t", index=False)
+        log(prefix, f"aggregated to {len(result)} clonotypes; {int((result[hit_c] == 'Hit').sum())} hits")
+        return 0
+
+    for score_c, hit_c, repro_c, output in sets:
+        if len(sets) > 1:
+            log(prefix, f"set {hit_c}")
+        code = aggregate_set(score_c, hit_c, repro_c, output)
+        if code != 0:
+            return code
     log(prefix, "aggregate done")
     return 0
 
