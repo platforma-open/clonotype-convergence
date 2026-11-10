@@ -11,7 +11,7 @@ import {
   useWatchFetch,
 } from "@platforma-sdk/ui-vue";
 import { PFrameImpl } from "@platforma-sdk/model";
-import { computed, reactive, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { useApp } from "../app";
 import LogsPanel from "./LogsPanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
@@ -76,11 +76,18 @@ const statsOpen = panelModel("stats");
 // Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
   () =>
+    (app.model.outputs.isotypeSkippedSamples?.entries.length ?? 0) > 0 ||
+    (app.model.outputs.heavySkippedSamples?.belowMin.length ?? 0) > 0 ||
+    (app.model.outputs.lightSkippedSamples?.belowMin.length ?? 0) > 0 ||
     !!app.model.outputs.heavyFastStats ||
     !!app.model.outputs.heavyFullStats ||
     !!app.model.outputs.lightFastStats ||
     !!app.model.outputs.lightFullStats,
 );
+
+// Sample lists can run long: the skip warnings scroll past this height, the
+// label staying in view.
+const ALERT_MAX_HEIGHT = "120px";
 
 // Skipped-samples warning. `belowMin` lists samples that had CDR3 data
 // but fewer unique nts than the nMin floor — surfaced with advice to
@@ -93,6 +100,15 @@ const skippedBelowMin = computed<string[]>(() => {
 });
 const skippedNMin = computed<number | undefined>(
   () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
+);
+// The warning can be closed (Stats lists them too); it comes back when a run
+// changes the list.
+const belowMinOpen = ref(true);
+watch(
+  () => skippedBelowMin.value.join("\n"),
+  () => {
+    belowMinOpen.value = true;
+  },
 );
 
 // Samples dropped because they have NO usable CDR3 (nUniqueNt == 0), distinct
@@ -121,13 +137,21 @@ const isotypeFiltered = computed(
 // Per-isotype compartments under nMin, one line per chain and isotype. Not
 // merged across chains: each chain counts its own unique nucleotide CDR3s, so
 // on single-cell data one chain's compartment can be skipped while the other's
-// is scored.
+// is scored. The note can be closed (Stats lists them too); it comes back when
+// a run changes the list.
 const isotypeSkipped = computed(() =>
   (app.model.outputs.isotypeSkippedSamples?.entries ?? []).map((e) => ({
     key: `${e.chain}:${e.isotype}`,
     label: `${e.chain === "heavy" ? "Heavy" : "Light"} ${e.isotype}`,
     samples: e.samples,
   })),
+);
+const isotypeSkippedOpen = ref(true);
+watch(
+  () => JSON.stringify(app.model.outputs.isotypeSkippedSamples?.entries ?? []),
+  () => {
+    isotypeSkippedOpen.value = true;
+  },
 );
 
 // "All empty" — the chain ran but produced nothing usable AND has no
@@ -206,7 +230,10 @@ const customBlockLabel = computed({
 
     <PlAlert
       v-if="skippedBelowMin.length > 0"
+      v-model="belowMinOpen"
       type="warn"
+      closeable
+      :max-height="ALERT_MAX_HEIGHT"
       :label="`${skippedBelowMin.length} sample${skippedBelowMin.length === 1 ? '' : 's'} below minimum`"
     >
       {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
@@ -239,7 +266,14 @@ const customBlockLabel = computed({
       {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
     </PlAlert>
 
-    <PlAlert v-if="isotypeSkipped.length > 0" type="info" label="Per-isotype scores skipped">
+    <PlAlert
+      v-if="isotypeSkipped.length > 0"
+      v-model="isotypeSkippedOpen"
+      type="info"
+      closeable
+      :max-height="ALERT_MAX_HEIGHT"
+      label="Per-isotype scores skipped"
+    >
       Fewer than {{ app.model.outputs.isotypeSkippedSamples?.nMin }} unique nucleotide CDR3s of the
       isotype in the sample:
       <template v-for="e in isotypeSkipped" :key="e.key">
