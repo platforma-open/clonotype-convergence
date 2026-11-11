@@ -23,7 +23,7 @@ Convergence in one sample can be noise. If your study has independent units — 
 
 ### Additional controls
 
-An isotype filter restricts the analysis to the heavy-chain isotypes you select — IgM and IgG by default. Other clonotypes, including those of unknown isotype, are removed before neighbours are counted, so they are neither tested nor counted as anyone's neighbour; an empty selection keeps every clonotype. On single-cell data the heavy chain's isotype applies to both chains. The filter is offered only when the dataset carries an isotype column.
+An isotype filter restricts the analysis to the heavy-chain isotypes you select — IgG by default. Other clonotypes, including those of unknown isotype, are removed before neighbours are counted, so they are neither tested nor counted as anyone's neighbour; an empty selection keeps every clonotype. On single-cell data the heavy chain's isotype applies to both chains. The filter is offered only when the dataset carries an isotype column.
 
 With isotypes selected, the block can also score each clone against each kept isotype: its convergence measured among that isotype's CDR3s only — for example, how convergent an IgM clone is within the IgG repertoire. These per-isotype scores and hits are added beside the main ones, never replacing them. A clone's own nucleotide CDR3 is never counted, so a class-switched copy of it is not a neighbour; an isotype with too few CDR3s in a sample is skipped there.
 

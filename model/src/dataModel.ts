@@ -136,7 +136,7 @@ export const blockDataModel = new DataModelBuilder({ kind })
     // expected-values multiselect is initialised so its v-model binding is
     // well-typed. `alpha` above is the only statistical knob.
     expectedValues: params?.expectedValues ?? [],
-    // Isotype filter — keep IgM and IgG. The picker narrows this to the
+    // Isotype filter — keep IgG. The picker narrows this to the
     // isotypes the picked dataset actually has (see SettingsPanel).
     isotypeValues: params?.isotypeValues ?? [...DEFAULT_ISOTYPES],
     perIsotype: params?.perIsotype ?? false,

@@ -86,7 +86,7 @@ const perIsotypeModel = computed<boolean>({
 // left: the selection then empties, which keeps every clonotype. Without that,
 // a dataset whose isotypes are spelled differently (e.g. "IGHG1" from an
 // import), or one with no known isotype at all, would lose every clonotype to
-// the IgM/IgG default — unknown isotypes are dropped by a non-empty selection.
+// the IgG default — unknown isotypes are dropped by a non-empty selection.
 // An unresolved list (undefined: still loading) is not acted on.
 watch(
   () => props.isotypeOptions,

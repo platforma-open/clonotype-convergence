@@ -30,10 +30,10 @@ export const PGEN_NAME = "pl7.app/vdj/generationProbability";
 // heavy chain's ("A", primary) is the clonotype's isotype for both chains.
 export const ISOTYPE_NAME = "pl7.app/vdj/isotype";
 
-// Isotypes kept by the isotype filter of a new block. Shared by the data
-// model's init() and the trace-label builder, which omits the filter from the
-// label when it's left at this default.
-export const DEFAULT_ISOTYPES = ["IgM", "IgG"];
+// Isotypes kept by the isotype filter of a new block: IgG, where antigen-driven
+// convergence concentrates (Abbate et al. 2024). Used by the data model's
+// init() and by the settings panel when a new dataset is picked.
+export const DEFAULT_ISOTYPES = ["IgG"];
 
 /** The isotypes a run keeps, or undefined when it keeps every clonotype: the
  *  dataset has no heavy-chain isotype, or nothing is selected. Sorted, so the

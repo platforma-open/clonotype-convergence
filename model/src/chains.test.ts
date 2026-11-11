@@ -42,13 +42,13 @@ describe("keptIsotypes", () => {
 
 describe("getDefaultBlockLabel — isotypes", () => {
   test.for([
-    { values: ["IgM", "IgG"], label: "IgG+IgM", why: "the default is named too" },
+    { values: ["IgG"], label: "IgG", why: "the default is named too" },
     {
       values: [],
       label: "",
       why: "all isotypes adds nothing (pre-filter blocks keep their label)",
     },
-    { values: ["IgG"], label: "IgG", why: "a custom selection is named" },
+    { values: ["IgM", "IgG"], label: "IgG+IgM", why: "a custom selection is named" },
     { values: ["IgM", "IgA", "IgG"], label: "IgA+IgG+IgM", why: "sorted, joined with +" },
   ])("$why", ({ values, label }) => {
     expect(getDefaultBlockLabel(data(true, values))).toBe(label);
