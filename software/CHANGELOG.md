@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.clonotype-convergence.software
 
+## 1.4.0
+
+### Minor Changes
+
+- 47ee932: Update build dependencies. Per-isotype neighbour counts come from the whole-sample neighbour pass (`compute_neighbours.py --compartment`), and aggregation can process several column sets in one call (`aggregate.py --set`). A minor bump, not a patch: this PR's CI already published 1.3.3 before these changes, and an existing version is never re-uploaded.
+
 ## 1.3.2
 
 ### Patch Changes
