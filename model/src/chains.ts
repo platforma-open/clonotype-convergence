@@ -25,6 +25,25 @@ export function inputSubsetOf(domain: Record<string, string> | undefined): strin
 // added at all. fast-STAR is unaffected: it runs either way.
 export const PGEN_NAME = "pl7.app/vdj/generationProbability";
 
+// Per-clonotype isotype (IgM, IgG, ...) from the clonotyping block, keyed by the
+// clonotype axis alone. On single-cell data there is one per chain letter; the
+// heavy chain's ("A", primary) is the clonotype's isotype for both chains.
+export const ISOTYPE_NAME = "pl7.app/vdj/isotype";
+
+// Isotypes kept by the isotype filter of a new block: IgG, where antigen-driven
+// convergence concentrates (Abbate et al. 2024). Used by the data model's
+// init() and by the settings panel when a new dataset is picked.
+export const DEFAULT_ISOTYPES = ["IgG"];
+
+/** The isotypes a run keeps, or undefined when it keeps every clonotype: the
+ *  dataset has no heavy-chain isotype, or nothing is selected. Sorted, so the
+ *  order the values were picked in doesn't reach args. */
+export function keptIsotypes(data: BlockData): string[] | undefined {
+  if (data.datasetFacts?.hasIsotype !== true) return undefined;
+  const values = data.isotypeValues ?? [];
+  return values.length > 0 ? [...values].sort() : undefined;
+}
+
 // Default full-STAR FDR target (STAR's default). Shared by the data
 // model's init() and the args lambda's default when the field is absent.
 export const DEFAULT_ALPHA = 0.005;
@@ -135,6 +154,13 @@ export function getDefaultBlockLabel(data: BlockData): string {
   if (data.applyClusterFilter && data.clusterMin !== undefined) {
     parts.push(`cluster ≥ ${data.clusterMin}`);
   }
+  // The kept isotypes whenever the filter applies, the default included: a
+  // filtered block analyzes other clonotypes than an unfiltered one on the same
+  // dataset, so their columns must be told apart. An empty selection keeps
+  // every clonotype and adds nothing, so blocks created before the filter
+  // existed (migrated to an empty selection) keep their label and args.
+  const isotypes = keptIsotypes(data);
+  if (isotypes) parts.push(isotypes.join("+"));
 
   return parts.join(", ");
 }

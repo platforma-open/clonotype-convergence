@@ -24,11 +24,39 @@ const sections = computed<StatSection[]>(() => {
   return out;
 });
 
+// Samples under nMin, union across chains (the main page's warning counts them).
+const belowMin = computed(() => {
+  const o = app.model.outputs;
+  const samples = [
+    ...(o.heavySkippedSamples?.belowMin ?? []),
+    ...(o.lightSkippedSamples?.belowMin ?? []),
+  ];
+  return Array.from(new Set(samples)).sort((a, b) => a.localeCompare(b));
+});
+const belowMinNMin = computed(
+  () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
+);
+
+// Per-isotype compartments under nMin, one row per chain and isotype. Not
+// merged across chains: each chain counts its own unique nucleotide CDR3s, so
+// on single-cell data one chain's compartment can be skipped while the other's
+// is scored.
+const isotypeSkipped = computed(() =>
+  (app.model.outputs.isotypeSkippedSamples?.entries ?? []).map((e) => ({
+    key: `${e.chain}:${e.isotype}`,
+    label: `${e.chain === "heavy" ? "Heavy" : "Light"} ${e.isotype}`,
+    samples: e.samples,
+  })),
+);
+
 const fmt = (n: number) => n.toLocaleString();
 </script>
 
 <template>
-  <div v-if="sections.length > 0" :class="$style.statsPanel">
+  <div
+    v-if="sections.length > 0 || belowMin.length > 0 || isotypeSkipped.length > 0"
+    :class="$style.statsPanel"
+  >
     <section
       v-for="(sec, i) in sections"
       :key="sec.heading"
@@ -47,6 +75,41 @@ const fmt = (n: number) => n.toLocaleString();
         <div :class="$style.row">
           <div>Total clonotypes</div>
           <div :class="$style.valueCol">{{ fmt(sec.stats.total) }}</div>
+        </div>
+      </div>
+    </section>
+    <section
+      v-if="belowMin.length > 0"
+      :class="sections.length > 0 ? $style.sectionAfter : undefined"
+    >
+      <div :class="$style.heading">Samples below minimum</div>
+      <p :class="$style.note">Skipped: fewer than {{ belowMinNMin }} unique nucleotide CDR3s.</p>
+      <div :class="$style.table">
+        <div :class="$style.headerRow">
+          <div>Sample</div>
+        </div>
+        <div v-for="name in belowMin" :key="name" :class="$style.row">
+          <div>{{ name }}</div>
+        </div>
+      </div>
+    </section>
+    <section
+      v-if="isotypeSkipped.length > 0"
+      :class="sections.length > 0 || belowMin.length > 0 ? $style.sectionAfter : undefined"
+    >
+      <div :class="$style.heading">Per-isotype scores skipped</div>
+      <p :class="$style.note">
+        Fewer than {{ app.model.outputs.isotypeSkippedSamples?.nMin }} unique nucleotide CDR3s of
+        the isotype in the sample.
+      </p>
+      <div :class="$style.table">
+        <div :class="[$style.headerRow, $style.listRow]">
+          <div>Isotype</div>
+          <div>Samples</div>
+        </div>
+        <div v-for="e in isotypeSkipped" :key="e.key" :class="[$style.row, $style.listRow]">
+          <div>{{ e.label }}</div>
+          <div>{{ e.samples.join(", ") }}</div>
         </div>
       </div>
     </section>
@@ -92,6 +155,15 @@ const fmt = (n: number) => n.toLocaleString();
 .row + .row,
 .headerRow + .row {
   border-top: 1px solid var(--border-color-div-grey, #e0e0e0);
+}
+.note {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.listRow {
+  /* Each row is its own grid, so a fixed first column keeps the lists aligned. */
+  grid-template-columns: 96px 1fr;
+  column-gap: 16px;
 }
 .valueCol {
   text-align: right;

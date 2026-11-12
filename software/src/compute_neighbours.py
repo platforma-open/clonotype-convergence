@@ -11,6 +11,7 @@ CLI:
         --nMin <int>
         --chain <str>
         [--status-json <path>]
+        [--compartment <suffix>=<label> ...]
 
 Input TSV is ONE sample's PER-AA table: `aaSeqCDR3` (unique) and
 `multiplicity` (distinct nt CDR3s collapsed into that aa CDR3). The
@@ -25,6 +26,16 @@ Output TSV is one row per unique aa CDR3:
     multiplicity  — nt-CDR3 count per aa CDR3 (passed through)
     neighbours    — multiplicity-weighted Hamming-1 neighbour count
     Nb_freq       — neighbours / N_nt (continuous density)
+
+Each `--compartment iso0=IgG` names a compartment (one kept isotype) whose
+own nt counts per aa CDR3 ride in the input column `mult_iso0` (0 outside
+it). The same neighbour walk sums them, and the output gains:
+    mult_iso0     — passed through (N for the compartment is its sum)
+    nbSum_iso0    — compartment multiplicity summed over the Hamming-1
+                    neighbours, the row itself included; empty when the
+                    compartment is below nMin
+and `status_iso0.json` is written next to `--status-json`, same shape as it.
+Without `--compartment` the command and its output are unchanged.
 
 `--status-json` writes `{"nUniqueNt": <int>, "nMin": <int>}` — the
 unique-nt-CDR3 count for this sample (the sum of the multiplicity column,
@@ -68,6 +79,14 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON sidecar with this sample's unique-nt-CDR3 count "
         "and nMin. The model reads it to surface the skipped-samples warning.",
     )
+    parser.add_argument(
+        "--compartment",
+        action="append",
+        default=[],
+        dest="compartments",
+        help="<suffix>=<label>: also count neighbours within the compartment "
+        "whose multiplicities are in column mult_<suffix>. Repeatable.",
+    )
     return parser.parse_args()
 
 
@@ -75,7 +94,25 @@ def log(prefix: str, msg: str) -> None:
     print(f"{prefix} {msg}")
 
 
-def process_sample(per_aa: pd.DataFrame, chain: str, n_min: int):
+def parse_compartment(spec: str) -> tuple[str, str]:
+    suffix, sep, label = spec.partition("=")
+    if not sep or not suffix:
+        raise SystemExit(f"error: --compartment expects <suffix>=<label>, got {spec!r}")
+    return suffix, label
+
+
+def compartment_sizes(per_aa: pd.DataFrame, chain: str, compartments) -> dict[str, int]:
+    """Unique nt CDR3 count per compartment — the sum of its multiplicity
+    column, as the sample's own count is the sum of `multiplicity`."""
+    sizes = {}
+    for suffix, label in compartments:
+        col = f"mult_{suffix}"
+        sizes[suffix] = int(per_aa[col].astype(int).sum()) if len(per_aa) else 0
+        log(f"[chain {chain} {label}]", f"unique nt CDR3: {sizes[suffix]}")
+    return sizes
+
+
+def process_sample(per_aa: pd.DataFrame, chain: str, n_min: int, compartments=(), sizes=None):
     """Run Get_df on this sample's per-aa table. Returns ``(stats_or_None,
     n_nt)`` — the frame is None when the sample's unique-nt-CDR3 count is
     below the nMin floor; ``n_nt`` is always reported so the caller can write
@@ -103,15 +140,36 @@ def process_sample(per_aa: pd.DataFrame, chain: str, n_min: int):
             "signal may be unreliable (paper-reported lower bound for stable STAR estimates)",
         )
 
-    stats = Get_df(per_aa).make().rename(
+    stats = Get_df(per_aa).make(
+        {f"nbSum_{suffix}": f"mult_{suffix}" for suffix, _ in compartments}
+    ).rename(
         columns={
             "Multiplicity": "multiplicity",
             "Neighbours": "neighbours",
             "Nb_freq": "Nb_freq",
         }
-    )[OUTPUT_COLUMNS]
+    )
+    # A compartment below nMin keeps its column, empty: the workflow drops its
+    # rows, so its clones get no scores for it, as the sample's own skip does.
+    for suffix, label in compartments:
+        stats[f"mult_{suffix}"] = per_aa[f"mult_{suffix}"].astype(int).to_numpy()
+        if sizes[suffix] < n_min:
+            log(
+                f"[chain {chain} {label}]",
+                f"unique nt CDR3 count ({sizes[suffix]}) below the defined minimum ({n_min}); compartment skipped",
+            )
+            stats[f"nbSum_{suffix}"] = pd.NA
+        stats[f"nbSum_{suffix}"] = stats[f"nbSum_{suffix}"].astype("Int64")
+    stats = stats[output_columns(compartments)]
     log(prefix, f"output rows: {len(stats)}")
     return stats, n_nt
+
+
+def output_columns(compartments) -> list[str]:
+    cols = list(OUTPUT_COLUMNS)
+    for suffix, _ in compartments:
+        cols += [f"mult_{suffix}", f"nbSum_{suffix}"]
+    return cols
 
 
 def main() -> int:
@@ -119,13 +177,15 @@ def main() -> int:
 
     per_aa = pd.read_csv(args.input, sep="\t")
 
-    required = {"aaSeqCDR3", "multiplicity"}
+    compartments = [parse_compartment(c) for c in args.compartments]
+    required = {"aaSeqCDR3", "multiplicity"} | {f"mult_{suffix}" for suffix, _ in compartments}
     missing = required - set(per_aa.columns)
     if missing:
         print(f"error: input TSV missing required columns: {sorted(missing)}")
         return 2
 
-    result, n_nt = process_sample(per_aa, args.chain, args.nMin)
+    sizes = compartment_sizes(per_aa, args.chain, compartments)
+    result, n_nt = process_sample(per_aa, args.chain, args.nMin, compartments, sizes)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -138,6 +198,11 @@ def main() -> int:
         args.status_json.write_text(
             json.dumps({"nUniqueNt": n_nt, "nMin": args.nMin})
         )
+        # Per compartment too, also when the whole sample is skipped.
+        for suffix, _ in compartments:
+            (args.status_json.parent / f"status_{suffix}.json").write_text(
+                json.dumps({"nUniqueNt": sizes[suffix], "nMin": args.nMin})
+            )
 
     if result is None:
         # Below nMin — emit a header-only TSV and exit 0. The workflow joins
@@ -145,7 +210,7 @@ def main() -> int:
         # table yields an empty neighbours.tsv, which is what drops the sample
         # from the assembled output. The model surfaces the skip via the
         # status sidecar.
-        pd.DataFrame(columns=OUTPUT_COLUMNS).to_csv(args.output, sep="\t", index=False)
+        pd.DataFrame(columns=output_columns(compartments)).to_csv(args.output, sep="\t", index=False)
         print(
             f"[chain {args.chain}] unique nt CDR3 ({n_nt}) below nMin "
             f"({args.nMin}); emitting empty output"

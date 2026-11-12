@@ -1,5 +1,6 @@
 import type { GraphMakerState } from "@milaboratories/graph-maker";
 import type { PlDataTableStateV2, PlRef } from "@platforma-sdk/model";
+import type { BlockData } from "./types";
 
 /** Facts about the picked dataset as stored at `v1`: the clonotype axis name under `axisName`. */
 export type UpstreamFactsV1 = {
@@ -62,6 +63,9 @@ export type BlockDataV4 = Omit<BlockDataV3, "graphStateAggregated" | "graphState
 
 /** Data as stored at `v5`: the same shape, with both table states reset. */
 export type BlockDataV5 = BlockDataV4;
+
+/** Data as stored at `v6`: columns as result-pool ids, before the isotype filter existed. */
+export type BlockDataV6 = Omit<BlockData, "isotypeValues" | "perIsotype">;
 
 // Internals
 

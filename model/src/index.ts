@@ -27,6 +27,8 @@ import {
   getDefaultBlockLabel,
   isHeavy,
   isLight,
+  ISOTYPE_NAME,
+  keptIsotypes,
   pgenHeavyAvailable,
   pgenLightAvailable,
   SC_AXIS,
@@ -54,7 +56,14 @@ export { blockDataModel } from "./dataModel";
 export { toColumnId } from "./columns";
 export { fromDatasetSelection, toDatasetSelection } from "./dataset";
 // Shared chain constants/helpers, so the UI imports them instead of redefining.
-export { isHeavy, isLight, pgenHeavyAvailable, pgenLightAvailable, SC_AXIS } from "./chains";
+export {
+  DEFAULT_ISOTYPES,
+  isHeavy,
+  isLight,
+  pgenHeavyAvailable,
+  pgenLightAvailable,
+  SC_AXIS,
+} from "./chains";
 
 // chainL is only populated when the user makes it explicit:
 //  - bulk-light dataset (its only chain → chainL ← the dataset), or
@@ -123,6 +132,19 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     }
     if (data.groupingRef) {
       args.groupingRef = data.groupingRef;
+    }
+
+    // ---- Isotype filter --------------------------------------------
+    // Resolved by the workflow off the heavy anchor (same producer as the
+    // dataset, so no id is needed for the dependency). Projected only when the
+    // dataset has a heavy-chain isotype, so a bulk-light dataset or one without
+    // isotypes runs unfiltered whatever the selection says.
+    const isotypes = keptIsotypes(data);
+    if (isotypes && args.chainH) {
+      args.isotypeValues = isotypes;
+      // The kept isotypes are the per-isotype compartments, so per-isotype
+      // scores need them; with all isotypes kept there is nothing to name.
+      if (data.perIsotype) args.perIsotype = true;
     }
     return args;
   })
@@ -209,6 +231,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     expectedFilterRef: data.expectedFilterRef,
     expectedValues: data.expectedValues,
     groupingRef: data.groupingRef,
+    isotypeValues: data.isotypeValues,
+    perIsotype: data.perIsotype,
     customBlockLabel: data.customBlockLabel,
   }))
 
@@ -258,6 +282,8 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
       fullStarHeavy: args.hasPgenHeavy === true,
       fullStarLight: args.hasPgenLight === true,
       clusterFilter: args.applyClusterFilter,
+      // Per-isotype columns come and go with these.
+      perIsotype: args.perIsotype === true ? args.isotypeValues : undefined,
     });
   })
 
@@ -329,6 +355,33 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
     return createColumnValueOptions({ valueColumn: expectedFilterRef });
   })
 
+  // PFrame of the picked dataset's heavy-chain isotype column, so the UI can
+  // fetch its unique values for the isotype multiselect. Same column the
+  // workflow filters on: clonotype axis only, chain "A" primary on single-cell.
+  .output("isotypeValueSource", (ctx) => {
+    const datasetRef = ctx.data.datasetRef;
+    if (!datasetRef || ctx.data.datasetFacts?.hasIsotype !== true) return undefined;
+    const cloneAxis = findColumn(datasetRef)?.getSpec().axesSpec[1];
+    if (cloneAxis === undefined) return undefined;
+    const column = resultPool()
+      .filter({
+        include: {
+          name: [exact(ISOTYPE_NAME)],
+          axes: [axisSelector(cloneAxis)],
+          partialAxesMatch: false,
+          ...(cloneAxis.name === SC_AXIS && {
+            domain: {
+              "pl7.app/vdj/scClonotypeChain": [exact("A")],
+              "pl7.app/vdj/scClonotypeChain/index": [exact("primary")],
+            },
+          }),
+        },
+      })
+      .getColumns()
+      .find(hasReachableData);
+    return column ? ctx.createPFrame([column.id]) : undefined;
+  })
+
   // Dataset id → UpstreamFacts for every dataset the picker can offer. The
   // UI snapshot writer reads this to write the id + facts in one tick.
   .output("factsByDataset", (ctx) => {
@@ -392,6 +445,33 @@ export const platforma = BlockModelV3.create({ dataModel: blockDataModel, kind }
   .output("lightSkippedSamples", (ctx) =>
     buildSkippedSamples(ctx, "lightPerSampleStatus", (a) => a.chainL),
   )
+
+  // Per-isotype compartments that fell under nMin: per chain and isotype, the
+  // samples where that isotype has too few CDR3s (or none) to be scored
+  // against. Samples skipped as a whole are left out — the main warning
+  // already lists them. Undefined until every status has landed.
+  .output("isotypeSkippedSamples", (ctx) => {
+    const args = ctx.activeArgs;
+    if (args?.perIsotype !== true || !args.isotypeValues) return undefined;
+    const entries: { chain: "heavy" | "light"; isotype: string; samples: string[] }[] = [];
+    const chains = [
+      ["heavy", (a: BlockArgs) => a.chainH],
+      ["light", (a: BlockArgs) => a.chainL],
+    ] as const;
+    for (const [chain, chainDataset] of chains) {
+      if (!chainDataset(args)) continue;
+      const whole = buildSkippedSamples(ctx, `${chain}PerSampleStatus`, chainDataset);
+      if (!whole) return undefined;
+      const skippedWhole = new Set([...whole.belowMin, ...whole.noCdr3]);
+      for (const [i, isotype] of args.isotypeValues.entries()) {
+        const s = buildSkippedSamples(ctx, `${chain}IsotypeStatus_${i}`, chainDataset);
+        if (!s) return undefined;
+        const samples = [...s.belowMin, ...s.noCdr3].filter((x) => !skippedWhole.has(x)).sort();
+        if (samples.length > 0) entries.push({ chain, isotype, samples });
+      }
+    }
+    return { nMin: args.nMin, entries };
+  })
 
   // mainTable — the per-sample QC table. Anchored on the chain's fastStar
   // column (emitted on every chain, so it is the one reliable anchor) —
@@ -646,10 +726,16 @@ function sampleLabels(dataset: ColumnUniversalId | undefined) {
 // splits samples into:
 //   noCdr3   — nUniqueNt == 0: no usable CDR3; lowering nMin won't help.
 //   belowMin — 0 < nUniqueNt < nMin: real but too few; lowering nMin helps.
+//   noKeptIsotype — with "Keep isotypes" on: dataset samples with no status
+//              at all, as no clonotype of theirs had a kept isotype, so the
+//              per-sample step never ran for them. A subset dataset can also
+//              empty a sample; to the user that sample simply isn't in the
+//              dataset, and the statement still holds, so no separate case.
 //   allEmpty — no per-sample status at all (no rows → no explanation). The
 //              every-sample-empty case is intentionally excluded: those samples
 //              are already listed in noCdr3, so folding them in here would
-//              double-alert ("no chain data" + "N with no usable CDR3").
+//              double-alert ("no chain data" + "N with no usable CDR3"). So is
+//              the case where the isotype filter emptied every sample.
 // nMin comes from the run's status (falls back to activeArgs). Gated on parse
 // completeness so the warning doesn't flicker on partial mid-run status.
 function buildSkippedSamples(
@@ -679,10 +765,26 @@ function buildSkippedSamples(
     if (e.value.nUniqueNt === 0) noCdr3.push(label);
     else if (nMin !== undefined && e.value.nUniqueNt < nMin) belowMin.push(label);
   }
+  const isotypeFiltered = (args?.isotypeValues?.length ?? 0) > 0;
+  const noKeptIsotype: string[] = [];
+  if (isotypeFiltered) {
+    const datasetId = args ? chainDataset(args) : undefined;
+    const dataset = datasetId === undefined ? undefined : findColumn(datasetId);
+    const data = dataset && hasReachableData(dataset) ? dataset.getData() : undefined;
+    const withStatus = new Set(parsed.data.map((e) => String(e.key[0])));
+    // The dataset's samples are its partition keys (as for the sheet).
+    const samples =
+      data instanceof TreeNodeAccessor ? getUniquePartitionKeys(data)?.[0] : undefined;
+    for (const key of samples ?? []) {
+      const id = String(key);
+      if (!withStatus.has(id)) noKeptIsotype.push(labels?.[id] ?? id);
+    }
+  }
   belowMin.sort((a, b) => a.localeCompare(b));
   noCdr3.sort((a, b) => a.localeCompare(b));
-  const allEmpty = parsed.data.length === 0;
-  return { belowMin, noCdr3, allEmpty, nMin };
+  noKeptIsotype.sort((a, b) => a.localeCompare(b));
+  const allEmpty = parsed.data.length === 0 && noKeptIsotype.length === 0;
+  return { belowMin, noCdr3, noKeptIsotype, isotypeFiltered, allEmpty, nMin };
 }
 
 /**

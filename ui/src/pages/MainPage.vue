@@ -8,8 +8,10 @@ import {
   PlIcon24,
   PlSlideModal,
   usePlDataTableSettingsV2,
+  useWatchFetch,
 } from "@platforma-sdk/ui-vue";
-import { computed, reactive, watch } from "vue";
+import { PFrameImpl } from "@platforma-sdk/model";
+import { computed, reactive, ref, watch } from "vue";
 import { useApp } from "../app";
 import LogsPanel from "./LogsPanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
@@ -46,17 +48,46 @@ function panelModel(name: Exclude<Panel, null>) {
   });
 }
 const settingsOpen = panelModel("settings");
+
+// The isotypes this dataset actually has, for the Settings panel's "Keep
+// isotypes". Fetched here rather than in the panel, which is re-created on every
+// open: this way they load once per dataset.
+const isotypeOptions = useWatchFetch(
+  () => app.model.outputs.isotypeValueSource,
+  async (pframeHandle) => {
+    if (!pframeHandle) return undefined;
+    const pframe = new PFrameImpl(pframeHandle);
+    const list = await pframe.listColumns();
+    const id = list?.[0]?.columnId;
+    if (!id) return undefined;
+    const response = await pframe.getUniqueValues({ columnId: id, filters: [], limit: 1_000 });
+    // Unknown isotypes aren't offered: a non-empty selection drops them (blank,
+    // or MiXCR's "cant_distinguish" — see pack-input).
+    return [...(response?.values.data ?? [])]
+      .filter((v) => v !== null && v !== "" && v !== "cant_distinguish")
+      .map((v) => String(v))
+      .sort()
+      .map((v) => ({ value: v, label: v }));
+  },
+);
 const logsOpen = panelModel("logs");
 const statsOpen = panelModel("stats");
 
 // Show the Stats button only when at least one chain produced stats.
 const hasAnyStats = computed(
   () =>
+    (app.model.outputs.isotypeSkippedSamples?.entries.length ?? 0) > 0 ||
+    (app.model.outputs.heavySkippedSamples?.belowMin.length ?? 0) > 0 ||
+    (app.model.outputs.lightSkippedSamples?.belowMin.length ?? 0) > 0 ||
     !!app.model.outputs.heavyFastStats ||
     !!app.model.outputs.heavyFullStats ||
     !!app.model.outputs.lightFastStats ||
     !!app.model.outputs.lightFullStats,
 );
+
+// Sample lists can run long: the skip warnings scroll past this height, the
+// label staying in view.
+const ALERT_MAX_HEIGHT = "120px";
 
 // Skipped-samples warning. `belowMin` lists samples that had CDR3 data
 // but fewer unique nts than the nMin floor — surfaced with advice to
@@ -70,6 +101,15 @@ const skippedBelowMin = computed<string[]>(() => {
 const skippedNMin = computed<number | undefined>(
   () => app.model.outputs.heavySkippedSamples?.nMin ?? app.model.outputs.lightSkippedSamples?.nMin,
 );
+// The warning can be closed (Stats lists them too); it comes back when a run
+// changes the list.
+const belowMinOpen = ref(true);
+watch(
+  () => skippedBelowMin.value.join("\n"),
+  () => {
+    belowMinOpen.value = true;
+  },
+);
 
 // Samples dropped because they have NO usable CDR3 (nUniqueNt == 0), distinct
 // from `belowMin` — lowering nMin won't recover these, so the message omits
@@ -79,6 +119,40 @@ const skippedNoCdr3 = computed<string[]>(() => {
   const light = app.model.outputs.lightSkippedSamples?.noCdr3 ?? [];
   return Array.from(new Set([...heavy, ...light]));
 });
+
+// Samples with no clonotype of the kept isotypes: no per-sample run, so they'd
+// otherwise appear in no warning. Union across chains.
+const skippedNoKeptIsotype = computed<string[]>(() => {
+  const heavy = app.model.outputs.heavySkippedSamples?.noKeptIsotype ?? [];
+  const light = app.model.outputs.lightSkippedSamples?.noKeptIsotype ?? [];
+  return Array.from(new Set([...heavy, ...light])).sort((a, b) => a.localeCompare(b));
+});
+// Whether "Keep isotypes" applied to the run, for the below-minimum advice.
+const isotypeFiltered = computed(
+  () =>
+    app.model.outputs.heavySkippedSamples?.isotypeFiltered === true ||
+    app.model.outputs.lightSkippedSamples?.isotypeFiltered === true,
+);
+
+// Per-isotype compartments under nMin, one line per chain and isotype. Not
+// merged across chains: each chain counts its own unique nucleotide CDR3s, so
+// on single-cell data one chain's compartment can be skipped while the other's
+// is scored. The note can be closed (Stats lists them too); it comes back when
+// a run changes the list.
+const isotypeSkipped = computed(() =>
+  (app.model.outputs.isotypeSkippedSamples?.entries ?? []).map((e) => ({
+    key: `${e.chain}:${e.isotype}`,
+    label: `${e.chain === "heavy" ? "Heavy" : "Light"} ${e.isotype}`,
+    samples: e.samples,
+  })),
+);
+const isotypeSkippedOpen = ref(true);
+watch(
+  () => JSON.stringify(app.model.outputs.isotypeSkippedSamples?.entries ?? []),
+  () => {
+    isotypeSkippedOpen.value = true;
+  },
+);
 
 // "All empty" — the chain ran but produced nothing usable AND has no
 // per-sample skip reason to explain it (every input row had null /
@@ -156,14 +230,30 @@ const customBlockLabel = computed({
 
     <PlAlert
       v-if="skippedBelowMin.length > 0"
+      v-model="belowMinOpen"
       type="warn"
+      closeable
+      :max-height="ALERT_MAX_HEIGHT"
       :label="`${skippedBelowMin.length} sample${skippedBelowMin.length === 1 ? '' : 's'} below minimum`"
     >
       {{ skippedBelowMin.length === 1 ? "This sample has" : "These samples have" }}
       fewer than {{ skippedNMin }} unique nucleotide CDR3 sequences and
       {{ skippedBelowMin.length === 1 ? "was" : "were" }} skipped: {{ skippedBelowMin.join(", ") }}.
-      Adjust "Minimum unique CDR3 per sample" in Advanced settings to include
-      {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+      Adjust "Minimum unique CDR3 per sample" in Advanced settings{{
+        isotypeFiltered ? ' or "Keep isotypes"' : ""
+      }}
+      to include {{ skippedBelowMin.length === 1 ? "it" : "them" }}.
+    </PlAlert>
+
+    <PlAlert
+      v-if="skippedNoKeptIsotype.length > 0"
+      type="warn"
+      :label="`${skippedNoKeptIsotype.length} sample${skippedNoKeptIsotype.length === 1 ? '' : 's'} with no kept isotype`"
+    >
+      {{ skippedNoKeptIsotype.length === 1 ? "This sample has" : "These samples have" }}
+      no clonotypes of the kept isotypes and
+      {{ skippedNoKeptIsotype.length === 1 ? "was" : "were" }} skipped:
+      {{ skippedNoKeptIsotype.join(", ") }}.
     </PlAlert>
 
     <PlAlert
@@ -174,6 +264,21 @@ const customBlockLabel = computed({
       {{ skippedNoCdr3.length === 1 ? "This sample has" : "These samples have" }}
       no usable CDR3 sequences and
       {{ skippedNoCdr3.length === 1 ? "was" : "were" }} skipped: {{ skippedNoCdr3.join(", ") }}.
+    </PlAlert>
+
+    <PlAlert
+      v-if="isotypeSkipped.length > 0"
+      v-model="isotypeSkippedOpen"
+      type="info"
+      closeable
+      :max-height="ALERT_MAX_HEIGHT"
+      label="Per-isotype scores skipped"
+    >
+      Fewer than {{ app.model.outputs.isotypeSkippedSamples?.nMin }} unique nucleotide CDR3s of the
+      isotype in the sample:
+      <template v-for="e in isotypeSkipped" :key="e.key">
+        <br />{{ e.label }}: {{ e.samples.join(", ") }}
+      </template>
     </PlAlert>
 
     <PlAlert v-if="heavyAllEmpty" type="warn" label="No heavy-chain data">
@@ -196,7 +301,7 @@ const customBlockLabel = computed({
 
   <PlSlideModal v-model="settingsOpen" :shadow="true">
     <template #title>Settings</template>
-    <SettingsPanel />
+    <SettingsPanel :isotype-options="isotypeOptions.value" />
   </PlSlideModal>
 
   <PlSlideModal v-model="logsOpen" :shadow="true" width="60%">

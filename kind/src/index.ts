@@ -40,6 +40,8 @@ export type BlockParams = {
   expectedFilterRef?: ColumnUniversalId;
   expectedValues?: ColumnValueId[];
   groupingRef?: ColumnUniversalId;
+  isotypeValues?: string[];
+  perIsotype?: boolean;
   customBlockLabel?: string;
 };
 
@@ -69,6 +71,8 @@ function parseInitializationParams(value: unknown): BlockParams {
     expectedFilterRef,
     expectedValues,
     groupingRef,
+    isotypeValues,
+    perIsotype,
     customBlockLabel,
   } = value;
 
@@ -79,6 +83,7 @@ function parseInitializationParams(value: unknown): BlockParams {
 
   assertOptionalBoolean(processLightChain, "processLightChain");
   assertOptionalBoolean(applyClusterFilter, "applyClusterFilter");
+  assertOptionalBoolean(perIsotype, "perIsotype");
 
   assertOptionalNumber(thresholdH, "thresholdH");
   assertOptionalNumber(thresholdL, "thresholdL");
@@ -98,6 +103,7 @@ function parseInitializationParams(value: unknown): BlockParams {
       "'expectedValues' must be an array of column values, written as column value ids.",
     );
   }
+  assertOptionalStringArray(isotypeValues, "isotypeValues");
   if (customBlockLabel !== undefined && typeof customBlockLabel !== "string") {
     throw new Error("'customBlockLabel' must be a string.");
   }
@@ -115,6 +121,8 @@ function parseInitializationParams(value: unknown): BlockParams {
     expectedFilterRef,
     expectedValues,
     groupingRef,
+    isotypeValues,
+    perIsotype,
     customBlockLabel,
   };
 }
@@ -141,5 +149,14 @@ function assertOptionalBoolean(
 function assertOptionalNumber(value: unknown, field: string): asserts value is number | undefined {
   if (value !== undefined && typeof value !== "number") {
     throw new Error(`'${field}' must be a number.`);
+  }
+}
+
+function assertOptionalStringArray(
+  value: unknown,
+  field: string,
+): asserts value is string[] | undefined {
+  if (value !== undefined && (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) {
+    throw new Error(`'${field}' must be an array of strings.`);
   }
 }

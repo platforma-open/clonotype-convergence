@@ -39,6 +39,12 @@ export type UpstreamFacts = {
    *  silently degrades to 0 hits. Snapshotted at pick time. */
   pgenRefHeavy?: ColumnUniversalId;
   pgenRefLight?: ColumnUniversalId;
+  /** Whether the dataset carries a heavy-chain isotype column
+   *  (`pl7.app/vdj/isotype` on the clonotype axis alone; chain "A" primary on
+   *  single-cell). Decides whether the isotype filter applies at all: a
+   *  bulk-light dataset has no heavy isotype. Optional because snapshots taken
+   *  before the filter existed lack it; the UI backfills it. */
+  hasIsotype?: boolean;
 };
 
 /** Args passed to the workflow — output shape of `.args(...)`.
@@ -118,6 +124,15 @@ export type BlockArgs = {
    *  its own unit. `alpha` is the only statistical knob. */
   groupingRef?: ColumnUniversalId;
 
+  /** Isotypes to keep (sorted). Clonotypes whose heavy-chain isotype is not one
+   *  of them — unknown ones included — are removed before neighbour counting,
+   *  for every chain. Absent → no isotype filter. Projected only when
+   *  the dataset has a heavy-chain isotype column (see keptIsotypes). */
+  isotypeValues?: string[];
+  /** Also score each clone against each kept isotype's CDR3s (one compartment
+   *  per `isotypeValues` entry, same order). Set only with `isotypeValues`. */
+  perIsotype?: boolean;
+
   // Optional cluster filter.
   /** When true, run Stage 3 (binder cluster filter) after Stage 2
    *  and emit the additional `fastStarClusterFiltered` column. Off
@@ -196,6 +211,13 @@ export type BlockData = {
    *  aggregation and defines the reproducibility denominator; no
    *  separate toggle, threshold or weight. */
   groupingRef?: ColumnUniversalId;
+  /** Isotypes to keep. Empty = keep every clonotype. New blocks start from
+   *  DEFAULT_ISOTYPES; blocks created before the filter existed migrate to
+   *  empty, so their results don't change. */
+  isotypeValues?: string[];
+  /** "Also score against each kept isotype". Needs a non-empty
+   *  `isotypeValues`: those are the compartments. */
+  perIsotype?: boolean;
 
   // UI-only state (never projects to args). Panel open/close is NOT here: it
   // lives in a local reactive in MainPage, so toggling a modal never writes to
